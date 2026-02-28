@@ -708,7 +708,7 @@ export const storageBridge = {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: "Chat Package", extensions: ["chatpkg"] }],
+        filters: [{ name: "Chat Package", extensions: ["chatpkg", "json", "jsonl"] }],
       });
 
       if (!selected || typeof selected !== "string") return null;
