@@ -31,7 +31,6 @@ import {
   resetAppDefaultTemplate,
   resetDynamicSummaryTemplate,
   resetDynamicMemoryTemplate,
-  getDefaultSystemPromptTemplate,
   renderPromptPreview,
   getRequiredTemplateVariables,
 } from "../../../core/prompts/service";
@@ -959,16 +958,14 @@ export function EditPromptTemplate() {
           }
         }
       } else {
-        const def = await getDefaultSystemPromptTemplate();
-        setContent(def);
-        const seedEntries = [createDefaultEntry(def)];
-        setEntries(seedEntries);
+        setContent("");
+        setEntries([]);
         setCondensePromptEntries(false);
-        setCollapsedEntries(Object.fromEntries(seedEntries.map((entry) => [entry.id, true])));
+        setCollapsedEntries({});
         initialRef.current = {
           name: "",
-          content: def,
-          entries: serializeEntries(seedEntries),
+          content: "",
+          entries: serializeEntries([]),
           condensePromptEntries: false,
         };
       }
