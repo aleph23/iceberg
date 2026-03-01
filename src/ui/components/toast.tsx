@@ -31,6 +31,8 @@ const variantIcons: Record<ToastVariant, ReactNode> = {
 type ToastActionOptions = {
   actionLabel?: string;
   onAction?: () => void;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
   id?: string | number;
   duration?: number | typeof Infinity;
 };
@@ -48,20 +50,39 @@ function showToast(
         <div className={titleClassName}>{title}</div>
         {description && <div className={cn(descriptionClassName, "mt-0.5")}>{description}</div>}
       </div>
-      {options?.actionLabel && (
-        <button
-          onClick={() => {
-            options.onAction?.();
-            if (options.id) sonnerToast.dismiss(options.id);
-          }}
-          className={cn(
-            "shrink-0 rounded-lg border border-fg/30 bg-fg/5 px-3 py-1.5",
-            "text-xs font-medium text-fg/70",
-            "hover:bg-fg/10 hover:text-fg transition-colors",
+      {(options?.actionLabel || options?.secondaryLabel) && (
+        <div className="flex shrink-0 gap-1.5">
+          {options?.actionLabel && (
+            <button
+              onClick={() => {
+                options.onAction?.();
+                if (options.id) sonnerToast.dismiss(options.id);
+              }}
+              className={cn(
+                "shrink-0 rounded-lg border border-fg/30 bg-fg/5 px-3 py-1.5",
+                "text-xs font-medium text-fg/70",
+                "hover:bg-fg/10 hover:text-fg transition-colors",
+              )}
+            >
+              {options.actionLabel}
+            </button>
           )}
-        >
-          {options.actionLabel}
-        </button>
+          {options?.secondaryLabel && (
+            <button
+              onClick={() => {
+                options.onSecondary?.();
+                if (options.id) sonnerToast.dismiss(options.id);
+              }}
+              className={cn(
+                "shrink-0 rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5",
+                "text-xs font-medium text-danger",
+                "hover:bg-danger/20 transition-colors",
+              )}
+            >
+              {options.secondaryLabel}
+            </button>
+          )}
+        </div>
       )}
     </div>,
     {

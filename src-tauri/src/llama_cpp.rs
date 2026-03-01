@@ -2,12 +2,14 @@ use std::collections::HashMap;
 
 use serde_json::{json, Value};
 use tauri::AppHandle;
+#[cfg(not(mobile))]
+use tauri::{Emitter, Listener};
 
 use crate::api::{ApiRequest, ApiResponse};
 use crate::chat_manager::types::{ErrorEnvelope, NormalizedEvent, UsageSummary};
 use crate::transport;
 #[cfg(not(mobile))]
-use crate::utils::{emit_toast, log_error, log_info, log_warn};
+use crate::utils::{log_error, log_info, log_warn};
 
 const LOCAL_PROVIDER_ID: &str = "llamacpp";
 
@@ -145,21 +147,41 @@ mod desktop {
                             log_warn(
                                 app,
                                 "llama_cpp",
-                                format!("GPU model load failed, falling back to CPU: {err}"),
+                                format!("GPU load failed: {err}"),
                             );
-                            emit_toast(
-                                app,
-                                "warning",
-                                "GPU memory is insufficient for this model",
-                                Some(
-                                    "Falling back to CPU + RAM. Performance may be slower."
-                                        .to_string(),
-                                ),
-                            );
+
+                            let _ = app.emit("app://gpu-fallback-prompt", ());
+
+                            let (tx, rx) = std::sync::mpsc::channel();
+                            let tx_c = tx.clone();
+                            let id = app.listen("app://gpu-fallback-response", move |event| {
+                                let _ = tx_c.send(event.payload().to_string());
+                            });
+                            let response =
+                                rx.recv_timeout(std::time::Duration::from_secs(30));
+                            app.unlisten(id);
+
+                            match response {
+                                Ok(r) if r.contains("switch") => {
+                                    LlamaModel::load_from_file(
+                                        backend,
+                                        model_path,
+                                        &cpu_params,
+                                    )
+                                    .map_err(|e| {
+                                        format!("CPU fallback failed: {e}")
+                                    })?
+                                }
+                                _ => {
+                                    return Err(
+                                        "GPU memory insufficient — loading aborted by user"
+                                            .into(),
+                                    );
+                                }
+                            }
+                        } else {
+                            return Err(format!("GPU load failed: {err}"));
                         }
-                        LlamaModel::load_from_file(backend, model_path, &cpu_params).map_err(
-                            |e| format!("Failed to load llama model with CPU fallback: {e}"),
-                        )?
                     }
                 }
             } else {

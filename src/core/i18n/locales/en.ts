@@ -1697,6 +1697,11 @@ export const enMessages = {
   },
 
   engine: {
+    gpuInsufficient: "GPU memory insufficient",
+    gpuFallbackDesc:
+      "This model doesn't fit in GPU memory. Switch to CPU (slower) or abort?",
+    switchToCpu: "Switch to CPU",
+    abort: "Abort",
     errors: {
       providerNotFound: "Engine provider not found.",
     },

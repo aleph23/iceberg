@@ -87,7 +87,7 @@ import { V2UpgradeToast } from "./ui/components/V2UpgradeToast";
 import { ConfirmBottomMenuHost } from "./ui/components/ConfirmBottomMenu";
 import { isOnboardingCompleted } from "./core/storage/appState";
 import { TopNav, BottomNav } from "./ui/components/App";
-import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { emit, listen, UnlistenFn } from "@tauri-apps/api/event";
 import { useAndroidBackHandler } from "./ui/hooks/useAndroidBackHandler";
 import { logManager, isLoggingEnabled } from "./core/utils/logger";
 import { getPlatform } from "./core/utils/platform";
@@ -149,6 +149,29 @@ function App() {
         });
       } catch (err) {
         console.error("Failed to attach debug listener:", err);
+      }
+    })();
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | null = null;
+    (async () => {
+      try {
+        unlisten = await listen("app://gpu-fallback-prompt", () => {
+          toast.warning("GPU memory insufficient", "This model doesn't fit in GPU memory. Switch to CPU (slower) or abort?", {
+            actionLabel: "Switch to CPU",
+            onAction: () => emit("app://gpu-fallback-response", "switch"),
+            secondaryLabel: "Abort",
+            onSecondary: () => emit("app://gpu-fallback-response", "abort"),
+            id: "gpu-fallback",
+            duration: Infinity,
+          });
+        });
+      } catch (err) {
+        console.error("Failed to attach gpu-fallback listener:", err);
       }
     })();
     return () => {
