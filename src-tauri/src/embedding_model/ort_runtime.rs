@@ -28,6 +28,12 @@ pub(super) async fn ensure_ort_init(app: &AppHandle) -> Result<(), String> {
     {
         let dylib_path = resolve_or_download_onnxruntime(app).await?;
         std::env::set_var("ORT_DYLIB_PATH", &dylib_path);
+        #[cfg(target_os = "macos")]
+        {
+            if let Some(ort_dir) = dylib_path.parent() {
+                preload_macos_provider_dylibs(ort_dir);
+            }
+        }
         if let Err(err) = ort::util::preload_dylib(&dylib_path) {
             return Err(crate::utils::err_msg(
                 module_path!(),
@@ -105,6 +111,11 @@ async fn resolve_or_download_onnxruntime(app: &AppHandle) -> Result<PathBuf, Str
     if dest_path.exists() {
         if cfg!(target_os = "windows") {
             let shared = ort_dir.join("onnxruntime_providers_shared.dll");
+            if shared.exists() {
+                return Ok(dest_path);
+            }
+        } else if cfg!(target_os = "macos") {
+            let shared = ort_dir.join("libonnxruntime_providers_shared.dylib");
             if shared.exists() {
                 return Ok(dest_path);
             }
@@ -197,7 +208,7 @@ fn ort_download_info() -> Result<OrtDownloadInfo, String> {
                 ORT_VERSION
             ),
             lib_name: "libonnxruntime.dylib",
-            lib_dir_in_archive: None,
+            lib_dir_in_archive: Some(format!("onnxruntime-osx-arm64-{}/lib/", ORT_VERSION)),
         }),
         ("macos", "x86_64") => Ok(OrtDownloadInfo {
             archive_url: format!(
@@ -209,7 +220,7 @@ fn ort_download_info() -> Result<OrtDownloadInfo, String> {
                 ORT_VERSION
             ),
             lib_name: "libonnxruntime.dylib",
-            lib_dir_in_archive: None,
+            lib_dir_in_archive: Some(format!("onnxruntime-osx-x86_64-{}/lib/", ORT_VERSION)),
         }),
         _ => Err(crate::utils::err_msg(
             module_path!(),
@@ -282,13 +293,35 @@ fn extract_onnxruntime_archive(
                 .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
                 .to_string_lossy()
                 .into_owned();
-            if path == download_info.lib_path_in_archive {
+            if let Some(prefix) = download_info.lib_dir_in_archive.as_deref() {
+                if path.starts_with(prefix) && path.ends_with(".dylib") {
+                    let filename = Path::new(&path)
+                        .file_name()
+                        .ok_or_else(|| {
+                            crate::utils::err_msg(
+                                module_path!(),
+                                line!(),
+                                format!("Invalid ONNX Runtime entry: {}", path),
+                            )
+                        })?
+                        .to_string_lossy()
+                        .to_string();
+                    let out_path = ort_dir.join(filename);
+                    let mut outfile = fs::File::create(&out_path)
+                        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+                    std::io::copy(&mut entry, &mut outfile)
+                        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+                }
+            } else if path == download_info.lib_path_in_archive {
                 let mut outfile = fs::File::create(dest_path)
                     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
                 std::io::copy(&mut entry, &mut outfile)
                     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
                 return Ok(());
             }
+        }
+        if download_info.lib_dir_in_archive.is_some() && dest_path.exists() {
+            return Ok(());
         }
         return Err(crate::utils::err_msg(
             module_path!(),
@@ -305,6 +338,19 @@ fn extract_onnxruntime_archive(
         line!(),
         format!("Unsupported archive type: {}", download_info.archive_url),
     ))
+}
+
+#[cfg(target_os = "macos")]
+fn preload_macos_provider_dylibs(ort_dir: &Path) {
+    for name in [
+        "libonnxruntime_providers_shared.dylib",
+        "libonnxruntime_providers_coreml.dylib",
+    ] {
+        let path = ort_dir.join(name);
+        if path.exists() {
+            let _ = ort::util::preload_dylib(&path);
+        }
+    }
 }
 
 trait IntoInitResult {

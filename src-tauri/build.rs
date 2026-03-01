@@ -1,7 +1,9 @@
 use std::env;
 use std::fs;
 use std::io::{self, Cursor};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+const ORT_VERSION: &str = "1.22.0";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=ORT_LIB_LOCATION");
@@ -17,6 +19,9 @@ fn main() {
                 "cargo:warning=ORT_LIB_LOCATION is not set. iOS builds require a CoreML-enabled ONNX Runtime library location."
             );
         }
+    } else if target_os == "macos" {
+        println!("cargo:warning=Detected macOS build, preparing ONNX Runtime library...");
+        setup_macos_libs().expect("Failed to setup macOS ONNX Runtime library");
     } else {
         println!(
             "cargo:warning=Detected Desktop build, skipping ONNX Runtime download (runtime fetch)."
@@ -27,7 +32,6 @@ fn main() {
 }
 
 fn setup_android_libs() -> anyhow::Result<()> {
-    let ort_version = "1.22.0";
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let resource_dir = manifest_dir.join("onnxruntime");
     if !resource_dir.exists() {
@@ -60,11 +64,11 @@ fn setup_android_libs() -> anyhow::Result<()> {
 
     println!(
         "cargo:warning=Downloading ONNX Runtime Android v{}...",
-        ort_version
+        ORT_VERSION
     );
     let url = format!(
         "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/{0}/onnxruntime-android-{0}.aar",
-        ort_version
+        ORT_VERSION
     );
 
     let response = reqwest::blocking::get(&url)?.bytes()?;
@@ -90,6 +94,99 @@ fn setup_android_libs() -> anyhow::Result<()> {
                 );
             }
         }
+    }
+
+    Ok(())
+}
+
+fn setup_macos_libs() -> anyhow::Result<()> {
+    if let Ok(path) = env::var("ORT_LIB_LOCATION") {
+        if !path.trim().is_empty() {
+            println!(
+                "cargo:warning=ORT_LIB_LOCATION is set for macOS build ({}); skipping bundled ONNX Runtime download.",
+                path
+            );
+            return Ok(());
+        }
+    }
+
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let archive_arch = match target_arch.as_str() {
+        "aarch64" => "arm64",
+        "x86_64" => "x86_64",
+        _ => {
+            println!(
+                "cargo:warning=Unsupported macOS architecture '{}' for bundled ONNX Runtime; runtime fetch fallback will be used.",
+                target_arch
+            );
+            return Ok(());
+        }
+    };
+
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
+    let resource_dir = manifest_dir.join("onnxruntime");
+    fs::create_dir_all(&resource_dir)?;
+
+    let dylib_path = resource_dir.join("libonnxruntime.dylib");
+    let shared_path = resource_dir.join("libonnxruntime_providers_shared.dylib");
+    if dylib_path.exists() && shared_path.exists() {
+        println!(
+            "cargo:warning=macOS ONNX Runtime already present at {:?}",
+            dylib_path
+        );
+        return Ok(());
+    }
+
+    let archive_url = format!(
+        "https://github.com/microsoft/onnxruntime/releases/download/v{0}/onnxruntime-osx-{1}-{0}.tgz",
+        ORT_VERSION, archive_arch
+    );
+    let lib_dir_in_archive = format!("onnxruntime-osx-{}-{}/lib/", archive_arch, ORT_VERSION);
+
+    println!(
+        "cargo:warning=Downloading ONNX Runtime macOS v{} ({})...",
+        ORT_VERSION, archive_arch
+    );
+    let response = reqwest::blocking::get(&archive_url)?.bytes()?;
+    extract_tgz_dylibs_from_dir(&response, &lib_dir_in_archive, &resource_dir)?;
+    if dylib_path.exists() {
+        println!("cargo:warning=Extracted: {:?}", dylib_path);
+    }
+
+    Ok(())
+}
+
+fn extract_tgz_dylibs_from_dir(
+    bytes: &[u8],
+    entry_dir: &str,
+    dest_dir: &Path,
+) -> anyhow::Result<()> {
+    let reader = Cursor::new(bytes);
+    let tar = flate2::read::GzDecoder::new(reader);
+    let mut archive = tar::Archive::new(tar);
+    let mut extracted_count = 0usize;
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.to_string_lossy().replace('\\', "/");
+        if !path.starts_with(entry_dir) || !path.ends_with(".dylib") {
+            continue;
+        }
+        let Some(filename) = Path::new(&path).file_name() else {
+            continue;
+        };
+        fs::create_dir_all(dest_dir)?;
+        let out_path = dest_dir.join(filename);
+        let mut outfile = fs::File::create(&out_path)?;
+        io::copy(&mut entry, &mut outfile)?;
+        extracted_count += 1;
+    }
+
+    if extracted_count == 0 {
+        anyhow::bail!(
+            "No .dylib entries found under '{}' in ONNX Runtime archive",
+            entry_dir
+        );
     }
 
     Ok(())

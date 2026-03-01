@@ -40,6 +40,7 @@ bun install
 # Desktop (Tauri)
 bun run tauri dev
 bun run tauri build
+bun run tauri:build:macos
 
 # Desktop with NVIDIA CUDA llama.cpp acceleration
 bun run tauri dev --features llama-gpu-cuda
@@ -52,6 +53,10 @@ bun run tauri:build:cuda:auto
 # Desktop with Vulkan llama.cpp acceleration (AMD/Intel/NVIDIA, driver-dependent)
 bun run tauri dev --features llama-gpu-vulkan
 bun run tauri build --features llama-gpu-vulkan
+
+# Desktop with Metal llama.cpp acceleration (Apple Silicon/Intel Macs, macOS only)
+bun run tauri:dev:metal
+bun run tauri:build:metal
 
 # Android
 bun run tauri android dev
@@ -108,6 +113,22 @@ bun run tauri ios build
 ```
 
 For `llama-gpu-cuda`, install the NVIDIA CUDA toolkit and driver on the build machine.
+For `llama-gpu-metal`, build on macOS with Xcode command-line tools installed.
+
+## macOS Distribution
+
+Build a native macOS app bundle and DMG installer on macOS:
+
+```bash
+bun run tauri:build:macos
+```
+
+The build script auto-downloads a compatible ONNX Runtime dylib for macOS into `src-tauri/onnxruntime` (unless `ORT_LIB_LOCATION` is explicitly set), and bundles it into the app resources.
+
+Artifacts are generated under:
+
+- `src-tauri/target/release/bundle/macos/*.app`
+- `src-tauri/target/release/bundle/dmg/*.dmg`
 
 ## Contributing
 

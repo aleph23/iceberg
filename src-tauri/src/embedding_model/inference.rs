@@ -1,6 +1,6 @@
 use super::*;
 use crate::utils::log_info;
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 use ort::{
     execution_providers::coreml::{
         CoreMLComputeUnits, CoreMLExecutionProvider, CoreMLModelFormat,
@@ -232,7 +232,7 @@ fn configure_session_builder_for_target(
     builder: ort::session::builder::SessionBuilder,
     model_path: &Path,
 ) -> Result<ort::session::builder::SessionBuilder, String> {
-    #[cfg(target_os = "ios")]
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     {
         let mut builder = builder;
         let cache_dir = model_path
@@ -249,7 +249,7 @@ fn configure_session_builder_for_target(
         fs::create_dir_all(&cache_dir)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
-        // Prefer Apple Neural Engine when available; ORT falls back to CPU for unsupported ops.
+        // Prefer Apple acceleration; ORT falls back to CPU for unsupported ops.
         let coreml_ep: ExecutionProviderDispatch = CoreMLExecutionProvider::default()
             .with_compute_units(CoreMLComputeUnits::CPUAndNeuralEngine)
             .with_model_format(CoreMLModelFormat::MLProgram)
@@ -270,7 +270,7 @@ fn configure_session_builder_for_target(
         return Ok(builder);
     }
 
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
     {
         let _ = model_path;
         Ok(builder)
