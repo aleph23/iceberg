@@ -764,11 +764,22 @@ export function HuggingFaceBrowserPage() {
 
   const [avatars, setAvatars] = useState<Record<string, string>>({});
 
-  const view: ViewState = (() => {
+  const [defaultedToSearch, setDefaultedToSearch] = useState(false);
+
+  useEffect(() => {
+    if (defaultedToSearch) return;
+    if (searchParams.get("model")) {
+      setSearchParams({}, { replace: true });
+    }
+    setDefaultedToSearch(true);
+  }, [defaultedToSearch, searchParams, setSearchParams]);
+
+  const view: ViewState = useMemo(() => {
+    if (!defaultedToSearch) return { kind: "search" };
     const modelParam = searchParams.get("model");
     if (modelParam) return { kind: "model", modelId: modelParam };
     return { kind: "search" };
-  })();
+  }, [defaultedToSearch, searchParams]);
 
   const setView = useCallback(
     (v: ViewState) => {
