@@ -639,7 +639,7 @@ fn export_group_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, Strin
             .prepare(
                 "SELECT id, role, content, speaker_character_id, turn_number, created_at,
                         prompt_tokens, completion_tokens, total_tokens, selected_variant_id,
-                        is_pinned, attachments, reasoning, selection_reasoning, model_id
+                        is_pinned, attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id
                  FROM group_messages WHERE session_id = ? ORDER BY created_at ASC",
             )
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -660,9 +660,10 @@ fn export_group_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, Strin
                     "selected_variant_id": r.get::<_, Option<String>>(9)?,
                     "is_pinned": r.get::<_, i64>(10)? != 0,
                     "attachments": r.get::<_, String>(11)?,
-                    "reasoning": r.get::<_, Option<String>>(12)?,
-                    "selection_reasoning": r.get::<_, Option<String>>(13)?,
-                    "model_id": r.get::<_, Option<String>>(14)?,
+                    "used_lorebook_entries": r.get::<_, String>(12)?,
+                    "reasoning": r.get::<_, Option<String>>(13)?,
+                    "selection_reasoning": r.get::<_, Option<String>>(14)?,
+                    "model_id": r.get::<_, Option<String>>(15)?,
                 });
                 Ok((msg_id, json))
             })
@@ -2056,8 +2057,8 @@ fn import_group_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(),
 
                     conn.execute(
                         "INSERT INTO group_messages (id, session_id, role, content, speaker_character_id, turn_number, created_at,
-                         prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, reasoning, selection_reasoning, model_id)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                         prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                         params![
                             msg_id,
                             session_id,
@@ -2072,6 +2073,7 @@ fn import_group_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(),
                             msg.get("selected_variant_id").and_then(|v| v.as_str()),
                             msg.get("is_pinned").and_then(|v| v.as_bool()).unwrap_or(false) as i64,
                             msg.get("attachments").and_then(|v| v.as_str()).unwrap_or("[]"),
+                            msg.get("used_lorebook_entries").and_then(|v| v.as_str()).unwrap_or("[]"),
                             msg.get("reasoning").and_then(|v| v.as_str()),
                             msg.get("selection_reasoning").and_then(|v| v.as_str()),
                             msg.get("model_id").and_then(|v| v.as_str()),

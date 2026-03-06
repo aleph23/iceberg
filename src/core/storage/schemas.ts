@@ -1460,6 +1460,8 @@ export const GroupSessionSchema = z.object({
   startingScene: SceneSchema.optional().nullable(),
   /** Background image path for the group chat */
   backgroundImagePath: z.string().nullish().optional(),
+  lorebookIds: z.array(z.string().uuid()).default([]),
+  disableCharacterLorebooks: z.boolean().default(false),
   /** Manual memories (simple text entries) */
   memories: z.array(z.string()).default([]),
   /** Dynamic memory embeddings with semantic search support */
@@ -1519,6 +1521,8 @@ export const GroupSchema = z.object({
   chatType: z.enum(["conversation", "roleplay"]).default("conversation"),
   startingScene: SceneSchema.optional().nullable(),
   backgroundImagePath: z.string().nullish().optional(),
+  lorebookIds: z.array(z.string().uuid()).default([]),
+  disableCharacterLorebooks: z.boolean().default(false),
   speakerSelectionMethod: z.enum(["llm", "heuristic", "round_robin"]).default("llm"),
   memoryType: z.enum(["manual", "dynamic"]).default("manual"),
 });
@@ -1576,6 +1580,7 @@ export const GroupMessageSchema = z.object({
   selectedVariantId: z.string().uuid().nullish(),
   isPinned: z.boolean().optional(),
   attachments: z.array(ImageAttachmentSchema).default([]),
+  usedLorebookEntries: z.array(z.string()).optional(),
   reasoning: z.string().nullish(),
   selectionReasoning: z.string().nullish(),
   modelId: z.string().uuid().nullish(),

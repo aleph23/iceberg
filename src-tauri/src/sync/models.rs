@@ -454,6 +454,8 @@ pub struct GroupMessage {
     pub selected_variant_id: Option<String>,
     pub is_pinned: i64,
     pub attachments: String,
+    #[serde(default)]
+    pub used_lorebook_entries: String,
     pub reasoning: Option<String>,
     pub selection_reasoning: Option<String>,
     pub model_id: Option<String>,

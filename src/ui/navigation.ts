@@ -66,8 +66,10 @@ export const Routes = {
   groupChats: "/group-chats",
   groupChatsNew: "/group-chats/new",
   groupSettings: (groupId: string) => `/group-chats/groups/${groupId}/settings`,
+  groupLorebook: (groupId: string) => `/group-chats/groups/${groupId}/lorebook`,
   groupChat: (groupSessionId: string) => `/group-chats/${groupSessionId}`,
   groupChatSettings: (groupSessionId: string) => `/group-chats/${groupSessionId}/settings`,
+  groupChatLorebook: (groupSessionId: string) => `/group-chats/${groupSessionId}/lorebook`,
   groupChatMemories: (groupSessionId: string) => `/group-chats/${groupSessionId}/memories`,
   groupChatHistory: "/group-chats/history",
   // Engine routes
@@ -108,6 +110,14 @@ export const BACK_MAPPINGS: BackMapping[] = [
   // Group chat back navigation
   {
     match: (p) => p.startsWith("/group-chats/") && p.includes("/settings"),
+    target: Routes.groupChats,
+  },
+  {
+    match: (p) => p.startsWith("/group-chats/groups/") && p.includes("/lorebook"),
+    target: Routes.groupChats,
+  },
+  {
+    match: (p) => p.startsWith("/group-chats/") && p.includes("/lorebook"),
     target: Routes.groupChats,
   },
   {

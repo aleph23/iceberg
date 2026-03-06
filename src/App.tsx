@@ -694,6 +694,7 @@ function AppContent() {
                 path="/settings/characters/:characterId/lorebook"
                 element={<LorebookEditor />}
               />
+              <Route path="/group-chats/groups/:groupId/lorebook" element={<LorebookEditor />} />
               <Route
                 path="/settings/characters/:characterId/templates"
                 element={<ChatTemplateListPage />}
@@ -713,6 +714,7 @@ function AppContent() {
               <Route path="/group-chats/:groupSessionId" element={<GroupChatLayout />}>
                 <Route index element={<GroupChatPage />} />
                 <Route path="settings" element={<GroupChatSettingsPage />} />
+                <Route path="lorebook" element={<LorebookEditor />} />
                 <Route path="memories" element={<GroupChatMemoriesPage />} />
               </Route>
             </Routes>

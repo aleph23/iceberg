@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 
 import { storageBridge } from "../../../../core/storage/files";
+import { updateGroupSessionDisableCharacterLorebooks } from "../../../../core/storage/repo";
 import type {
   GroupSession,
   GroupParticipation,
@@ -251,6 +252,25 @@ export function useGroupChatSettingsController(
     [session, setUi, updateSession],
   );
 
+  const handleSetDisableCharacterLorebooks = useCallback(
+    async (disableCharacterLorebooks: boolean) => {
+      if (!session) return;
+      try {
+        setUi({ saving: true });
+        const updated = await updateGroupSessionDisableCharacterLorebooks(
+          session.id,
+          disableCharacterLorebooks,
+        );
+        updateSession?.(updated);
+      } catch (err) {
+        console.error("Failed to update session lorebook behavior:", err);
+      } finally {
+        setUi({ saving: false });
+      }
+    },
+    [session, setUi, updateSession],
+  );
+
   const getParticipationPercent = useCallback(
     (characterId: string) => {
       if (!participationStats.length) return 0;
@@ -300,6 +320,7 @@ export function useGroupChatSettingsController(
     handleChangeSpeakerSelectionMethod,
     handleSetCharacterMuted,
     handleUpdateBackgroundImage,
+    handleSetDisableCharacterLorebooks,
     mutedCharacterIds,
     getParticipationPercent,
   } as const;

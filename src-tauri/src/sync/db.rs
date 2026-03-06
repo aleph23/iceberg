@@ -1208,7 +1208,7 @@ fn fetch_group_sessions_data(
         .map(|r| r.unwrap())
         .collect();
 
-    let sql_msg = format!("SELECT id, session_id, role, content, speaker_character_id, turn_number, created_at, prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, reasoning, selection_reasoning, model_id FROM group_messages WHERE session_id IN ({})", placeholders);
+    let sql_msg = format!("SELECT id, session_id, role, content, speaker_character_id, turn_number, created_at, prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id FROM group_messages WHERE session_id IN ({})", placeholders);
     let mut stmt = conn
         .prepare(&sql_msg)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1228,9 +1228,10 @@ fn fetch_group_sessions_data(
                 selected_variant_id: r.get(10)?,
                 is_pinned: r.get(11)?,
                 attachments: r.get(12)?,
-                reasoning: r.get(13)?,
-                selection_reasoning: r.get(14)?,
-                model_id: r.get(15)?,
+                used_lorebook_entries: r.get(13)?,
+                reasoning: r.get(14)?,
+                selection_reasoning: r.get(15)?,
+                model_id: r.get(16)?,
             })
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?

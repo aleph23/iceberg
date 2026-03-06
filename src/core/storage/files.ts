@@ -193,6 +193,33 @@ export const storageBridge = {
       characterId,
       lorebookIdsJson: JSON.stringify(lorebookIds),
     }) as Promise<void>,
+  groupLorebooksList: (id: string) =>
+    invoke<string>("group_lorebooks_list", { id }).then((s) => JSON.parse(s) as any[]),
+  groupLorebooksSet: (id: string, lorebookIds: string[]) =>
+    invoke<string>("group_lorebooks_set", {
+      id,
+      lorebookIdsJson: JSON.stringify(lorebookIds),
+    }).then((s) => JSON.parse(s)),
+  groupUpdateDisableCharacterLorebooks: (id: string, disableCharacterLorebooks: boolean) =>
+    invoke<string>("group_update_disable_character_lorebooks", {
+      id,
+      disableCharacterLorebooks,
+    }).then((s) => JSON.parse(s)),
+  groupSessionLorebooksList: (sessionId: string) =>
+    invoke<string>("group_session_lorebooks_list", { sessionId }).then((s) => JSON.parse(s) as any[]),
+  groupSessionLorebooksSet: (sessionId: string, lorebookIds: string[]) =>
+    invoke<string>("group_session_lorebooks_set", {
+      sessionId,
+      lorebookIdsJson: JSON.stringify(lorebookIds),
+    }).then((s) => JSON.parse(s)),
+  groupSessionUpdateDisableCharacterLorebooks: (
+    sessionId: string,
+    disableCharacterLorebooks: boolean,
+  ) =>
+    invoke<string>("group_session_update_disable_character_lorebooks", {
+      sessionId,
+      disableCharacterLorebooks,
+    }).then((s) => JSON.parse(s)),
 
   lorebookEntriesList: (lorebookId: string) =>
     invoke<string>("lorebook_entries_list", { lorebookId }).then((s) => JSON.parse(s) as any[]),

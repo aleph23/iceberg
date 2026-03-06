@@ -10,6 +10,7 @@ import {
   PersonaSchema,
   MessageSchema,
   GroupMessageSchema,
+  GroupSchema,
   GroupSessionSchema,
   type Character,
   type Session,
@@ -21,6 +22,7 @@ import {
   type AppState,
   type Lorebook,
   type LorebookEntry,
+  type Group,
   type GroupSession,
   type GroupMessage,
   createDefaultSettings,
@@ -379,6 +381,60 @@ export async function setCharacterLorebooks(
   lorebookIds: string[],
 ): Promise<void> {
   await storageBridge.characterLorebooksSet(characterId, lorebookIds);
+}
+
+export async function getGroup(groupId: string): Promise<Group | null> {
+  const data = await storageBridge.groupGet(groupId);
+  return data ? GroupSchema.parse(data) : null;
+}
+
+export async function listGroupLorebooks(groupId: string): Promise<Lorebook[]> {
+  const data = await storageBridge.groupLorebooksList(groupId);
+  return z.array(LorebookSchema).parse(data);
+}
+
+export async function setGroupLorebooks(groupId: string, lorebookIds: string[]): Promise<Group> {
+  const data = await storageBridge.groupLorebooksSet(groupId, lorebookIds);
+  broadcastSessionUpdated();
+  return GroupSchema.parse(data);
+}
+
+export async function updateGroupDisableCharacterLorebooks(
+  groupId: string,
+  disableCharacterLorebooks: boolean,
+): Promise<Group> {
+  const data = await storageBridge.groupUpdateDisableCharacterLorebooks(
+    groupId,
+    disableCharacterLorebooks,
+  );
+  broadcastSessionUpdated();
+  return GroupSchema.parse(data);
+}
+
+export async function listGroupSessionLorebooks(sessionId: string): Promise<Lorebook[]> {
+  const data = await storageBridge.groupSessionLorebooksList(sessionId);
+  return z.array(LorebookSchema).parse(data);
+}
+
+export async function setGroupSessionLorebooks(
+  sessionId: string,
+  lorebookIds: string[],
+): Promise<GroupSession> {
+  const data = await storageBridge.groupSessionLorebooksSet(sessionId, lorebookIds);
+  broadcastSessionUpdated();
+  return GroupSessionSchema.parse(data);
+}
+
+export async function updateGroupSessionDisableCharacterLorebooks(
+  sessionId: string,
+  disableCharacterLorebooks: boolean,
+): Promise<GroupSession> {
+  const data = await storageBridge.groupSessionUpdateDisableCharacterLorebooks(
+    sessionId,
+    disableCharacterLorebooks,
+  );
+  broadcastSessionUpdated();
+  return GroupSessionSchema.parse(data);
 }
 
 export async function listLorebookEntries(lorebookId: string): Promise<LorebookEntry[]> {

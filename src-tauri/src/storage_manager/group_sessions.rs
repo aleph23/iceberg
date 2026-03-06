@@ -4,6 +4,7 @@ use tauri::State;
 use uuid::Uuid;
 
 use super::db::{now_ms, SwappablePool};
+use crate::storage_manager::lorebook::Lorebook;
 use crate::utils::{log_info, log_info_global};
 
 // ============================================================================
@@ -75,6 +76,10 @@ pub struct GroupSession {
     /// Background image path for the group chat
     #[serde(default)]
     pub background_image_path: Option<String>,
+    #[serde(default)]
+    pub lorebook_ids: Vec<String>,
+    #[serde(default)]
+    pub disable_character_lorebooks: bool,
     /// Manual memories (simple text entries)
     #[serde(default)]
     pub memories: Vec<String>,
@@ -175,6 +180,8 @@ pub struct GroupMessage {
     pub selected_variant_id: Option<String>,
     pub is_pinned: bool,
     pub attachments: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub used_lorebook_entries: Vec<String>,
     pub reasoning: Option<String>,
     pub selection_reasoning: Option<String>,
     pub model_id: Option<String>,
@@ -225,7 +232,8 @@ fn read_group_session(conn: &Connection, id: &str) -> Result<Option<GroupSession
         .prepare(
             "SELECT id, group_character_id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at,
                     memories, memory_embeddings, memory_summary, memory_summary_token_count, archived, memory_tool_events,
-                    chat_type, starting_scene, background_image_path, speaker_selection_method, memory_type, memory_status, memory_error
+                    chat_type, starting_scene, background_image_path, lorebook_ids, disable_character_lorebooks,
+                    speaker_selection_method, memory_type, memory_status, memory_error
              FROM group_sessions WHERE id = ?1",
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -300,22 +308,33 @@ fn read_group_session(conn: &Connection, id: &str) -> Result<Option<GroupSession
         let background_image_path: Option<String> = row
             .get(16)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let lorebook_ids_json: String = row
+            .get::<_, Option<String>>(17)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+            .unwrap_or_else(|| "[]".to_string());
+        let lorebook_ids: Vec<String> =
+            serde_json::from_str(&lorebook_ids_json).unwrap_or_default();
+        let disable_character_lorebooks: bool = row
+            .get::<_, Option<i64>>(18)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+            .map(|v| v != 0)
+            .unwrap_or(false);
 
         let speaker_selection_method: String = row
-            .get::<_, Option<String>>(17)
+            .get::<_, Option<String>>(19)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
             .unwrap_or_else(|| "llm".to_string());
 
         let memory_type: String = row
-            .get::<_, Option<String>>(18)
+            .get::<_, Option<String>>(20)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
             .unwrap_or_else(|| "manual".to_string());
         let memory_status: String = row
-            .get::<_, Option<String>>(19)
+            .get::<_, Option<String>>(21)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
             .unwrap_or_else(|| "idle".to_string());
         let memory_error: Option<String> = row
-            .get(20)
+            .get(22)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
         Ok(Some(GroupSession {
@@ -343,6 +362,8 @@ fn read_group_session(conn: &Connection, id: &str) -> Result<Option<GroupSession
             chat_type,
             starting_scene,
             background_image_path,
+            lorebook_ids,
+            disable_character_lorebooks,
             memories,
             memory_embeddings,
             memory_summary,
@@ -448,7 +469,7 @@ fn read_group_messages(
         (Some(ts), Some(bid)) => (
             "SELECT id, session_id, role, content, speaker_character_id, turn_number, created_at,
                     prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned,
-                    attachments, reasoning, selection_reasoning, model_id
+                    attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id
              FROM group_messages
              WHERE session_id = ?1 AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))
              ORDER BY created_at DESC, id DESC
@@ -464,7 +485,7 @@ fn read_group_messages(
         _ => (
             "SELECT id, session_id, role, content, speaker_character_id, turn_number, created_at,
                     prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned,
-                    attachments, reasoning, selection_reasoning, model_id
+                    attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id
              FROM group_messages
              WHERE session_id = ?1
              ORDER BY created_at DESC, id DESC
@@ -496,6 +517,11 @@ fn read_group_messages(
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let attachments: Vec<serde_json::Value> =
             serde_json::from_str(&attachments_json).unwrap_or_default();
+        let used_lorebook_entries_json: String = row
+            .get(13)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let used_lorebook_entries: Vec<String> =
+            serde_json::from_str(&used_lorebook_entries_json).unwrap_or_default();
 
         let prompt_tokens: Option<i32> = row.get(7).ok();
         let completion_tokens: Option<i32> = row.get(8).ok();
@@ -549,15 +575,16 @@ fn read_group_messages(
                 .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
                 != 0,
             attachments,
+            used_lorebook_entries,
             reasoning: row
-                .get(13)
+                .get(14)
                 .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?,
             selection_reasoning: row
-                .get(14)
+                .get(15)
                 .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?,
             model_id: {
                 let model_id_value: Option<String> = row
-                    .get(15)
+                    .get(16)
                     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
                 log_info_global(
                     "group_sessions",
@@ -660,6 +687,34 @@ fn get_next_turn_number(conn: &Connection, session_id: &str) -> Result<i32, Stri
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     Ok(max_turn.unwrap_or(0) + 1)
+}
+
+fn load_lorebooks_for_ids(
+    conn: &Connection,
+    lorebook_ids: &[String],
+) -> Result<Vec<Lorebook>, String> {
+    let mut lorebooks = Vec::new();
+    for lorebook_id in lorebook_ids {
+        if let Some(lorebook) = conn
+            .query_row(
+                "SELECT id, name, created_at, updated_at FROM lorebooks WHERE id = ?1",
+                params![lorebook_id],
+                |row| {
+                    Ok(Lorebook {
+                        id: row.get(0)?,
+                        name: row.get(1)?,
+                        created_at: row.get(2)?,
+                        updated_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+        {
+            lorebooks.push(lorebook);
+        }
+    }
+    Ok(lorebooks)
 }
 
 // ============================================================================
@@ -894,8 +949,8 @@ pub fn group_session_duplicate(
         .ok();
 
     conn.execute(
-        "INSERT INTO group_sessions (id, group_character_id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, background_image_path)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0, ?8, ?9, ?10)",
+        "INSERT INTO group_sessions (id, group_character_id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, background_image_path, lorebook_ids, disable_character_lorebooks)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, 0, ?8, ?9, ?10, ?11, ?12)",
         params![
             new_id,
             source.group_character_id,
@@ -906,7 +961,10 @@ pub fn group_session_duplicate(
             now,
             chat_type,
             starting_scene_json,
-            source.background_image_path
+            source.background_image_path,
+            serde_json::to_string(&source.lorebook_ids)
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?,
+            source.disable_character_lorebooks as i64
         ],
     )
     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1044,10 +1102,13 @@ pub fn group_session_duplicate_with_messages(
         )
     };
 
+    let lorebook_ids_json = serde_json::to_string(&source.lorebook_ids)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
     // Try to insert with background_image_path, fall back if column doesn't exist
     let insert_result = conn.execute(
-        "INSERT INTO group_sessions (id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, background_image_path, memories, memory_embeddings, memory_summary, memory_summary_token_count, memory_tool_events)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        "INSERT INTO group_sessions (id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, background_image_path, lorebook_ids, disable_character_lorebooks, memories, memory_embeddings, memory_summary, memory_summary_token_count, memory_tool_events)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         params![
             new_id,
             name,
@@ -1058,6 +1119,8 @@ pub fn group_session_duplicate_with_messages(
             chat_type,
             starting_scene_json,
             source.background_image_path,
+            lorebook_ids_json,
+            source.disable_character_lorebooks as i64,
             memories_json,
             memory_embeddings_json,
             memory_summary,
@@ -1069,8 +1132,8 @@ pub fn group_session_duplicate_with_messages(
     if insert_result.is_err() {
         // Fallback without background_image_path if column doesn't exist
         conn.execute(
-            "INSERT INTO group_sessions (id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, memories, memory_embeddings, memory_summary, memory_summary_token_count, memory_tool_events)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO group_sessions (id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, lorebook_ids, disable_character_lorebooks, memories, memory_embeddings, memory_summary, memory_summary_token_count, memory_tool_events)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, 0, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 new_id,
                 name,
@@ -1080,6 +1143,8 @@ pub fn group_session_duplicate_with_messages(
                 now,
                 chat_type,
                 starting_scene_json,
+                lorebook_ids_json,
+                source.disable_character_lorebooks as i64,
                 memories_json,
                 memory_embeddings_json,
                 memory_summary,
@@ -1347,8 +1412,8 @@ pub fn group_session_create(
         .and_then(|s| serde_json::from_str(s).ok());
 
     conn.execute(
-        "INSERT INTO group_sessions (id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, background_image_path, speaker_selection_method)
-         VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?5, 0, ?6, ?7, ?8, ?9)",
+        "INSERT INTO group_sessions (id, name, character_ids, muted_character_ids, persona_id, created_at, updated_at, archived, chat_type, starting_scene, background_image_path, lorebook_ids, disable_character_lorebooks, speaker_selection_method)
+         VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?5, 0, ?6, ?7, ?8, '[]', 0, ?9)",
         params![
             id,
             name,
@@ -1396,6 +1461,8 @@ pub fn group_session_create(
         chat_type: chat_type_value,
         starting_scene: starting_scene_parsed,
         background_image_path,
+        lorebook_ids: Vec::new(),
+        disable_character_lorebooks: false,
         memories: Vec::new(),
         memory_embeddings: Vec::new(),
         memory_summary: String::new(),
@@ -1423,6 +1490,55 @@ pub fn group_session_get(id: String, pool: State<'_, SwappablePool>) -> Result<S
 }
 
 #[tauri::command]
+pub fn group_session_lorebooks_list(
+    session_id: String,
+    pool: State<'_, SwappablePool>,
+) -> Result<String, String> {
+    let conn = pool.get_connection()?;
+    let session = read_group_session(&conn, &session_id)?
+        .ok_or_else(|| crate::utils::err_msg(module_path!(), line!(), "Session not found"))?;
+    let lorebooks = load_lorebooks_for_ids(&conn, &session.lorebook_ids)?;
+    serde_json::to_string(&lorebooks)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+#[tauri::command]
+pub fn group_session_lorebooks_set(
+    session_id: String,
+    lorebook_ids_json: String,
+    pool: State<'_, SwappablePool>,
+) -> Result<String, String> {
+    let conn = pool.get_connection()?;
+    let now = now_ms() as i64;
+    let lorebook_ids: Vec<String> = serde_json::from_str(&lorebook_ids_json)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let lorebook_ids_json = serde_json::to_string(&lorebook_ids)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "UPDATE group_sessions SET lorebook_ids = ?1, updated_at = ?2 WHERE id = ?3",
+        params![lorebook_ids_json, now, session_id],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    group_session_get(session_id, pool)
+}
+
+#[tauri::command]
+pub fn group_session_update_disable_character_lorebooks(
+    session_id: String,
+    disable_character_lorebooks: bool,
+    pool: State<'_, SwappablePool>,
+) -> Result<String, String> {
+    let conn = pool.get_connection()?;
+    let now = now_ms() as i64;
+    conn.execute(
+        "UPDATE group_sessions SET disable_character_lorebooks = ?1, updated_at = ?2 WHERE id = ?3",
+        params![disable_character_lorebooks as i64, now, session_id],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    group_session_get(session_id, pool)
+}
+
+#[tauri::command]
 pub fn group_session_update(
     id: String,
     name: String,
@@ -1444,8 +1560,18 @@ pub fn group_session_update(
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     conn.execute(
-        "UPDATE group_sessions SET name = ?1, character_ids = ?2, muted_character_ids = ?3, persona_id = ?4, updated_at = ?5 WHERE id = ?6",
-        params![name, character_ids_json, muted_character_ids_json, persona_id, now, id],
+        "UPDATE group_sessions SET name = ?1, character_ids = ?2, muted_character_ids = ?3, persona_id = ?4, lorebook_ids = ?5, disable_character_lorebooks = ?6, updated_at = ?7 WHERE id = ?8",
+        params![
+            name,
+            character_ids_json,
+            muted_character_ids_json,
+            persona_id,
+            serde_json::to_string(&existing.lorebook_ids)
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?,
+            existing.disable_character_lorebooks as i64,
+            now,
+            id
+        ],
     )
     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 

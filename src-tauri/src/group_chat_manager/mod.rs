@@ -30,6 +30,9 @@ use crate::chat_manager::dynamic_memory::{
     search_cold_memory_indices_by_keyword, select_relevant_memory_indices,
     select_top_cosine_memory_indices, trim_memories_to_max,
 };
+use crate::chat_manager::lorebook_matcher::{
+    activate_lorebook_entries, format_lorebook_for_prompt, get_active_lorebook_entries,
+};
 use crate::chat_manager::prompts::{
     self, APP_DYNAMIC_MEMORY_TEMPLATE_ID, APP_DYNAMIC_SUMMARY_TEMPLATE_ID,
 };
@@ -49,10 +52,13 @@ use crate::chat_manager::types::{
 };
 use crate::embedding_model;
 use crate::models::calculate_request_cost;
-use crate::storage_manager::db::{now_ms, SwappablePool};
+use crate::storage_manager::db::{now_ms, DbConnection, SwappablePool};
 use crate::storage_manager::group_sessions::{
     self, group_session_update_memories_internal, GroupMessage, GroupParticipation, GroupSession,
     MemoryEmbedding, UsageSummary,
+};
+use crate::storage_manager::lorebook::{
+    get_enabled_lorebook_entries_for_ids, get_lorebook, LorebookEntry,
 };
 use crate::utils::{log_error, log_info, log_warn, now_millis};
 
@@ -757,6 +763,7 @@ fn fetch_group_conversation_messages_range(
                 selected_variant_id: None,
                 is_pinned: r.get::<_, i64>(7)? != 0,
                 attachments: Vec::new(),
+                used_lorebook_entries: Vec::new(),
                 reasoning: None,
                 selection_reasoning: None,
                 model_id: None,
@@ -3263,6 +3270,7 @@ fn save_user_message(
         selected_variant_id: None,
         is_pinned: false,
         attachments: vec![],
+        used_lorebook_entries: Vec::new(),
         reasoning: None,
         selection_reasoning: None,
         model_id: None,
@@ -3280,6 +3288,7 @@ fn save_assistant_message(
     selection_reasoning: Option<&str>,
     usage: Option<&UsageSummary>,
     model_id: Option<&str>,
+    used_lorebook_entries: &[String],
 ) -> Result<GroupMessage, String> {
     let now = now_ms();
     let id = Uuid::new_v4().to_string();
@@ -3310,8 +3319,8 @@ fn save_assistant_message(
 
     conn.execute(
         "INSERT INTO group_messages (id, session_id, role, content, speaker_character_id, turn_number,
-         created_at, prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, reasoning, selection_reasoning, model_id)
-         VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, '[]', ?11, ?12, ?13)",
+         created_at, prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id)
+         VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, '[]', ?11, ?12, ?13, ?14)",
         rusqlite::params![
             id,
             session_id,
@@ -3323,6 +3332,7 @@ fn save_assistant_message(
             completion_tokens,
             total_tokens,
             variant_id,
+            serde_json::to_string(used_lorebook_entries).unwrap_or_else(|_| "[]".to_string()),
             reasoning,
             selection_reasoning,
             model_id
@@ -3389,6 +3399,7 @@ fn save_assistant_message(
         selected_variant_id: Some(variant_id),
         is_pinned: false,
         attachments: vec![],
+        used_lorebook_entries: used_lorebook_entries.to_vec(),
         reasoning: reasoning.map(|s| s.to_string()),
         selection_reasoning: selection_reasoning.map(|s| s.to_string()),
         model_id: model_id.map(|s| s.to_string()),
@@ -3516,6 +3527,126 @@ fn normalize_prompt_text(text: &str) -> String {
     result.trim().to_string()
 }
 
+fn get_group_active_lorebook_entries(
+    conn: &DbConnection,
+    session: &GroupSession,
+    character_id: &str,
+    recent_messages: &[GroupMessage],
+) -> Result<Vec<LorebookEntry>, String> {
+    let recent_message_texts: Vec<String> = recent_messages
+        .iter()
+        .rev()
+        .take(10)
+        .rev()
+        .map(|msg| msg.content.clone())
+        .collect();
+
+    let mut merged = Vec::new();
+    let mut seen = HashSet::new();
+
+    if !session.lorebook_ids.is_empty() {
+        let group_entries = get_enabled_lorebook_entries_for_ids(conn, &session.lorebook_ids)?;
+        for entry in activate_lorebook_entries(group_entries, &recent_message_texts) {
+            if seen.insert(entry.id.clone()) {
+                merged.push(entry);
+            }
+        }
+    }
+
+    if !session.disable_character_lorebooks {
+        for entry in get_active_lorebook_entries(conn, character_id, &recent_message_texts)? {
+            if seen.insert(entry.id.clone()) {
+                merged.push(entry);
+            }
+        }
+    }
+
+    Ok(merged)
+}
+
+fn format_group_lorebook_content(
+    app: &AppHandle,
+    character_id: &str,
+    active_entries: &[LorebookEntry],
+) -> String {
+    if active_entries.is_empty() {
+        log_info(
+            app,
+            "group_lorebook",
+            format!("No active lorebook entries for character {}", character_id),
+        );
+        return String::new();
+    }
+
+    let entry_titles: Vec<String> = active_entries
+        .iter()
+        .map(|entry| {
+            if entry.title.is_empty() {
+                format!("[{}]", &entry.id[..6.min(entry.id.len())])
+            } else {
+                entry.title.clone()
+            }
+        })
+        .collect();
+
+    log_info(
+        app,
+        "group_lorebook",
+        format!(
+            "Injecting {} active lorebook entries for character {}: {}",
+            active_entries.len(),
+            character_id,
+            entry_titles.join(", ")
+        ),
+    );
+
+    format_lorebook_for_prompt(active_entries)
+}
+
+fn resolve_group_used_lorebook_entries(
+    conn: &DbConnection,
+    active_entries: &[LorebookEntry],
+    rendered_entries: &[SystemPromptEntry],
+) -> Vec<String> {
+    if active_entries.is_empty() {
+        return Vec::new();
+    }
+
+    let mut used = Vec::new();
+    for entry in active_entries {
+        let content = entry.content.trim();
+        if content.is_empty() {
+            continue;
+        }
+
+        let was_injected = rendered_entries
+            .iter()
+            .any(|prompt_entry| prompt_entry.content.contains(content));
+        if !was_injected {
+            continue;
+        }
+
+        let lorebook_name = get_lorebook(conn, &entry.lorebook_id)
+            .ok()
+            .flatten()
+            .map(|l| l.name)
+            .unwrap_or_else(|| "Lorebook".to_string());
+        let entry_name = if !entry.title.trim().is_empty() {
+            entry.title.trim().to_string()
+        } else if let Some(first_keyword) = entry.keywords.first() {
+            first_keyword.trim().to_string()
+        } else {
+            format!("[{}]", &entry.id[..6.min(entry.id.len())])
+        };
+        let label = format!("{} / {}", lorebook_name, entry_name);
+        if !used.iter().any(|existing| existing == &label) {
+            used.push(label);
+        }
+    }
+
+    used
+}
+
 /// Build group chat system prompt for a specific character
 fn build_group_system_prompt(
     app: &AppHandle,
@@ -3525,6 +3656,7 @@ fn build_group_system_prompt(
     other_characters: &[CharacterInfo],
     settings: &Settings,
     retrieved_memories: &[MemoryEmbedding],
+    lorebook_text: &str,
 ) -> Vec<SystemPromptEntry> {
     use crate::chat_manager::storage::{get_base_prompt, PromptType};
 
@@ -3703,6 +3835,10 @@ fn build_group_system_prompt(
         template_entries
     };
 
+    let has_lorebook_placeholder = entries
+        .iter()
+        .any(|entry| entry.content.contains("{{lorebook}}"));
+
     let mut rendered_entries = Vec::new();
     for entry in entries {
         if !entry.enabled && !entry.system_prompt {
@@ -3721,6 +3857,17 @@ fn build_group_system_prompt(
         result = result.replace("{{content_rules}}", &content_rules);
         result = result.replace("{{scene}}", &scene_content);
         result = result.replace("{{scene_direction}}", &scene_direction);
+        if lorebook_text.trim().is_empty() {
+            result = result.replace(
+                "# World Information\n    The following is essential lore about this world, its characters, locations, items, and concepts. You MUST incorporate this information naturally into your roleplay when relevant. Treat this as established canon that shapes how characters behave, what they know, and how the world works.\n    {{lorebook}}",
+                "",
+            );
+            result = result.replace("# World Information\n    {{lorebook}}", "");
+            result = result.replace("# World Information\n{{lorebook}}", "");
+            result = result.replace("{{lorebook}}", "");
+        } else {
+            result = result.replace("{{lorebook}}", lorebook_text);
+        }
 
         // Legacy placeholder support
         result = result.replace("{{char}}", char_name);
@@ -3735,6 +3882,21 @@ fn build_group_system_prompt(
         rendered_entries.push(SystemPromptEntry {
             content: result,
             ..entry
+        });
+    }
+
+    if !has_lorebook_placeholder && !lorebook_text.trim().is_empty() {
+        rendered_entries.push(SystemPromptEntry {
+            id: "entry_lorebook".to_string(),
+            name: "World Information".to_string(),
+            role: PromptEntryRole::System,
+            content: format!("# World Information\n{}", lorebook_text.trim()),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: true,
         });
     }
 
@@ -4017,7 +4179,16 @@ async fn generate_character_response(
     pool: &State<'_, SwappablePool>,
     request_id: &str,
     operation_type: UsageOperationType,
-) -> Result<(String, Option<String>, Option<UsageSummary>, String), String> {
+) -> Result<
+    (
+        String,
+        Option<String>,
+        Option<UsageSummary>,
+        String,
+        Vec<String>,
+    ),
+    String,
+> {
     let conn = pool.get_connection()?;
 
     // Load full character data
@@ -4088,6 +4259,14 @@ async fn generate_character_response(
         );
     }
 
+    let active_lorebook_entries = get_group_active_lorebook_entries(
+        &conn,
+        &context.session,
+        &character.id,
+        &context.recent_messages,
+    )?;
+    let lorebook_text = format_group_lorebook_content(app, &character.id, &active_lorebook_entries);
+
     // Build system prompt with group context and retrieved memories
     let system_prompt_entries = build_group_system_prompt(
         app,
@@ -4097,6 +4276,12 @@ async fn generate_character_response(
         &context.characters,
         settings,
         &retrieved_memories,
+        &lorebook_text,
+    );
+    let used_lorebook_entries = resolve_group_used_lorebook_entries(
+        &conn,
+        &active_lorebook_entries,
+        &system_prompt_entries,
     );
     let (relative_entries, in_chat_entries) = partition_prompt_entries(system_prompt_entries);
 
@@ -4419,7 +4604,13 @@ async fn generate_character_response(
         ),
     );
 
-    Ok((text, reasoning, message_usage, model_id_to_return))
+    Ok((
+        text,
+        reasoning,
+        message_usage,
+        model_id_to_return,
+        used_lorebook_entries,
+    ))
 }
 
 #[tauri::command]
@@ -4595,13 +4786,14 @@ pub async fn group_chat_send(
     )
     .await;
 
-    let (response_content, reasoning, message_usage, model_id_str) = match response_result {
-        Ok(result) => result,
-        Err(err) => {
-            emit_group_chat_error_status(&app, &session_id, &err);
-            return Err(err);
-        }
-    };
+    let (response_content, reasoning, message_usage, model_id_str, used_lorebook_entries) =
+        match response_result {
+            Ok(result) => result,
+            Err(err) => {
+                emit_group_chat_error_status(&app, &session_id, &err);
+                return Err(err);
+            }
+        };
 
     let conn = pool.get_connection()?;
 
@@ -4625,6 +4817,7 @@ pub async fn group_chat_send(
         selection_reasoning.as_deref(),
         message_usage.as_ref(),
         Some(&model_id_str),
+        &used_lorebook_entries,
     )?;
 
     let stats_json = group_sessions::group_participation_stats_internal(&conn, &session_id)?;
@@ -4869,13 +5062,14 @@ pub async fn group_chat_regenerate(
     )
     .await;
 
-    let (response_content, reasoning, message_usage, model_id_str) = match response_result {
-        Ok(result) => result,
-        Err(err) => {
-            emit_group_chat_error_status(&app, &session_id, &err);
-            return Err(err);
-        }
-    };
+    let (response_content, reasoning, message_usage, model_id_str, used_lorebook_entries) =
+        match response_result {
+            Ok(result) => result,
+            Err(err) => {
+                emit_group_chat_error_status(&app, &session_id, &err);
+                return Err(err);
+            }
+        };
 
     let conn = pool.get_connection()?;
     let now = now_ms();
@@ -4910,11 +5104,12 @@ pub async fn group_chat_regenerate(
     );
 
     conn.execute(
-        "UPDATE group_messages SET content = ?1, speaker_character_id = ?2, selected_variant_id = ?3, reasoning = ?4, selection_reasoning = ?5, model_id = ?6 WHERE id = ?7",
+        "UPDATE group_messages SET content = ?1, speaker_character_id = ?2, selected_variant_id = ?3, used_lorebook_entries = ?4, reasoning = ?5, selection_reasoning = ?6, model_id = ?7 WHERE id = ?8",
         rusqlite::params![
             response_content,
             selected_character_id,
             variant_id,
+            serde_json::to_string(&used_lorebook_entries).unwrap_or_else(|_| "[]".to_string()),
             reasoning,
             selection_reasoning,
             model_id_str,
@@ -5100,13 +5295,14 @@ pub async fn group_chat_continue(
     )
     .await;
 
-    let (response_content, reasoning, message_usage, model_id_str) = match response_result {
-        Ok(result) => result,
-        Err(err) => {
-            emit_group_chat_error_status(&app, &session_id, &err);
-            return Err(err);
-        }
-    };
+    let (response_content, reasoning, message_usage, model_id_str, used_lorebook_entries) =
+        match response_result {
+            Ok(result) => result,
+            Err(err) => {
+                emit_group_chat_error_status(&app, &session_id, &err);
+                return Err(err);
+            }
+        };
 
     let conn = pool.get_connection()?;
     let message = save_assistant_message(
@@ -5119,6 +5315,7 @@ pub async fn group_chat_continue(
         selection_reasoning.as_deref(),
         message_usage.as_ref(),
         Some(&model_id_str),
+        &used_lorebook_entries,
     )?;
 
     let stats_json = group_sessions::group_participation_stats_internal(&conn, &session_id)?;

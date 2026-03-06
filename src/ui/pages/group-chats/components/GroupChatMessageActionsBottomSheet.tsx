@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Copy, Trash2, RotateCcw, Edit3, Users, Pin, PinOff } from "lucide-react";
+import { Copy, Trash2, RotateCcw, Edit3, Users, Pin, PinOff, BookOpen } from "lucide-react";
 
 import type { Character, Settings, Model } from "../../../../core/storage/schemas";
 import { useAvatar } from "../../../hooks/useAvatar";
@@ -92,6 +92,7 @@ export function GroupChatMessageActionsBottomSheet({
   const [showCharacterPicker, setShowCharacterPicker] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [modelName, setModelName] = useState<string | null>(null);
+  const usedLorebookEntries = messageAction?.message.usedLorebookEntries ?? [];
 
   const isAssistant = messageAction?.message.role === "assistant";
 
@@ -173,6 +174,30 @@ export function GroupChatMessageActionsBottomSheet({
 
             {messageAction.mode === "view" ? (
               <div className="space-y-1">
+                {usedLorebookEntries.length > 0 && (
+                  <div className="mb-3 rounded-lg border border-sky-500/20 bg-sky-500/10 p-3">
+                    <div className="mb-2 flex items-center gap-2">
+                      <BookOpen size={14} className="text-sky-300" />
+                      <span className="text-xs font-medium text-sky-200">
+                        {t("chats.actions.lorebookUsage")}
+                      </span>
+                    </div>
+                    <p className="mb-2 text-xs text-sky-100/90">
+                      {t("chats.actions.lorebookUsageDesc")}
+                    </p>
+                    <div className="space-y-1">
+                      {usedLorebookEntries.map((entry, idx) => (
+                        <div
+                          key={`${entry}-${idx}`}
+                          className="rounded border border-sky-500/10 bg-black/20 px-2 py-1.5 text-xs text-sky-100/85"
+                        >
+                          {entry}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <ActionRow
                   icon={Edit3}
                   label={t("common.buttons.edit")}

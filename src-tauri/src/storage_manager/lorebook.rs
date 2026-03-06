@@ -432,6 +432,38 @@ pub fn get_enabled_character_lorebook_entries(
     Ok(entries)
 }
 
+pub fn get_enabled_lorebook_entries_for_ids(
+    conn: &DbConnection,
+    lorebook_ids: &[String],
+) -> Result<Vec<LorebookEntry>, String> {
+    if lorebook_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    for lorebook_id in lorebook_ids {
+        let lorebook_entries = get_lorebook_entries(conn, lorebook_id)?;
+        entries.extend(lorebook_entries.into_iter().filter(|entry| entry.enabled));
+    }
+
+    entries.sort_by(|a, b| {
+        let a_idx = lorebook_ids
+            .iter()
+            .position(|id| id == &a.lorebook_id)
+            .unwrap_or(usize::MAX);
+        let b_idx = lorebook_ids
+            .iter()
+            .position(|id| id == &b.lorebook_id)
+            .unwrap_or(usize::MAX);
+        a_idx
+            .cmp(&b_idx)
+            .then_with(|| a.display_order.cmp(&b.display_order))
+            .then_with(|| a.created_at.cmp(&b.created_at))
+    });
+
+    Ok(entries)
+}
+
 pub fn get_lorebook_entry(
     conn: &DbConnection,
     entry_id: &str,

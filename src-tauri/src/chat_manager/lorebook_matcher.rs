@@ -55,17 +55,13 @@ fn keyword_matches(keyword: &str, text: &str, case_sensitive: bool) -> bool {
     text_words.iter().any(|word| *word == normalized_keyword)
 }
 
-pub fn get_active_lorebook_entries(
-    conn: &DbConnection,
-    character_id: &str,
+pub fn activate_lorebook_entries(
+    entries: Vec<LorebookEntry>,
     recent_messages: &[String],
-) -> Result<Vec<LorebookEntry>, String> {
-    let entries = get_enabled_character_lorebook_entries(conn, character_id)?;
-
+) -> Vec<LorebookEntry> {
     if entries.is_empty() {
-        return Ok(vec![]);
+        return vec![];
     }
-
     let context = recent_messages.join("\n");
 
     let mut active_entries: Vec<LorebookEntry> = vec![];
@@ -93,7 +89,16 @@ pub fn get_active_lorebook_entries(
             .then_with(|| a.created_at.cmp(&b.created_at))
     });
 
-    Ok(active_entries)
+    active_entries
+}
+
+pub fn get_active_lorebook_entries(
+    conn: &DbConnection,
+    character_id: &str,
+    recent_messages: &[String],
+) -> Result<Vec<LorebookEntry>, String> {
+    let entries = get_enabled_character_lorebook_entries(conn, character_id)?;
+    Ok(activate_lorebook_entries(entries, recent_messages))
 }
 
 pub fn format_lorebook_for_prompt(entries: &[LorebookEntry]) -> String {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Brain, Loader2, AlertTriangle, Settings } from "lucide-react";
+import { ArrowLeft, Brain, Loader2, AlertTriangle, BookOpen } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 
 import { useI18n } from "../../../../core/i18n/context";
@@ -14,6 +14,7 @@ export function GroupChatHeader({
   onBack,
   onSettings,
   onMemories,
+  onLorebooks,
   hasBackgroundImage,
   headerOverlayClassName,
 }: {
@@ -22,6 +23,7 @@ export function GroupChatHeader({
   onBack: () => void;
   onSettings: () => void;
   onMemories: () => void;
+  onLorebooks: () => void;
   hasBackgroundImage?: boolean;
   headerOverlayClassName?: string;
 }) {
@@ -90,7 +92,7 @@ export function GroupChatHeader({
         hasBackgroundImage ? headerOverlayClassName || "bg-surface/40" : "bg-surface",
       )}
       style={{
-        paddingTop: "calc(env(safe-area-inset-top))",
+        paddingTop: "calc(env(safe-area-inset-top) + 12px)",
         paddingBottom: "12px",
       }}
     >
@@ -105,10 +107,10 @@ export function GroupChatHeader({
 
         <button
           onClick={onSettings}
-          className="min-w-0 flex-1 text-left truncate text-xl font-bold text-white/90 p-0 hover:opacity-80 transition-opacity"
+          className="min-w-0 flex-1 truncate text-left text-xl font-bold text-white/90 transition-opacity hover:opacity-80"
           aria-label={t("groupChats.header.settings")}
         >
-          {session.name}
+          <span className="block truncate">{session.name}</span>
         </button>
 
         <div className="flex shrink-0 items-center gap-1.5">
@@ -136,22 +138,27 @@ export function GroupChatHeader({
             )}
           </button>
 
-          {/* Settings Button */}
           <button
-            onClick={onSettings}
+            onClick={onLorebooks}
             className="flex items-center px-[0.6em] py-[0.3em] justify-center text-white/80 transition hover:text-white"
-            aria-label={t("groupChats.header.settings")}
+            aria-label={t("chats.header.manageLorebooks")}
           >
-            <Settings size={18} strokeWidth={2.5} />
+            <BookOpen size={18} strokeWidth={2.5} />
           </button>
 
           {/* Stacked character avatars */}
           <button
             onClick={onSettings}
-            className="relative shrink-0 flex items-center"
+            className="relative shrink-0 overflow-hidden rounded-full ring-1 ring-white/20 transition hover:ring-white/40"
+            style={{
+              minWidth: "36px",
+              minHeight: "36px",
+              height: "36px",
+              paddingInline: characters.length > 1 ? "6px" : "0px",
+            }}
             aria-label={t("groupChats.header.settings")}
           >
-            <div className="flex -space-x-2">
+            <div className="flex h-full items-center justify-center -space-x-2 px-1">
               {characters.slice(0, 3).map((char, index) => (
                 <CharacterMiniAvatar
                   key={char.id}
@@ -163,9 +170,8 @@ export function GroupChatHeader({
               {characters.length > 3 && (
                 <div
                   className={cn(
-                    "h-8 w-8 rounded-full",
+                    "flex h-8 w-8 items-center justify-center rounded-full",
                     "bg-linear-to-br from-secondary/30 to-info/80/30",
-                    "flex items-center justify-center",
                     "text-[10px] font-semibold text-fg shadow-lg",
                     "ring-1 ring-white/20",
                   )}
@@ -207,7 +213,7 @@ function CharacterMiniAvatar({
         "h-8 w-8 rounded-full overflow-hidden",
         "bg-linear-to-br from-white/10 to-white/5",
         "shadow-lg ring-1 ring-white/20",
-        "transition-transform hover:scale-110 hover:z-50",
+        "transition-transform",
       )}
       style={{
         marginLeft: index > 0 ? "-10px" : "0",

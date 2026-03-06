@@ -582,6 +582,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           chat_type TEXT NOT NULL DEFAULT 'conversation',
           starting_scene TEXT,
           background_image_path TEXT,
+          lorebook_ids TEXT NOT NULL DEFAULT '[]',
+          disable_character_lorebooks INTEGER NOT NULL DEFAULT 0,
           speaker_selection_method TEXT NOT NULL DEFAULT 'llm',
           FOREIGN KEY(persona_id) REFERENCES personas(id) ON DELETE SET NULL
         );
@@ -600,6 +602,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           chat_type TEXT NOT NULL DEFAULT 'conversation',
           starting_scene TEXT,
           background_image_path TEXT,
+          lorebook_ids TEXT NOT NULL DEFAULT '[]',
+          disable_character_lorebooks INTEGER NOT NULL DEFAULT 0,
           memories TEXT NOT NULL DEFAULT '[]',
           memory_embeddings TEXT NOT NULL DEFAULT '[]',
           memory_summary TEXT NOT NULL DEFAULT '',
@@ -638,6 +642,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           selected_variant_id TEXT,
           is_pinned INTEGER NOT NULL DEFAULT 0,
           attachments TEXT NOT NULL DEFAULT '[]',
+          used_lorebook_entries TEXT NOT NULL DEFAULT '[]',
           reasoning TEXT,
           selection_reasoning TEXT,
           model_id TEXT,
@@ -1112,6 +1117,100 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
     if !has_used_lorebook_entries {
         let _ = conn.execute(
             "ALTER TABLE messages ADD COLUMN used_lorebook_entries TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+    }
+
+    let mut stmt_group_messages = conn
+        .prepare("PRAGMA table_info(group_messages)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut has_group_used_lorebook_entries = false;
+    let mut rows_group_messages = stmt_group_messages
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_group_messages
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "used_lorebook_entries" {
+            has_group_used_lorebook_entries = true;
+            break;
+        }
+    }
+    if !has_group_used_lorebook_entries {
+        let _ = conn.execute(
+            "ALTER TABLE group_messages ADD COLUMN used_lorebook_entries TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+    }
+
+    let mut stmt_group_characters = conn
+        .prepare("PRAGMA table_info(group_characters)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut has_group_character_lorebook_ids = false;
+    let mut has_group_character_disable_lorebooks = false;
+    let mut rows_group_characters = stmt_group_characters
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_group_characters
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "lorebook_ids" {
+            has_group_character_lorebook_ids = true;
+        } else if col_name == "disable_character_lorebooks" {
+            has_group_character_disable_lorebooks = true;
+        }
+    }
+    if !has_group_character_lorebook_ids {
+        let _ = conn.execute(
+            "ALTER TABLE group_characters ADD COLUMN lorebook_ids TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+    }
+    if !has_group_character_disable_lorebooks {
+        let _ = conn.execute(
+            "ALTER TABLE group_characters ADD COLUMN disable_character_lorebooks INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+
+    let mut stmt_group_sessions = conn
+        .prepare("PRAGMA table_info(group_sessions)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut has_group_session_lorebook_ids = false;
+    let mut has_group_session_disable_lorebooks = false;
+    let mut rows_group_sessions = stmt_group_sessions
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_group_sessions
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "lorebook_ids" {
+            has_group_session_lorebook_ids = true;
+        } else if col_name == "disable_character_lorebooks" {
+            has_group_session_disable_lorebooks = true;
+        }
+    }
+    if !has_group_session_lorebook_ids {
+        let _ = conn.execute(
+            "ALTER TABLE group_sessions ADD COLUMN lorebook_ids TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+    }
+    if !has_group_session_disable_lorebooks {
+        let _ = conn.execute(
+            "ALTER TABLE group_sessions ADD COLUMN disable_character_lorebooks INTEGER NOT NULL DEFAULT 0",
             [],
         );
     }

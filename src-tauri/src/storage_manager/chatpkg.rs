@@ -854,7 +854,7 @@ fn read_group_messages_payload(
         .prepare(
             "SELECT id, role, content, speaker_character_id, turn_number, created_at,
                     prompt_tokens, completion_tokens, total_tokens, selected_variant_id,
-                    is_pinned, attachments, reasoning, selection_reasoning, model_id
+                    is_pinned, attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id
              FROM group_messages WHERE session_id = ?1 ORDER BY created_at ASC",
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -874,9 +874,10 @@ fn read_group_messages_payload(
                 r.get::<_, Option<String>>(9)?,
                 r.get::<_, i64>(10)?,
                 r.get::<_, String>(11)?,
-                r.get::<_, Option<String>>(12)?,
+                r.get::<_, String>(12)?,
                 r.get::<_, Option<String>>(13)?,
                 r.get::<_, Option<String>>(14)?,
+                r.get::<_, Option<String>>(15)?,
             ))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -896,6 +897,7 @@ fn read_group_messages_payload(
             selected_variant_id,
             is_pinned,
             attachments_json,
+            used_lorebook_entries_json,
             reasoning,
             selection_reasoning,
             model_id,
@@ -969,6 +971,8 @@ fn read_group_messages_payload(
             "selectedVariantId": selected_variant_id,
             "isPinned": is_pinned != 0,
             "attachments": attachments,
+            "usedLorebookEntries": serde_json::from_str::<Vec<String>>(&used_lorebook_entries_json)
+                .unwrap_or_default(),
             "reasoning": reasoning,
             "selectionReasoning": selection_reasoning,
             "modelId": model_id,
@@ -1843,8 +1847,8 @@ pub fn chatpkg_import(
                 conn.execute(
                     "INSERT INTO group_messages (id, session_id, role, content, speaker_character_id, turn_number,
                      created_at, prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned,
-                     attachments, reasoning, selection_reasoning, model_id)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                     attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                     params![
                         &new_message_id,
                         &new_session_id,
@@ -1859,6 +1863,14 @@ pub fn chatpkg_import(
                         selected_variant_id,
                         message.get("isPinned").and_then(|v| v.as_bool()).unwrap_or(false) as i64,
                         attachments_json,
+                        serde_json::to_string(
+                            &message
+                                .get("usedLorebookEntries")
+                                .and_then(|v| v.as_array())
+                                .cloned()
+                                .unwrap_or_default(),
+                        )
+                        .unwrap_or_else(|_| "[]".to_string()),
                         message.get("reasoning").and_then(|v| v.as_str()),
                         message.get("selectionReasoning").and_then(|v| v.as_str()),
                         message.get("modelId").and_then(|v| v.as_str()),

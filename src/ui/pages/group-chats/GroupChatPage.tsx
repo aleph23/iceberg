@@ -1141,6 +1141,7 @@ export function GroupChatPage() {
             onBack={() => navigate(Routes.groupChats)}
             onSettings={() => navigate(Routes.groupChatSettings(session.id))}
             onMemories={() => navigate(Routes.groupChatMemories(session.id))}
+            onLorebooks={() => navigate(Routes.groupChatLorebook(session.id))}
             hasBackgroundImage={!!backgroundImageData}
             headerOverlayClassName={theme.headerOverlay}
           />

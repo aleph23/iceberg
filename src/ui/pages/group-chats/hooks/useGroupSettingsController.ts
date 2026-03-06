@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 
 import { storageBridge } from "../../../../core/storage/files";
-import { listCharacters, listPersonas } from "../../../../core/storage/repo";
+import {
+  listCharacters,
+  listPersonas,
+  updateGroupDisableCharacterLorebooks,
+} from "../../../../core/storage/repo";
 import type { Character, Group, Persona } from "../../../../core/storage/schemas";
 import {
   groupChatSettingsUiReducer,
@@ -254,6 +258,25 @@ export function useGroupSettingsController(groupId?: string) {
     [group, setUi],
   );
 
+  const handleSetDisableCharacterLorebooks = useCallback(
+    async (disableCharacterLorebooks: boolean) => {
+      if (!group) return;
+      const prev = group;
+      try {
+        setUi({ saving: true });
+        setGroup({ ...group, disableCharacterLorebooks });
+        const updated = await updateGroupDisableCharacterLorebooks(group.id, disableCharacterLorebooks);
+        setGroup(updated);
+      } catch (err) {
+        setGroup(prev);
+        console.error("Failed to update group lorebook behavior:", err);
+      } finally {
+        setUi({ saving: false });
+      }
+    },
+    [group, setUi],
+  );
+
   const setEditingName = useCallback((value: boolean) => setUi({ editingName: value }), [setUi]);
   const setNameDraft = useCallback((value: string) => setUi({ nameDraft: value }), [setUi]);
   const setShowPersonaSelector = useCallback(
@@ -291,5 +314,6 @@ export function useGroupSettingsController(groupId?: string) {
     handleChangeSpeakerSelectionMethod,
     handleChangeMemoryType,
     handleUpdateBackgroundImage,
+    handleSetDisableCharacterLorebooks,
   } as const;
 }

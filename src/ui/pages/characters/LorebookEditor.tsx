@@ -8,17 +8,22 @@ import {
   createBlankLorebookEntry,
   deleteLorebookEntry,
   listCharacterLorebooks,
+  listGroupLorebooks,
+  listGroupSessionLorebooks,
   listLorebooks,
   listLorebookEntries,
   saveLorebook,
   saveLorebookEntry,
   setCharacterLorebooks,
+  setGroupLorebooks,
+  setGroupSessionLorebooks,
   reorderLorebookEntries,
 } from "../../../core/storage/repo";
 import { BottomMenu, MenuButton } from "../../components";
 import { confirmBottomMenu } from "../../components/ConfirmBottomMenu";
 import { TopNav } from "../../components/App";
 import { useI18n } from "../../../core/i18n/context";
+import { Routes, useNavigationManager } from "../../navigation";
 
 const DRAG_HOLD_MS = 450;
 
@@ -313,6 +318,11 @@ function LorebookListView({
   lorebooks,
   assignedLorebookIds,
   loading,
+  assignmentLabel,
+  enableLabel,
+  disableLabel,
+  enableDescription,
+  disableDescription,
   onSelectLorebook,
   onToggleAssignment,
   onCreateLorebook,
@@ -321,6 +331,11 @@ function LorebookListView({
   lorebooks: Lorebook[];
   assignedLorebookIds: Set<string>;
   loading: boolean;
+  assignmentLabel: string;
+  enableLabel: string;
+  disableLabel: string;
+  enableDescription: string;
+  disableDescription: string;
   onSelectLorebook: (id: string) => void;
   onToggleAssignment: (id: string, enabled: boolean) => void;
   onCreateLorebook: (name: string) => void;
@@ -429,7 +444,7 @@ function LorebookListView({
                     <div className="flex-1">
                       <div className="text-sm font-medium text-accent/80">{t("characters.lorebook.activeLorebooks")}</div>
                       <div className="text-xs text-accent/60">
-                        {assignedLorebookIds.size} {t("characters.lorebook.enabledForCharacter")}
+                        {assignedLorebookIds.size} {assignmentLabel}
                       </div>
                     </div>
                   </div>
@@ -474,7 +489,7 @@ function LorebookListView({
                           )}
                         </div>
                         <p className="line-clamp-1 text-xs text-fg/50">
-                          {isAssigned ? t("characters.lorebook.enabledForCharacter") : t("characters.lorebook.tapToViewEntries")}
+                          {isAssigned ? assignmentLabel : t("characters.lorebook.tapToViewEntries")}
                         </p>
                       </div>
 
@@ -555,13 +570,13 @@ function LorebookListView({
               icon={Star}
               title={
                 assignedLorebookIds.has(selectedLorebook.id)
-                  ? t("characters.lorebook.disableForCharacter")
-                  : t("characters.lorebook.enableForCharacter")
+                  ? disableLabel
+                  : enableLabel
               }
               description={
                 assignedLorebookIds.has(selectedLorebook.id)
-                  ? t("characters.lorebook.removeFromActive")
-                  : t("characters.lorebook.addToActive")
+                  ? disableDescription
+                  : enableDescription
               }
               color="from-accent to-accent/80"
               onClick={() => {
@@ -764,8 +779,8 @@ function EntryListView({
           <div className="space-y-2">
             <MenuButton
               icon={Edit2}
-              title="Edit Entry"
-              description="Modify title, keywords, and content"
+              title={t("characters.lorebook.editEntry")}
+              description={t("characters.lorebook.editEntryDesc")}
               color="from-info to-info/80"
               onClick={() => {
                 onEditEntry(selectedEntry);
@@ -775,11 +790,15 @@ function EntryListView({
 
             <MenuButton
               icon={Star}
-              title={selectedEntry.enabled ? "Disable Entry" : "Enable Entry"}
+              title={
+                selectedEntry.enabled
+                  ? t("characters.lorebook.disableEntry")
+                  : t("characters.lorebook.enableEntry")
+              }
               description={
                 selectedEntry.enabled
-                  ? "Entry won't be injected into prompts"
-                  : "Entry will be injected when keywords match"
+                  ? t("characters.lorebook.entryDisabledDesc")
+                  : t("characters.lorebook.entryEnabledDesc")
               }
               color="from-accent to-accent/80"
               onClick={() => {
@@ -791,9 +810,9 @@ function EntryListView({
             <button
               onClick={async () => {
                 const confirmed = await confirmBottomMenu({
-                  title: "Delete entry?",
-                  message: "Are you sure you want to delete this entry?",
-                  confirmLabel: "Delete",
+                  title: t("characters.lorebook.deleteEntry"),
+                  message: t("characters.lorebook.deleteConfirmMessage"),
+                  confirmLabel: t("common.buttons.delete"),
                   destructive: true,
                 });
                 if (!confirmed) return;
@@ -805,7 +824,7 @@ function EntryListView({
               <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-danger/30 bg-danger/20">
                 <Trash2 className="h-4 w-4 text-danger" />
               </div>
-              <span className="text-sm font-medium text-danger">Delete Entry</span>
+              <span className="text-sm font-medium text-danger">{t("characters.lorebook.deleteEntry")}</span>
             </button>
           </div>
         )}
@@ -825,6 +844,7 @@ function EntryEditorMenu({
   onClose: () => void;
   onSave: (entry: LorebookEntry) => void;
 }) {
+  const { t } = useI18n();
   const [draft, setDraft] = useState<LorebookEntry | null>(null);
 
   useEffect(() => {
@@ -841,7 +861,7 @@ function EntryEditorMenu({
   };
 
   return (
-    <BottomMenu isOpen={isOpen} onClose={onClose} title="Edit Entry">
+    <BottomMenu isOpen={isOpen} onClose={onClose} title={t("characters.lorebook.editEntry")}>
       <div className="space-y-4">
         {/* Title */}
         <div className="space-y-2">
@@ -917,11 +937,11 @@ function EntryEditorMenu({
 
         {/* Content */}
         <div className="space-y-2">
-          <label className="text-[11px] font-medium text-fg/70">CONTENT</label>
+          <label className="text-[11px] font-medium text-fg/70">{t("characters.lorebook.contentLabel")}</label>
           <textarea
             value={draft.content}
             onChange={(e) => setDraft({ ...draft, content: e.target.value })}
-            placeholder="Write the lore context here..."
+            placeholder={t("characters.lorebook.contentPlaceholder")}
             rows={8}
             className="w-full resize-none rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-2 text-fg placeholder-fg/40 transition focus:border-fg/30 focus:outline-none"
           />
@@ -933,7 +953,7 @@ function EntryEditorMenu({
           disabled={!draft.title?.trim() && !draft.content?.trim()}
           className="w-full rounded-xl border border-accent/40 bg-accent/20 px-4 py-3.5 text-sm font-semibold text-accent/70 transition hover:bg-accent/30 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          Save Entry
+          {t("characters.lorebook.saveEntry")}
         </button>
       </div>
     </BottomMenu>
@@ -941,10 +961,18 @@ function EntryEditorMenu({
 }
 
 export function LorebookEditor() {
-  const { characterId: characterIdParam } = useParams();
+  const { t } = useI18n();
+  const {
+    characterId: characterIdParam,
+    groupId: groupIdParam,
+    groupSessionId: groupSessionIdParam,
+  } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
+  const { backOrReplace } = useNavigationManager();
   const characterId = characterIdParam ?? searchParams.get("characterId");
+  const groupId = groupIdParam ?? searchParams.get("groupId");
+  const groupSessionId = groupSessionIdParam ?? searchParams.get("groupSessionId");
 
   const activeLorebookId = searchParams.get("lorebookId");
 
@@ -961,13 +989,58 @@ export function LorebookEditor() {
     () => lorebooks.find((l) => l.id === activeLorebookId) ?? null,
     [lorebooks, activeLorebookId],
   );
+  const target = useMemo(() => {
+    if (characterId) return { type: "character" as const, id: characterId };
+    if (groupSessionId) return { type: "groupSession" as const, id: groupSessionId };
+    if (groupId) return { type: "group" as const, id: groupId };
+    return null;
+  }, [characterId, groupId, groupSessionId]);
 
   const pageTitle = activeLorebook ? `Lorebook - ${activeLorebook.name}` : undefined;
+  const assignmentCopy = useMemo(() => {
+    if (target?.type === "group") {
+      return {
+        assignmentLabel: t("characters.lorebook.enabledForGroup"),
+        enableLabel: t("characters.lorebook.enableForGroup"),
+        disableLabel: t("characters.lorebook.disableForGroup"),
+        enableDescription: t("characters.lorebook.addToActiveGroup"),
+        disableDescription: t("characters.lorebook.removeFromActiveGroup"),
+      };
+    }
+    if (target?.type === "groupSession") {
+      return {
+        assignmentLabel: t("characters.lorebook.enabledForSession"),
+        enableLabel: t("characters.lorebook.enableForSession"),
+        disableLabel: t("characters.lorebook.disableForSession"),
+        enableDescription: t("characters.lorebook.addToActiveSession"),
+        disableDescription: t("characters.lorebook.removeFromActiveSession"),
+      };
+    }
+    return {
+      assignmentLabel: t("characters.lorebook.enabledForCharacter"),
+      enableLabel: t("characters.lorebook.enableForCharacter"),
+      disableLabel: t("characters.lorebook.disableForCharacter"),
+      enableDescription: t("characters.lorebook.addToActive"),
+      disableDescription: t("characters.lorebook.removeFromActive"),
+    };
+  }, [t, target]);
+  const handleBack = useMemo(() => {
+    if (target?.type === "character") {
+      return () => backOrReplace("/settings/characters");
+    }
+    if (target?.type === "group") {
+      return () => backOrReplace(Routes.groupSettings(target.id));
+    }
+    if (target?.type === "groupSession") {
+      return () => backOrReplace(Routes.groupChatSettings(target.id));
+    }
+    return () => backOrReplace(Routes.settings);
+  }, [backOrReplace, target]);
 
   useEffect(() => {
-    if (!characterId) return;
+    if (!target) return;
     loadLorebooks();
-  }, [characterId]);
+  }, [target]);
 
   useEffect(() => {
     if (!activeLorebookId) {
@@ -978,15 +1051,19 @@ export function LorebookEditor() {
   }, [activeLorebookId]);
 
   const loadLorebooks = async () => {
-    if (!characterId) return;
+    if (!target) return;
     try {
       setIsLorebooksLoading(true);
-      const [allLorebooks, characterLorebooks] = await Promise.all([
+      const [allLorebooks, assignedLorebooks] = await Promise.all([
         listLorebooks(),
-        listCharacterLorebooks(characterId),
+        target.type === "character"
+          ? listCharacterLorebooks(target.id)
+          : target.type === "group"
+            ? listGroupLorebooks(target.id)
+            : listGroupSessionLorebooks(target.id),
       ]);
       setLorebooks(allLorebooks);
-      setAssignedLorebookIds(new Set(characterLorebooks.map((l) => l.id)));
+      setAssignedLorebookIds(new Set(assignedLorebooks.map((l) => l.id)));
     } catch (error) {
       console.error("Failed to load lorebooks:", error);
     } finally {
@@ -1007,14 +1084,20 @@ export function LorebookEditor() {
   };
 
   const handleCreateLorebook = async (name: string) => {
-    if (!characterId) return;
+    if (!target) return;
     try {
       const created = await saveLorebook({ name });
       setLorebooks((prev) => [created, ...prev]);
       const next = new Set(assignedLorebookIds);
       next.add(created.id);
       setAssignedLorebookIds(next);
-      await setCharacterLorebooks(characterId, Array.from(next));
+      if (target.type === "character") {
+        await setCharacterLorebooks(target.id, Array.from(next));
+      } else if (target.type === "group") {
+        await setGroupLorebooks(target.id, Array.from(next));
+      } else {
+        await setGroupSessionLorebooks(target.id, Array.from(next));
+      }
       setSearchParams({ lorebookId: created.id });
     } catch (error) {
       console.error("Failed to create lorebook:", error);
@@ -1022,12 +1105,18 @@ export function LorebookEditor() {
   };
 
   const handleToggleAssignment = async (lorebookId: string, enabled: boolean) => {
-    if (!characterId) return;
+    if (!target) return;
     const next = new Set(assignedLorebookIds);
     if (enabled) next.add(lorebookId);
     else next.delete(lorebookId);
     setAssignedLorebookIds(next);
-    await setCharacterLorebooks(characterId, Array.from(next));
+    if (target.type === "character") {
+      await setCharacterLorebooks(target.id, Array.from(next));
+    } else if (target.type === "group") {
+      await setGroupLorebooks(target.id, Array.from(next));
+    } else {
+      await setGroupSessionLorebooks(target.id, Array.from(next));
+    }
   };
 
   const handleSelectLorebook = (lorebookId: string) => {
@@ -1097,17 +1186,21 @@ export function LorebookEditor() {
     }
   };
 
-  if (!characterId) {
+  if (!target) {
     return (
       <div className="flex h-full items-center justify-center text-fg/50">
-        No character ID provided
+        No lorebook target provided
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full bg-surface">
-      <TopNav currentPath={location.pathname + location.search} titleOverride={pageTitle} />
+    <div className="flex h-full flex-col bg-surface pt-[calc(72px+env(safe-area-inset-top))]">
+      <TopNav
+        currentPath={location.pathname + location.search}
+        titleOverride={pageTitle}
+        onBackOverride={handleBack}
+      />
       <div className="flex-1 min-h-0 overflow-visible">
         {activeLorebookId && activeLorebook ? (
           <>
@@ -1132,6 +1225,11 @@ export function LorebookEditor() {
             lorebooks={lorebooks}
             assignedLorebookIds={assignedLorebookIds}
             loading={isLorebooksLoading}
+            assignmentLabel={assignmentCopy.assignmentLabel}
+            enableLabel={assignmentCopy.enableLabel}
+            disableLabel={assignmentCopy.disableLabel}
+            enableDescription={assignmentCopy.enableDescription}
+            disableDescription={assignmentCopy.disableDescription}
             onSelectLorebook={handleSelectLorebook}
             onToggleAssignment={handleToggleAssignment}
             onCreateLorebook={handleCreateLorebook}

@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Volume2,
   VolumeX,
+  BookOpen,
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -55,6 +56,7 @@ export function GroupSettingsPage() {
     handleChangeSpeakerSelectionMethod,
     handleChangeMemoryType,
     handleUpdateBackgroundImage,
+    handleSetDisableCharacterLorebooks,
   } = useGroupSettingsController(groupId);
 
   const [backgroundImagePath, setBackgroundImagePath] = useState("");
@@ -483,6 +485,49 @@ export function GroupSettingsPage() {
                 ? t("groupChats.groupSettings.memoryDynamicInfo")
                 : t("groupChats.groupSettings.memoryManualInfo")}
             </p>
+          </section>
+
+          <section className={spacing.item}>
+            <SectionHeader
+              title="Lorebooks"
+              subtitle="Attach shared lorebooks and control whether character lorebooks apply by default."
+            />
+            <QuickChip
+              icon={<BookOpen className="h-4 w-4" />}
+              label="Manage lorebooks"
+              value={`${group.lorebookIds?.length ?? 0} attached`}
+              onClick={() => navigate(Routes.groupLorebook(group.id))}
+            />
+            <button
+              onClick={() =>
+                void handleSetDisableCharacterLorebooks(!group.disableCharacterLorebooks)
+              }
+              className={cn(
+                "mt-2 flex w-full items-center justify-between rounded-xl border border-fg/10 bg-surface-el/85 p-3 text-left",
+                interactive.transition.default,
+                "hover:border-fg/20",
+              )}
+            >
+              <div>
+                <div className="text-sm font-medium text-fg">Disable character lorebooks</div>
+                <div className="text-xs text-fg/50">
+                  New sessions will use only group-level lorebooks when this is on.
+                </div>
+              </div>
+              <span
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-all",
+                  group.disableCharacterLorebooks ? "bg-accent" : "bg-fg/20",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-5 w-5 rounded-full bg-fg shadow transition",
+                    group.disableCharacterLorebooks ? "translate-x-5" : "translate-x-0",
+                  )}
+                />
+              </span>
+            </button>
           </section>
 
           {/* Characters Section */}

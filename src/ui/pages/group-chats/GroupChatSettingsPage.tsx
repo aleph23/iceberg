@@ -18,6 +18,7 @@ import {
   Users,
   Volume2,
   VolumeX,
+  BookOpen,
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -73,6 +74,7 @@ export function GroupChatSettingsPage() {
     handleChangeSpeakerSelectionMethod,
     handleSetCharacterMuted,
     handleUpdateBackgroundImage,
+    handleSetDisableCharacterLorebooks,
     mutedCharacterIds,
     getParticipationPercent,
     participationStats,
@@ -672,6 +674,49 @@ export function GroupChatSettingsPage() {
                   ? t("groupChats.sessionSettings.heuristicDesc")
                   : t("groupChats.sessionSettings.roundRobinDesc")}
             </p>
+          </section>
+
+          <section className={spacing.item}>
+            <SectionHeader
+              title="Lorebooks"
+              subtitle="Attach session lorebooks and optionally ignore each character's own lorebooks."
+            />
+            <QuickChip
+              icon={<BookOpen className="h-4 w-4" />}
+              label="Manage lorebooks"
+              value={`${session.lorebookIds?.length ?? 0} attached`}
+              onClick={() => navigate(Routes.groupChatLorebook(session.id))}
+            />
+            <button
+              onClick={() =>
+                void handleSetDisableCharacterLorebooks(!session.disableCharacterLorebooks)
+              }
+              className={cn(
+                "mt-2 flex w-full items-center justify-between rounded-xl border border-fg/10 bg-surface-el/85 p-3 text-left",
+                interactive.transition.default,
+                "hover:border-fg/20",
+              )}
+            >
+              <div>
+                <div className="text-sm font-medium text-fg">Disable character lorebooks</div>
+                <div className="text-xs text-fg/50">
+                  Group replies will use only the lorebooks attached to this session.
+                </div>
+              </div>
+              <span
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-all",
+                  session.disableCharacterLorebooks ? "bg-accent" : "bg-fg/20",
+                )}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-5 w-5 rounded-full bg-fg shadow transition",
+                    session.disableCharacterLorebooks ? "translate-x-5" : "translate-x-0",
+                  )}
+                />
+              </span>
+            </button>
           </section>
 
           {/* Characters Section */}
