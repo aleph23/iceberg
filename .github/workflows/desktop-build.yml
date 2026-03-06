@@ -1010,7 +1010,18 @@ jobs:
         shell: pwsh
         run: |
           echo "VULKAN_SDK=$env:VULKAN_SDK"
-          vulkaninfo --summary
+          $vulkanBin = Join-Path $env:VULKAN_SDK "Bin"
+          if (!(Test-Path $vulkanBin)) {
+            throw "Vulkan SDK bin directory not found: $vulkanBin"
+          }
+          echo $vulkanBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          $vulkanInfo = Get-ChildItem -Path $vulkanBin -Filter "vulkaninfo*.exe" | Select-Object -First 1
+          if ($null -eq $vulkanInfo) {
+            throw "vulkaninfo executable not found under $vulkanBin"
+          }
+
+          & $vulkanInfo.FullName --summary
           $env:CMAKE_ARGS="-DGGML_VULKAN=ON"
           bun run tauri build --config dev-config.json --features llama-gpu-vulkan
 
