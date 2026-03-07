@@ -670,6 +670,74 @@ fn resolve_llama_flash_attention(
         .filter(|v| !v.is_empty())
 }
 
+fn resolve_llama_chat_template_override(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<String> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_chat_template_override.clone())
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_chat_template_override.clone())
+        })
+        .or_else(|| {
+            settings
+                .advanced_model_settings
+                .llama_chat_template_override
+                .clone()
+        })
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn resolve_llama_chat_template_preset(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<String> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_chat_template_preset.clone())
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_chat_template_preset.clone())
+        })
+        .or_else(|| {
+            settings
+                .advanced_model_settings
+                .llama_chat_template_preset
+                .clone()
+        })
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+fn resolve_llama_raw_completion_fallback(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<bool> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_raw_completion_fallback)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_raw_completion_fallback)
+        })
+        .or(settings.advanced_model_settings.llama_raw_completion_fallback)
+}
+
 fn build_llama_extra_fields(
     session: &Session,
     model: &Model,
@@ -705,6 +773,15 @@ fn build_llama_extra_fields(
     }
     if let Some(v) = resolve_llama_flash_attention(session, model, settings) {
         extra.insert("llamaFlashAttentionPolicy".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_chat_template_override(session, model, settings) {
+        extra.insert("llamaChatTemplateOverride".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_chat_template_preset(session, model, settings) {
+        extra.insert("llamaChatTemplatePreset".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_raw_completion_fallback(session, model, settings) {
+        extra.insert("llamaRawCompletionFallback".to_string(), json!(v));
     }
 
     if extra.is_empty() {

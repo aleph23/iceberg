@@ -52,6 +52,17 @@ mod desktop {
         model: Option<LlamaModel>,
     }
 
+    struct ResolvedChatTemplate {
+        template: LlamaChatTemplate,
+        source_label: String,
+    }
+
+    struct BuiltPrompt {
+        prompt: String,
+        template_source: String,
+        used_raw_completion_fallback: bool,
+    }
+
     fn push_unique_u32(out: &mut Vec<u32>, value: u32) {
         if !out.contains(&value) {
             out.push(value);
@@ -595,7 +606,60 @@ mod desktop {
         prompt
     }
 
-    fn build_prompt(model: &LlamaModel, messages: &[Value]) -> Result<String, String> {
+    fn resolve_chat_template(
+        model: &LlamaModel,
+        chat_template_override: Option<&str>,
+        chat_template_preset: Option<&str>,
+    ) -> Result<ResolvedChatTemplate, String> {
+        if let Some(template_override) = chat_template_override.filter(|v| !v.trim().is_empty()) {
+            let template = LlamaChatTemplate::new(template_override).map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Invalid explicit llama chat template override: {e}"),
+                )
+            })?;
+            return Ok(ResolvedChatTemplate {
+                template,
+                source_label: "explicit override".to_string(),
+            });
+        }
+
+        if let Ok(template) = model.chat_template(None) {
+            return Ok(ResolvedChatTemplate {
+                template,
+                source_label: "embedded gguf".to_string(),
+            });
+        }
+
+        if let Some(template_preset) = chat_template_preset.filter(|v| !v.trim().is_empty()) {
+            let template = LlamaChatTemplate::new(template_preset).map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Invalid llama chat template preset '{}': {e}", template_preset),
+                )
+            })?;
+            return Ok(ResolvedChatTemplate {
+                template,
+                source_label: format!("preset '{}'", template_preset),
+            });
+        }
+
+        Err(crate::utils::err_msg(
+            module_path!(),
+            line!(),
+            "No llama chat template resolved. Provide an explicit override, use a GGUF with an embedded template, or select a known preset.",
+        ))
+    }
+
+    fn build_prompt(
+        model: &LlamaModel,
+        messages: &[Value],
+        chat_template_override: Option<&str>,
+        chat_template_preset: Option<&str>,
+        allow_raw_completion_fallback: bool,
+    ) -> Result<BuiltPrompt, String> {
         let mut chat_messages = Vec::new();
         for message in messages {
             let role = message
@@ -625,23 +689,46 @@ mod desktop {
             ));
         }
 
-        let template = model
-            .chat_template(None)
-            .or_else(|_| LlamaChatTemplate::new("chatml"))
-            .map_err(|e| {
-                crate::utils::err_msg(
-                    module_path!(),
-                    line!(),
-                    format!("Failed to load chat template: {e}"),
-                )
-            })?;
+        let resolved_template =
+            match resolve_chat_template(model, chat_template_override, chat_template_preset) {
+                Ok(resolved) => resolved,
+                Err(err) => {
+                    if allow_raw_completion_fallback {
+                        return Ok(BuiltPrompt {
+                            prompt: build_fallback_prompt(messages),
+                            template_source: "raw completion fallback".to_string(),
+                            used_raw_completion_fallback: true,
+                        });
+                    }
+                    return Err(err);
+                }
+            };
 
-        let prompt = match model.apply_chat_template(&template, &chat_messages, true) {
-            Ok(text) => text,
-            Err(_) => build_fallback_prompt(messages),
-        };
-
-        Ok(prompt)
+        match model.apply_chat_template(&resolved_template.template, &chat_messages, true) {
+            Ok(prompt) => Ok(BuiltPrompt {
+                prompt,
+                template_source: resolved_template.source_label,
+                used_raw_completion_fallback: false,
+            }),
+            Err(err) => {
+                if allow_raw_completion_fallback {
+                    Ok(BuiltPrompt {
+                        prompt: build_fallback_prompt(messages),
+                        template_source: resolved_template.source_label,
+                        used_raw_completion_fallback: true,
+                    })
+                } else {
+                    Err(crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        format!(
+                            "Failed to apply llama chat template from {}: {}",
+                            resolved_template.source_label, err
+                        ),
+                    ))
+                }
+            }
+        }
     }
 
     fn build_sampler(
@@ -830,6 +917,27 @@ mod desktop {
             .or_else(|| body.get("llama_kv_type"))
             .and_then(|v| v.as_str())
             .map(|s| s.trim().to_ascii_lowercase());
+        let llama_chat_template_override = body
+            .get("llamaChatTemplateOverride")
+            .or_else(|| body.get("llama_chat_template_override"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let llama_chat_template_preset = body
+            .get("llamaChatTemplatePreset")
+            .or_else(|| body.get("llama_chat_template_preset"))
+            .or_else(|| body.get("llamaChatTemplate"))
+            .or_else(|| body.get("llama_chat_template"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let llama_raw_completion_fallback = body
+            .get("llamaRawCompletionFallback")
+            .or_else(|| body.get("llama_raw_completion_fallback"))
+            .or_else(|| body.get("llamaAllowRawCompletionFallback"))
+            .or_else(|| body.get("llama_allow_raw_completion_fallback"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let llama_kv_type = llama_kv_type_raw.as_deref().and_then(|s| match s {
             "f32" => Some(KvCacheType::F32),
             "f16" => Some(KvCacheType::F16),
@@ -882,6 +990,7 @@ mod desktop {
         let inference_started_at = Instant::now();
         let mut first_token_ms: Option<u64> = None;
         let mut generation_elapsed_ms: Option<u64> = None;
+        let mut finish_reason = "stop";
 
         let result = (|| -> Result<(), String> {
             log_info(&app, "llama_cpp", "loading llama.cpp engine/model");
@@ -917,7 +1026,30 @@ mod desktop {
             } else {
                 max_ctx
             };
-            let prompt = build_prompt(model, messages)?;
+            let built_prompt = build_prompt(
+                model,
+                messages,
+                llama_chat_template_override.as_deref(),
+                llama_chat_template_preset.as_deref(),
+                llama_raw_completion_fallback,
+            )?;
+            if built_prompt.used_raw_completion_fallback {
+                log_warn(
+                    &app,
+                    "llama_cpp",
+                    format!(
+                        "using raw completion fallback after chat template resolution/application failed; previous_source={}",
+                        built_prompt.template_source
+                    ),
+                );
+            } else {
+                log_info(
+                    &app,
+                    "llama_cpp",
+                    format!("using llama chat template source={}", built_prompt.template_source),
+                );
+            }
+            let prompt = built_prompt.prompt;
             let tokens = model.str_to_token(&prompt, AddBos::Always).map_err(|e| {
                 crate::utils::err_msg(
                     module_path!(),
@@ -1125,6 +1257,7 @@ mod desktop {
             );
 
             let target_len = prompt_len + max_new as i32;
+            let mut reached_eos = false;
             let mut pending_utf8 = Vec::<u8>::new();
             while n_cur < target_len {
                 if let Some(rx) = abort_rx.as_mut() {
@@ -1144,6 +1277,7 @@ mod desktop {
                 sampler.accept(token);
 
                 if token == model.token_eos() {
+                    reached_eos = true;
                     break;
                 }
 
@@ -1234,6 +1368,8 @@ mod desktop {
 
             generation_elapsed_ms = Some(inference_started_at.elapsed().as_millis() as u64);
 
+            finish_reason = if reached_eos { "stop" } else { "length" };
+
             Ok(())
         })();
 
@@ -1280,7 +1416,7 @@ mod desktop {
                     image_tokens: None,
                     first_token_ms,
                     tokens_per_second,
-                    finish_reason: Some("stop".into()),
+                    finish_reason: Some(finish_reason.into()),
                 };
                 transport::emit_normalized(&app, id, NormalizedEvent::Usage { usage });
                 transport::emit_normalized(&app, id, NormalizedEvent::Done);
@@ -1311,7 +1447,7 @@ mod desktop {
             "choices": [{
                 "index": 0,
                 "message": { "role": "assistant", "content": output },
-                "finish_reason": "stop"
+                "finish_reason": finish_reason
             }],
             "usage": usage_value,
         });

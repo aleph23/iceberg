@@ -259,6 +259,34 @@ fn build_llama_extra_fields(model: &Model, settings: &Settings) -> Option<HashMa
     {
         extra.insert("llamaFlashAttentionPolicy".to_string(), json!(v));
     }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_chat_template_override.clone())
+        .or_else(|| settings.advanced_model_settings.llama_chat_template_override.clone())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        extra.insert("llamaChatTemplateOverride".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_chat_template_preset.clone())
+        .or_else(|| settings.advanced_model_settings.llama_chat_template_preset.clone())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        extra.insert("llamaChatTemplatePreset".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_raw_completion_fallback)
+        .or(settings.advanced_model_settings.llama_raw_completion_fallback)
+    {
+        extra.insert("llamaRawCompletionFallback".to_string(), json!(v));
+    }
 
     if extra.is_empty() {
         None

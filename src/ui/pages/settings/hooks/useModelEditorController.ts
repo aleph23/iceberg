@@ -55,6 +55,9 @@ type ControllerReturn = {
   handleLlamaBatchSizeChange: (value: number | null) => void;
   handleLlamaKvTypeChange: (value: AdvancedModelSettings["llamaKvType"]) => void;
   handleLlamaFlashAttentionChange: (value: AdvancedModelSettings["llamaFlashAttention"]) => void;
+  handleLlamaChatTemplateOverrideChange: (value: string | null) => void;
+  handleLlamaChatTemplatePresetChange: (value: string | null) => void;
+  handleLlamaRawCompletionFallbackChange: (value: boolean | null) => void;
   handleOllamaNumCtxChange: (value: number | null) => void;
   handleOllamaNumPredictChange: (value: number | null) => void;
   handleOllamaNumKeepChange: (value: number | null) => void;
@@ -559,6 +562,45 @@ export function useModelEditorController(): ControllerReturn {
     [dispatch, state.modelAdvancedDraft],
   );
 
+  const handleLlamaChatTemplateOverrideChange = useCallback(
+    (value: string | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaChatTemplateOverride: value?.trim() ? value.trim() : null,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaChatTemplatePresetChange = useCallback(
+    (value: string | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaChatTemplatePreset: value?.trim() ? value.trim() : null,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaRawCompletionFallbackChange = useCallback(
+    (value: boolean | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaRawCompletionFallback: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
   const handleOllamaNumCtxChange = useCallback(
     (value: number | null) => {
       dispatch({
@@ -1054,6 +1096,9 @@ export function useModelEditorController(): ControllerReturn {
     handleLlamaBatchSizeChange,
     handleLlamaKvTypeChange,
     handleLlamaFlashAttentionChange,
+    handleLlamaChatTemplateOverrideChange,
+    handleLlamaChatTemplatePresetChange,
+    handleLlamaRawCompletionFallbackChange,
     handleOllamaNumCtxChange,
     handleOllamaNumPredictChange,
     handleOllamaNumKeepChange,

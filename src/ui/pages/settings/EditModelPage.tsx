@@ -100,6 +100,16 @@ const LLAMA_KV_TYPE_OPTIONS = [
   { value: "q2_k", label: "Q2_K (max VRAM saving)" },
 ] as const;
 
+const LLAMA_CHAT_TEMPLATE_PRESET_OPTIONS = [
+  { value: "auto", label: "Auto (prefer embedded GGUF template)" },
+  { value: "chatml", label: "ChatML" },
+  { value: "llama2", label: "Llama 2" },
+  { value: "llama3", label: "Llama 3" },
+  { value: "mistral-v1", label: "Mistral Instruct v1" },
+  { value: "vicuna", label: "Vicuna" },
+  { value: "gemma", label: "Gemma" },
+] as const;
+
 const normalizeSearchText = (value?: string) =>
   (value ?? "")
     .toLowerCase()
@@ -186,6 +196,9 @@ export function EditModelPage() {
     handleLlamaBatchSizeChange,
     handleLlamaKvTypeChange,
     handleLlamaFlashAttentionChange,
+    handleLlamaChatTemplateOverrideChange,
+    handleLlamaChatTemplatePresetChange,
+    handleLlamaRawCompletionFallbackChange,
     handleOllamaNumCtxChange,
     handleOllamaNumPredictChange,
     handleOllamaNumKeepChange,
@@ -1853,6 +1866,121 @@ export function EditModelPage() {
                         </div>
 
                         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                          <div className="space-y-4 md:col-span-2">
+                            <div className="rounded-2xl border border-fg/10 bg-surface-el/10 p-4">
+                              <div className="space-y-1">
+                                <span className="block text-xs font-medium text-fg/70">
+                                  Template Resolution
+                                </span>
+                                <span className="block text-[10px] text-fg/40">
+                                  Order: explicit override, embedded GGUF template, selected
+                                  preset. Raw completion fallback is only used if you explicitly
+                                  enable it.
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="space-y-4">
+                            <div className="space-y-0.5">
+                              <span className="block text-xs font-medium text-fg/70">
+                                Template Override
+                              </span>
+                              <span className="block text-[10px] text-fg/40">
+                                Exact llama.cpp template name or Jinja template string
+                              </span>
+                            </div>
+                            <textarea
+                              value={modelAdvancedDraft.llamaChatTemplateOverride ?? ""}
+                              onChange={(e) =>
+                                handleLlamaChatTemplateOverrideChange(
+                                  e.target.value === "" ? null : e.target.value,
+                                )
+                              }
+                              rows={4}
+                              placeholder="Leave blank to prefer embedded GGUF template"
+                              className="w-full rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-2.5 text-sm text-fg transition focus:border-fg/30 focus:outline-none"
+                            />
+                            <span className="block text-[10px] text-fg/40">
+                              When set, this wins over both the GGUF template and the preset.
+                            </span>
+                          </div>
+
+                          <div className="space-y-4">
+                            <div className="space-y-0.5">
+                              <span className="block text-xs font-medium text-fg/70">
+                                Template Preset
+                              </span>
+                              <span className="block text-[10px] text-fg/40">
+                                Used only when no embedded GGUF template is available
+                              </span>
+                            </div>
+                            <select
+                              value={modelAdvancedDraft.llamaChatTemplatePreset ?? "auto"}
+                              onChange={(e) =>
+                                handleLlamaChatTemplatePresetChange(
+                                  e.target.value === "auto" ? null : e.target.value,
+                                )
+                              }
+                              className="w-full rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-2.5 text-sm text-fg transition focus:border-fg/30 focus:outline-none"
+                            >
+                              {LLAMA_CHAT_TEMPLATE_PRESET_OPTIONS.map((option) => (
+                                <option
+                                  key={option.value}
+                                  value={option.value}
+                                  className="bg-[#16171d]"
+                                >
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                            <span className="block text-[10px] text-fg/40">
+                              This is ignored when override is set. It is also ignored if the GGUF
+                              already provides its own chat template.
+                            </span>
+                          </div>
+
+                          <div className="space-y-4">
+                            <div className="space-y-0.5">
+                              <span className="block text-xs font-medium text-fg/70">
+                                Raw Completion Fallback
+                              </span>
+                              <span className="block text-[10px] text-fg/40">
+                                Only enable for raw-completion-tuned models
+                              </span>
+                            </div>
+                            <select
+                              value={
+                                modelAdvancedDraft.llamaRawCompletionFallback === true
+                                  ? "enabled"
+                                  : modelAdvancedDraft.llamaRawCompletionFallback === false
+                                    ? "disabled"
+                                    : "default"
+                              }
+                              onChange={(e) => {
+                                const val = e.target.value;
+                                handleLlamaRawCompletionFallbackChange(
+                                  val === "default" ? null : val === "enabled",
+                                );
+                              }}
+                              className="w-full rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-2.5 text-sm text-fg transition focus:border-fg/30 focus:outline-none"
+                            >
+                              <option value="default" className="bg-[#16171d]">
+                                Default (disabled)
+                              </option>
+                              <option value="enabled" className="bg-[#16171d]">
+                                Enabled
+                              </option>
+                              <option value="disabled" className="bg-[#16171d]">
+                                Disabled
+                              </option>
+                            </select>
+                            <span className="block text-[10px] text-fg/40">
+                              If template resolution or application fails, llama.cpp will only
+                              fall back to raw `role: content` prompting when this is enabled.
+                            </span>
+                          </div>
+
                           <div className="space-y-4">
                             <div className="space-y-0.5">
                               <span className="block text-xs font-medium text-fg/70">
