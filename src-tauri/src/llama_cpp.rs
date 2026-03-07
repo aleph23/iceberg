@@ -52,11 +52,16 @@ mod desktop {
         model_path: Option<String>,
         model_params_key: Option<String>,
         model: Option<LlamaModel>,
+        backend_path_used: Option<String>,
+        gpu_load_fallback_activated: bool,
+        compiled_gpu_backends: Vec<String>,
+        supports_gpu_offload: bool,
     }
 
     struct ResolvedChatTemplate {
         template: LlamaChatTemplate,
         source_label: String,
+        template_text: String,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,8 +72,12 @@ mod desktop {
 
     struct BuiltPrompt {
         prompt: String,
-        template_source: String,
+        attempted_template_source: Option<String>,
+        attempted_template_text: Option<String>,
+        applied_template_source: Option<String>,
+        applied_template_text: Option<String>,
         used_raw_completion_fallback: bool,
+        raw_completion_fallback_reason: Option<String>,
         prompt_mode: PromptMode,
     }
 
@@ -234,6 +243,10 @@ mod desktop {
                 model_path: None,
                 model_params_key: None,
                 model: None,
+                backend_path_used: None,
+                gpu_load_fallback_activated: false,
+                compiled_gpu_backends: Vec::new(),
+                supports_gpu_offload: false,
             })
         });
 
@@ -251,28 +264,34 @@ mod desktop {
             })?);
         }
 
-        let backend = guard
+        let supports_gpu = guard
             .backend
             .as_ref()
-            .ok_or_else(|| "llama.cpp backend unavailable".to_string())?;
+            .ok_or_else(|| "llama.cpp backend unavailable".to_string())?
+            .supports_gpu_offload();
+        let gpu_backends = compiled_gpu_backends();
+        let gpu_backend_label = if gpu_backends.is_empty() {
+            "none".to_string()
+        } else {
+            gpu_backends.join(",")
+        };
+        guard.compiled_gpu_backends = gpu_backends.iter().map(|v| (*v).to_string()).collect();
+        guard.supports_gpu_offload = supports_gpu;
         if let Some(app) = app {
-            let gpu_backends = compiled_gpu_backends();
-            let gpu_backend_label = if gpu_backends.is_empty() {
-                "none".to_string()
-            } else {
-                gpu_backends.join(",")
-            };
             log_info(
                 app,
                 "llama_cpp",
                 format!(
                     "llama.cpp backend initialized: compiled_gpu_backends={} supports_gpu_offload={}",
                     gpu_backend_label,
-                    backend.supports_gpu_offload()
+                    supports_gpu
                 ),
             );
         }
-        let supports_gpu = backend.supports_gpu_offload();
+        let backend = guard
+            .backend
+            .as_ref()
+            .ok_or_else(|| "llama.cpp backend unavailable".to_string())?;
         if let (Some(app), Some(requested)) = (app, requested_gpu_layers) {
             if requested > 0 && !supports_gpu {
                 log_warn(
@@ -294,6 +313,8 @@ mod desktop {
             || guard.model_params_key.as_deref() != Some(&model_params_key);
         if should_reload {
             let cpu_params = LlamaModelParams::default().with_n_gpu_layers(0);
+            let mut backend_path_used = "cpu".to_string();
+            let mut gpu_load_fallback_activated = false;
 
             let model = if supports_gpu && requested_gpu_layers != Some(0) {
                 let gpu_params = if let Some(explicit_layers) = requested_gpu_layers {
@@ -305,6 +326,7 @@ mod desktop {
 
                 match LlamaModel::load_from_file(backend, model_path, &gpu_params) {
                     Ok(model) => {
+                        backend_path_used = "gpu_offload".to_string();
                         if let Some(app) = app {
                             let mode = requested_gpu_layers
                                 .map(|v| v.to_string())
@@ -318,6 +340,7 @@ mod desktop {
                         model
                     }
                     Err(err) => {
+                        gpu_load_fallback_activated = true;
                         if let Some(app) = app {
                             log_warn(
                                 app,
@@ -357,6 +380,8 @@ mod desktop {
             guard.model = Some(model);
             guard.model_path = Some(model_path.to_string());
             guard.model_params_key = Some(model_params_key);
+            guard.backend_path_used = Some(backend_path_used);
+            guard.gpu_load_fallback_activated = gpu_load_fallback_activated;
         }
 
         Ok(guard)
@@ -369,6 +394,10 @@ mod desktop {
                 model_path: None,
                 model_params_key: None,
                 model: None,
+                backend_path_used: None,
+                gpu_load_fallback_activated: false,
+                compiled_gpu_backends: Vec::new(),
+                supports_gpu_offload: false,
             })
         });
 
@@ -380,6 +409,8 @@ mod desktop {
             guard.model = None;
             guard.model_path = None;
             guard.model_params_key = None;
+            guard.backend_path_used = None;
+            guard.gpu_load_fallback_activated = false;
             log_info(app, "llama_cpp", "unloaded llama.cpp model");
         }
 
@@ -647,6 +678,10 @@ mod desktop {
         prompt
     }
 
+    fn chat_template_text(template: &LlamaChatTemplate) -> String {
+        template.as_c_str().to_string_lossy().into_owned()
+    }
+
     fn resolve_chat_template(
         model: &LlamaModel,
         chat_template_override: Option<&str>,
@@ -663,11 +698,13 @@ mod desktop {
             return Ok(ResolvedChatTemplate {
                 template,
                 source_label: "explicit override".to_string(),
+                template_text: template_override.to_string(),
             });
         }
 
         if let Ok(template) = model.chat_template(None) {
             return Ok(ResolvedChatTemplate {
+                template_text: chat_template_text(&template),
                 template,
                 source_label: "embedded gguf".to_string(),
             });
@@ -685,6 +722,7 @@ mod desktop {
                 )
             })?;
             return Ok(ResolvedChatTemplate {
+                template_text: template_preset.to_string(),
                 template,
                 source_label: format!("preset '{}'", template_preset),
             });
@@ -740,8 +778,15 @@ mod desktop {
                     if allow_raw_completion_fallback {
                         return Ok(BuiltPrompt {
                             prompt: build_fallback_prompt(messages),
-                            template_source: "raw completion fallback".to_string(),
+                            attempted_template_source: None,
+                            attempted_template_text: None,
+                            applied_template_source: None,
+                            applied_template_text: None,
                             used_raw_completion_fallback: true,
+                            raw_completion_fallback_reason: Some(format!(
+                                "template resolution failed: {}",
+                                err
+                            )),
                             prompt_mode: PromptMode::RawCompletion,
                         });
                     }
@@ -752,16 +797,27 @@ mod desktop {
         match model.apply_chat_template(&resolved_template.template, &chat_messages, true) {
             Ok(prompt) => Ok(BuiltPrompt {
                 prompt,
-                template_source: resolved_template.source_label,
+                attempted_template_source: Some(resolved_template.source_label.clone()),
+                attempted_template_text: Some(resolved_template.template_text.clone()),
+                applied_template_source: Some(resolved_template.source_label),
+                applied_template_text: Some(resolved_template.template_text),
                 used_raw_completion_fallback: false,
+                raw_completion_fallback_reason: None,
                 prompt_mode: PromptMode::TemplatedChat,
             }),
             Err(err) => {
                 if allow_raw_completion_fallback {
                     Ok(BuiltPrompt {
                         prompt: build_fallback_prompt(messages),
-                        template_source: resolved_template.source_label,
+                        attempted_template_source: Some(resolved_template.source_label.clone()),
+                        attempted_template_text: Some(resolved_template.template_text.clone()),
+                        applied_template_source: None,
+                        applied_template_text: None,
                         used_raw_completion_fallback: true,
+                        raw_completion_fallback_reason: Some(format!(
+                            "template application failed: {}",
+                            err
+                        )),
                         prompt_mode: PromptMode::RawCompletion,
                     })
                 } else {
@@ -841,6 +897,27 @@ mod desktop {
             PromptMode::RawCompletion => {
                 "raw completion metadata missing or invalid; using compatibility fallback add_bos=always"
             }
+        }
+    }
+
+    fn flash_attention_policy_label(policy: llama_flash_attn_type) -> &'static str {
+        match policy {
+            LLAMA_FLASH_ATTN_TYPE_AUTO => "auto",
+            LLAMA_FLASH_ATTN_TYPE_DISABLED => "disabled",
+            LLAMA_FLASH_ATTN_TYPE_ENABLED => "enabled",
+            _ => "unknown",
+        }
+    }
+
+    fn kv_type_label(llama_kv_type_raw: Option<&str>) -> &str {
+        llama_kv_type_raw.unwrap_or("llama.cpp default")
+    }
+
+    fn offload_kqv_mode_label(resolved_offload_kqv: Option<bool>) -> &'static str {
+        match resolved_offload_kqv {
+            Some(true) => "enabled",
+            Some(false) => "disabled",
+            None => "llama.cpp default",
         }
     }
 
@@ -1261,8 +1338,15 @@ mod desktop {
                     &app,
                     "llama_cpp",
                     format!(
-                        "using raw completion fallback after chat template resolution/application failed; previous_source={}",
-                        built_prompt.template_source
+                        "using raw completion fallback after chat template resolution/application failed; attempted_source={} reason={}",
+                        built_prompt
+                            .attempted_template_source
+                            .as_deref()
+                            .unwrap_or("none"),
+                        built_prompt
+                            .raw_completion_fallback_reason
+                            .as_deref()
+                            .unwrap_or("unknown")
                     ),
                 );
             } else {
@@ -1271,7 +1355,10 @@ mod desktop {
                     "llama_cpp",
                     format!(
                         "using llama chat template source={}",
-                        built_prompt.template_source
+                        built_prompt
+                            .applied_template_source
+                            .as_deref()
+                            .unwrap_or("unknown")
                     ),
                 );
             }
@@ -1285,7 +1372,11 @@ mod desktop {
                     prompt_mode_label(built_prompt.prompt_mode),
                     add_bos_label(prompt_add_bos),
                     model_tokenizer_add_bos_label(model_default_add_bos),
-                    built_prompt.template_source,
+                    built_prompt
+                        .applied_template_source
+                        .as_deref()
+                        .or(built_prompt.attempted_template_source.as_deref())
+                        .unwrap_or("none"),
                     prompt_add_bos_reason(built_prompt.prompt_mode, model_default_add_bos),
                 ),
             );
@@ -1324,6 +1415,7 @@ mod desktop {
             } else {
                 LLAMA_FLASH_ATTN_TYPE_AUTO
             };
+            let requested_ctx_size = ctx_size;
             let initial_batch = ctx_size.min(llama_batch_size).max(1);
             let mut resolved_ctx_size = ctx_size;
             let mut resolved_n_batch = initial_batch;
@@ -1438,6 +1530,75 @@ mod desktop {
             })?;
             ctx_size = resolved_ctx_size;
             let n_batch = resolved_n_batch;
+            let context_fallback_activated =
+                (ctx_size, n_batch) != (requested_ctx_size, initial_batch);
+            let applied_template_source = built_prompt.applied_template_source.clone();
+            let applied_template_text = built_prompt.applied_template_text.clone();
+            let attempted_template_source = built_prompt.attempted_template_source.clone();
+            let attempted_template_text = built_prompt.attempted_template_text.clone();
+            let raw_completion_fallback_reason =
+                built_prompt.raw_completion_fallback_reason.clone();
+            let backend_path_used = engine
+                .backend_path_used
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            let compiled_gpu_backends = engine.compiled_gpu_backends.clone();
+            let supports_gpu_offload = engine.supports_gpu_offload;
+            let gpu_load_fallback_activated = engine.gpu_load_fallback_activated;
+
+            let runtime_settings = json!({
+                "requestId": request_id.clone(),
+                "modelPath": model_path,
+                "prompt": {
+                    "mode": prompt_mode_label(built_prompt.prompt_mode),
+                    "templateSource": applied_template_source,
+                    "templateUsed": applied_template_text,
+                    "attemptedTemplateSource": attempted_template_source,
+                    "attemptedTemplate": attempted_template_text,
+                    "usedRawCompletionFallback": built_prompt.used_raw_completion_fallback,
+                    "rawCompletionFallbackReason": raw_completion_fallback_reason,
+                    "bosMode": add_bos_label(prompt_add_bos),
+                    "bosReason": prompt_add_bos_reason(built_prompt.prompt_mode, model_default_add_bos),
+                },
+                "runtime": {
+                    "requestedContext": requested_context,
+                    "initialContextCandidate": requested_ctx_size,
+                    "actualContextUsed": ctx_size,
+                    "requestedBatchLimit": llama_batch_size,
+                    "initialBatchCandidate": initial_batch,
+                    "actualNBatchUsed": n_batch,
+                    "actualKvTypeUsed": kv_type_label(llama_kv_type_raw.as_deref()),
+                    "actualOffloadKqvMode": offload_kqv_mode_label(resolved_offload_kqv),
+                    "flashAttentionPolicy": flash_attention_policy_label(resolved_flash_attention_policy),
+                    "actualBackendPathUsed": backend_path_used.clone(),
+                    "compiledGpuBackends": compiled_gpu_backends,
+                    "supportsGpuOffload": supports_gpu_offload,
+                    "gpuLoadFallbackActivated": gpu_load_fallback_activated,
+                    "contextFallbackActivated": context_fallback_activated,
+                }
+            });
+            log_info(
+                &app,
+                "llama_cpp",
+                format!(
+                    "llama runtime resolved: prompt_mode={} template_source={} fallback_prompt={} bos={} ctx={} n_batch={} kv_type={} offload_kqv={} backend_path={} flash_attention={} context_fallback={}",
+                    prompt_mode_label(built_prompt.prompt_mode),
+                    built_prompt
+                        .applied_template_source
+                        .as_deref()
+                        .unwrap_or("none"),
+                    built_prompt.used_raw_completion_fallback,
+                    add_bos_label(prompt_add_bos),
+                    ctx_size,
+                    n_batch,
+                    kv_type_label(llama_kv_type_raw.as_deref()),
+                    offload_kqv_mode_label(resolved_offload_kqv),
+                    backend_path_used,
+                    flash_attention_policy_label(resolved_flash_attention_policy),
+                    context_fallback_activated,
+                ),
+            );
+            crate::utils::emit_debug(&app, "llama_runtime", runtime_settings);
 
             let batch_size = n_batch as usize;
             let mut batch = LlamaBatch::new(batch_size, 1);
