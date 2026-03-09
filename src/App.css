@@ -4,6 +4,9 @@
   --color-surface: #050505;
   --color-surface-el: #0a0a0a;
   --color-fg: #ffffff;
+  --color-app-text: var(--color-fg);
+  --color-app-text-muted: color-mix(in oklab, var(--color-app-text) 68%, var(--color-surface));
+  --color-app-text-subtle: color-mix(in oklab, var(--color-app-text) 45%, var(--color-surface));
   --color-accent: #34d399;
   --color-danger: #ef4444;
   --color-warning: #f59e0b;
@@ -180,6 +183,12 @@
 
   color: var(--color-fg);
   background-color: var(--color-surface);
+  --settings-card-opacity: 5%;
+  --settings-card-opacity-mid: 7%;
+  --settings-card-opacity-hover: 9%;
+  --settings-ui-fg: #ffffff;
+  --settings-ui-fg-muted: color-mix(in oklab, var(--settings-ui-fg) 68%, var(--color-surface));
+  --settings-ui-fg-subtle: color-mix(in oklab, var(--settings-ui-fg) 45%, var(--color-surface));
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -214,6 +223,123 @@ body,
   overflow-x: hidden;
   background: var(--color-surface);
   color: var(--color-fg);
+}
+
+.app-text-scope {
+  color: var(--color-app-text);
+}
+
+.app-text-scope .text-fg-muted,
+.app-text-scope .text-fg\/52,
+.app-text-scope .text-fg\/70,
+.app-text-scope .text-fg\/72,
+.app-text-scope .text-fg\/75,
+.app-text-scope .text-fg\/78,
+.app-text-scope .text-fg\/65,
+.app-text-scope .text-fg\/62,
+.app-text-scope .text-fg\/60,
+.app-text-scope .text-fg\/55,
+.app-text-scope .text-fg\/50 {
+  color: var(--color-app-text-muted) !important;
+}
+
+.app-text-scope .text-fg-subtle,
+.app-text-scope .text-fg\/15,
+.app-text-scope .text-fg\/20,
+.app-text-scope .text-fg\/25,
+.app-text-scope .text-fg\/45,
+.app-text-scope .text-fg\/48,
+.app-text-scope .text-fg\/40,
+.app-text-scope .text-fg\/38,
+.app-text-scope .text-fg\/36,
+.app-text-scope .text-fg\/35,
+.app-text-scope .text-fg\/30 {
+  color: var(--color-app-text-subtle) !important;
+}
+
+.app-text-scope .text-fg,
+.app-text-scope .text-fg\/80,
+.app-text-scope .text-fg\/82,
+.app-text-scope .text-fg\/85,
+.app-text-scope .text-fg\/90,
+.app-text-scope .text-fg\/92 {
+  color: var(--color-app-text) !important;
+}
+
+.app-text-scope .placeholder-fg\/40::placeholder,
+.app-text-scope .placeholder-fg\/30::placeholder {
+  color: var(--color-app-text-subtle) !important;
+}
+
+.settings-theme-scope .bg-fg\/5 {
+  background-color: color-mix(
+    in oklab,
+    var(--settings-ui-fg) var(--settings-card-opacity),
+    transparent
+  ) !important;
+}
+
+.settings-theme-scope .bg-fg\/6,
+.settings-theme-scope .bg-fg\/8 {
+  background-color: color-mix(
+    in oklab,
+    var(--settings-ui-fg) var(--settings-card-opacity-mid),
+    transparent
+  ) !important;
+}
+
+.settings-theme-scope .bg-fg\/10,
+.settings-theme-scope .hover\:bg-fg\/5:hover,
+.settings-theme-scope .hover\:bg-fg\/10:hover,
+.settings-theme-scope .hover\:bg-fg\/8:hover,
+.settings-theme-scope .active\:bg-fg\/10:active {
+  background-color: color-mix(
+    in oklab,
+    var(--settings-ui-fg) var(--settings-card-opacity-hover),
+    transparent
+  ) !important;
+}
+
+.color-customization-editor-scope .text-fg-muted,
+.color-customization-editor-scope .text-fg\/52,
+.color-customization-editor-scope .text-fg\/70,
+.color-customization-editor-scope .text-fg\/72,
+.color-customization-editor-scope .text-fg\/75,
+.color-customization-editor-scope .text-fg\/78,
+.color-customization-editor-scope .text-fg\/65,
+.color-customization-editor-scope .text-fg\/62,
+.color-customization-editor-scope .text-fg\/60,
+.color-customization-editor-scope .text-fg\/55,
+.color-customization-editor-scope .text-fg\/50 {
+  color: var(--settings-ui-fg-muted) !important;
+}
+
+.color-customization-editor-scope .text-fg-subtle,
+.color-customization-editor-scope .text-fg\/15,
+.color-customization-editor-scope .text-fg\/20,
+.color-customization-editor-scope .text-fg\/25,
+.color-customization-editor-scope .text-fg\/45,
+.color-customization-editor-scope .text-fg\/48,
+.color-customization-editor-scope .text-fg\/40,
+.color-customization-editor-scope .text-fg\/38,
+.color-customization-editor-scope .text-fg\/36,
+.color-customization-editor-scope .text-fg\/35,
+.color-customization-editor-scope .text-fg\/30 {
+  color: var(--settings-ui-fg-subtle) !important;
+}
+
+.color-customization-editor-scope .text-fg,
+.color-customization-editor-scope .text-fg\/80,
+.color-customization-editor-scope .text-fg\/82,
+.color-customization-editor-scope .text-fg\/85,
+.color-customization-editor-scope .text-fg\/90,
+.color-customization-editor-scope .text-fg\/92 {
+  color: var(--settings-ui-fg) !important;
+}
+
+.color-customization-editor-scope .placeholder-fg\/40::placeholder,
+.color-customization-editor-scope .placeholder-fg\/30::placeholder {
+  color: var(--settings-ui-fg-subtle) !important;
 }
 
 .container {

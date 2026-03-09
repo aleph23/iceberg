@@ -1822,10 +1822,15 @@ export type TooltipsState = z.infer<typeof TooltipsStateSchema>;
 export const PureModeLevelSchema = z.enum(["off", "low", "standard", "strict"]);
 export type PureModeLevel = z.infer<typeof PureModeLevelSchema>;
 
+export const SettingsCardOpacitySchema = z.number().int().min(0).max(100);
+
 export const CustomColorsSchema = z.object({
   surface: z.string().optional(),
   surfaceEl: z.string().optional(),
   fg: z.string().optional(),
+  appText: z.string().optional(),
+  appTextMuted: z.string().optional(),
+  appTextSubtle: z.string().optional(),
   accent: z.string().optional(),
   danger: z.string().optional(),
   warning: z.string().optional(),
@@ -1839,6 +1844,7 @@ export const CustomColorPresetSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1),
   colors: CustomColorsSchema,
+  settingsCardOpacity: SettingsCardOpacitySchema.optional(),
   createdAt: z.number().int().nonnegative(),
 });
 export type CustomColorPreset = z.infer<typeof CustomColorPresetSchema>;
@@ -1858,6 +1864,7 @@ export const AppStateSchema = z.object({
   appActiveUsageByDayMs: z.record(z.number().int().nonnegative()).default({}),
   appActiveUsageStartedAtMs: z.number().int().nonnegative().optional(),
   appActiveUsageLastUpdatedAtMs: z.number().int().nonnegative().optional(),
+  settingsCardOpacity: SettingsCardOpacitySchema.default(5),
   customColors: CustomColorsSchema.optional(),
   customColorPresets: z.array(CustomColorPresetSchema).default([]),
   chatsViewMode: ChatsViewModeSchema.default("hero"),
@@ -1976,6 +1983,7 @@ export function createDefaultAppState(): AppState {
     analyticsEnabled: true,
     appActiveUsageMs: 0,
     appActiveUsageByDayMs: {},
+    settingsCardOpacity: 5,
     customColorPresets: [],
     chatsViewMode: "hero",
   };

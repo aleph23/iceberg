@@ -25,10 +25,12 @@ function cloneAppState(state?: AppState): AppState {
     appActiveUsageByDayMs: { ...(source.appActiveUsageByDayMs ?? {}) },
     appActiveUsageStartedAtMs: source.appActiveUsageStartedAtMs,
     appActiveUsageLastUpdatedAtMs: source.appActiveUsageLastUpdatedAtMs,
+    settingsCardOpacity: source.settingsCardOpacity ?? 5,
     customColors: source.customColors ? { ...source.customColors } : undefined,
     customColorPresets: (source.customColorPresets ?? []).map((preset) => ({
       ...preset,
       colors: { ...preset.colors },
+      settingsCardOpacity: preset.settingsCardOpacity,
     })),
     chatsViewMode: source.chatsViewMode ?? "hero",
   };
@@ -191,9 +193,20 @@ export async function getCustomColors(): Promise<CustomColors | undefined> {
   return state.customColors;
 }
 
+export async function getSettingsCardOpacity(): Promise<number> {
+  const state = await getAppState();
+  return state.settingsCardOpacity ?? 5;
+}
+
 export async function setCustomColors(colors: CustomColors): Promise<void> {
   await withAppState((state) => {
     state.customColors = colors;
+  });
+}
+
+export async function setSettingsCardOpacity(opacity: number): Promise<void> {
+  await withAppState((state) => {
+    state.settingsCardOpacity = opacity;
   });
 }
 
@@ -207,6 +220,7 @@ export async function setCustomColorPresets(presets: CustomColorPreset[]): Promi
     state.customColorPresets = presets.map((preset) => ({
       ...preset,
       colors: { ...preset.colors },
+      settingsCardOpacity: preset.settingsCardOpacity,
     }));
   });
 }

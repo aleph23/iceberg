@@ -1,5 +1,12 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
-import { getTheme as getStoredTheme, setTheme as setStoredTheme, getCustomColors, setCustomColors as saveCustomColors } from "../storage/appState";
+import {
+  getTheme as getStoredTheme,
+  setTheme as setStoredTheme,
+  getCustomColors,
+  getSettingsCardOpacity as getStoredSettingsCardOpacity,
+  setCustomColors as saveCustomColors,
+  setSettingsCardOpacity as saveSettingsCardOpacity,
+} from "../storage/appState";
 import type { CustomColors } from "../storage/schemas";
 
 type Theme = "light" | "dark";
@@ -10,6 +17,8 @@ interface ThemeContextType {
   setTheme: (theme: Theme) => void;
   customColors: CustomColors | undefined;
   setCustomColors: (colors: CustomColors) => void;
+  settingsCardOpacity: number;
+  setSettingsCardOpacity: (opacity: number) => void;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
@@ -26,6 +35,9 @@ const COLOR_KEY_TO_VAR: Record<string, string> = {
   surface: "--color-surface",
   surfaceEl: "--color-surface-el",
   fg: "--color-fg",
+  appText: "--color-app-text",
+  appTextMuted: "--color-app-text-muted",
+  appTextSubtle: "--color-app-text-subtle",
   accent: "--color-accent",
   danger: "--color-danger",
   warning: "--color-warning",
@@ -33,6 +45,14 @@ const COLOR_KEY_TO_VAR: Record<string, string> = {
   secondary: "--color-secondary",
   nav: "--color-nav",
 };
+
+function applySettingsCardOpacity(opacity: number) {
+  const normalized = Math.max(0, Math.min(100, Math.round(opacity)));
+  const root = document.documentElement;
+  root.style.setProperty("--settings-card-opacity", `${normalized}%`);
+  root.style.setProperty("--settings-card-opacity-mid", `${Math.min(normalized + 2, 100)}%`);
+  root.style.setProperty("--settings-card-opacity-hover", `${Math.min(normalized + 4, 100)}%`);
+}
 
 function applyCustomColors(colors: Partial<CustomColors>) {
   const root = document.documentElement;
@@ -51,14 +71,16 @@ interface ThemeProviderProps {
 export function ThemeProvider({ children }: ThemeProviderProps) {
   const [theme, setThemeState] = useState<Theme>("light");
   const [customColorsState, setCustomColorsState] = useState<CustomColors | undefined>(undefined);
+  const [settingsCardOpacityState, setSettingsCardOpacityState] = useState(5);
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
-      const [savedTheme, savedColors] = await Promise.all([
+      const [savedTheme, savedColors, savedSettingsCardOpacity] = await Promise.all([
         getStoredTheme() as Promise<Theme>,
         getCustomColors(),
+        getStoredSettingsCardOpacity(),
       ]);
       if (cancelled) return;
       setThemeState(savedTheme);
@@ -67,6 +89,8 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
         setCustomColorsState(savedColors);
         applyCustomColors(savedColors);
       }
+      setSettingsCardOpacityState(savedSettingsCardOpacity);
+      applySettingsCardOpacity(savedSettingsCardOpacity);
     })();
 
     return () => {
@@ -100,8 +124,25 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
     void saveCustomColors(colors);
   }, []);
 
+  const setSettingsCardOpacity = useCallback((opacity: number) => {
+    const normalized = Math.max(0, Math.min(100, Math.round(opacity)));
+    setSettingsCardOpacityState(normalized);
+    applySettingsCardOpacity(normalized);
+    void saveSettingsCardOpacity(normalized);
+  }, []);
+
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme, setTheme, customColors: customColorsState, setCustomColors }}>
+    <ThemeContext.Provider
+      value={{
+        theme,
+        toggleTheme,
+        setTheme,
+        customColors: customColorsState,
+        setCustomColors,
+        settingsCardOpacity: settingsCardOpacityState,
+        setSettingsCardOpacity,
+      }}
+    >
       {children}
     </ThemeContext.Provider>
   );

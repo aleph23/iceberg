@@ -638,7 +638,11 @@ function AppContent() {
             animate={{ opacity: 1, y: 0 }}
             exit={shouldAnimatePage ? { opacity: 0, y: -16 } : { opacity: 1, y: 0 }}
             transition={shouldAnimatePage ? { duration: 0.2, ease: "easeOut" } : { duration: 0 }}
-            className="h-full"
+            className={
+              location.pathname.startsWith("/settings")
+                ? "h-full app-text-scope settings-theme-scope"
+                : "h-full app-text-scope"
+            }
           >
             <Routes>
               <Route path="/" element={<OnboardingCheck />} />

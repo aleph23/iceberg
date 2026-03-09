@@ -4,13 +4,17 @@ import { useTheme } from "../../../core/theme/ThemeContext";
 import {
   getCustomColorPresets,
   getCustomColors,
+  getSettingsCardOpacity,
   setCustomColors as persistCustomColors,
   setCustomColorPresets,
+  setSettingsCardOpacity as persistSettingsCardOpacity,
 } from "../../../core/storage/appState";
 import type { CustomColorPreset, CustomColors } from "../../../core/storage/schemas";
 import { cn, interactive, radius } from "../../design-tokens";
 import { toast } from "../../components/toast";
 import { useI18n } from "../../../core/i18n/context";
+
+const SETTINGS_CARD_OPACITY_DEFAULT = 5;
 
 const COLOR_TOKENS = [
   {
@@ -37,8 +41,29 @@ const COLOR_TOKENS = [
   {
     key: "fg" as const,
     label: "Foreground",
-    description: "Text, borders, overlays",
+    description: "Borders, overlays, navigation, UI chrome",
     defaultValue: "#ffffff",
+    group: "content",
+  },
+  {
+    key: "appText" as const,
+    label: "App Text",
+    description: "Primary text and interface labels",
+    defaultValue: "#ffffff",
+    group: "content",
+  },
+  {
+    key: "appTextMuted" as const,
+    label: "Muted Text",
+    description: "Secondary text and support copy",
+    defaultValue: "#adadad",
+    group: "content",
+  },
+  {
+    key: "appTextSubtle" as const,
+    label: "Subtle Text",
+    description: "Hints, helper text, placeholders",
+    defaultValue: "#737373",
     group: "content",
   },
   {
@@ -79,6 +104,8 @@ const COLOR_TOKENS = [
 ] as const;
 
 type ColorKey = (typeof COLOR_TOKENS)[number]["key"];
+type DerivedColorKey = "appTextMuted" | "appTextSubtle";
+type BaseColorKey = Exclude<ColorKey, DerivedColorKey>;
 
 const TOKEN_GROUPS = [
   { id: "backgrounds", label: "Backgrounds" },
@@ -94,9 +121,16 @@ const DEFAULTS = Object.fromEntries(COLOR_TOKENS.map((t) => [t.key, t.defaultVal
 interface Preset {
   name: string;
   colors: Record<ColorKey, string>;
+  settingsCardOpacity?: number;
 }
 
-const PRESETS: Preset[] = [
+interface BasePreset {
+  name: string;
+  colors: Record<BaseColorKey, string>;
+  settingsCardOpacity?: number;
+}
+
+const BASE_PRESETS: BasePreset[] = [
   {
     name: "Default Dark",
     colors: {
@@ -104,6 +138,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#0a0a0a",
       nav: "#0a0a0a",
       fg: "#ffffff",
+      appText: "#ffffff",
       accent: "#34d399",
       info: "#3b82f6",
       warning: "#f59e0b",
@@ -118,6 +153,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#111827",
       nav: "#0d1120",
       fg: "#e2e8f0",
+      appText: "#e2e8f0",
       accent: "#60a5fa",
       info: "#818cf8",
       warning: "#fbbf24",
@@ -132,6 +168,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#231c15",
       nav: "#1a1410",
       fg: "#f5e6d3",
+      appText: "#f5e6d3",
       accent: "#d4a574",
       info: "#7cb4c4",
       warning: "#e6a23c",
@@ -146,6 +183,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#150f20",
       nav: "#0d0815",
       fg: "#e8dff5",
+      appText: "#e8dff5",
       accent: "#a78bfa",
       info: "#67e8f9",
       warning: "#fcd34d",
@@ -160,6 +198,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#1f1d2e",
       nav: "#191724",
       fg: "#e0def4",
+      appText: "#e0def4",
       accent: "#c4a7e7",
       info: "#9ccfd8",
       warning: "#f6c177",
@@ -174,6 +213,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#24283b",
       nav: "#1a1b26",
       fg: "#c0caf5",
+      appText: "#c0caf5",
       accent: "#7aa2f7",
       info: "#2ac3de",
       warning: "#e0af68",
@@ -188,6 +228,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#313244",
       nav: "#1e1e2e",
       fg: "#cdd6f4",
+      appText: "#cdd6f4",
       accent: "#a6e3a1",
       info: "#89b4fa",
       warning: "#f9e2af",
@@ -202,6 +243,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#282828",
       nav: "#1d2021",
       fg: "#ebdbb2",
+      appText: "#ebdbb2",
       accent: "#b8bb26",
       info: "#83a598",
       warning: "#fabd2f",
@@ -216,6 +258,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#3b4252",
       nav: "#2e3440",
       fg: "#eceff4",
+      appText: "#eceff4",
       accent: "#a3be8c",
       info: "#88c0d0",
       warning: "#ebcb8b",
@@ -230,6 +273,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#44475a",
       nav: "#282a36",
       fg: "#f8f8f2",
+      appText: "#f8f8f2",
       accent: "#50fa7b",
       info: "#8be9fd",
       warning: "#f1fa8c",
@@ -244,6 +288,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#073642",
       nav: "#002b36",
       fg: "#fdf6e3",
+      appText: "#fdf6e3",
       accent: "#859900",
       info: "#268bd2",
       warning: "#b58900",
@@ -258,6 +303,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#131721",
       nav: "#0d1017",
       fg: "#bfbdb6",
+      appText: "#bfbdb6",
       accent: "#e6b450",
       info: "#59c2ff",
       warning: "#ffb454",
@@ -272,6 +318,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#282c34",
       nav: "#21252b",
       fg: "#abb2bf",
+      appText: "#abb2bf",
       accent: "#98c379",
       info: "#61afef",
       warning: "#e5c07b",
@@ -286,6 +333,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#1c1c1c",
       nav: "#101010",
       fg: "#b0b0b0",
+      appText: "#b0b0b0",
       accent: "#ffc799",
       info: "#8eb8e2",
       warning: "#deb887",
@@ -300,6 +348,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#12121e",
       nav: "#0a0a12",
       fg: "#e4e4f0",
+      appText: "#e4e4f0",
       accent: "#00ffaa",
       info: "#00d4ff",
       warning: "#ffe600",
@@ -314,6 +363,7 @@ const PRESETS: Preset[] = [
       surfaceEl: "#1a1a1a",
       nav: "#111111",
       fg: "#e0e0e0",
+      appText: "#e0e0e0",
       accent: "#ffffff",
       info: "#a0a0a0",
       warning: "#c8c8c8",
@@ -329,12 +379,79 @@ interface PresetExportPayload {
   preset: {
     name: string;
     colors: Record<ColorKey, string>;
+    settingsCardOpacity?: number;
   };
 }
 
 function isValidHex(value: string): boolean {
   return /^#[0-9a-fA-F]{6}$/.test(value);
 }
+
+function normalizeSettingsCardOpacity(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return SETTINGS_CARD_OPACITY_DEFAULT;
+  }
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function hexToRgb(value: string): [number, number, number] {
+  const match = /^#([0-9a-fA-F]{6})$/.exec(value);
+  if (!match) return [0, 0, 0];
+  const raw = match[1];
+  return [
+    Number.parseInt(raw.slice(0, 2), 16),
+    Number.parseInt(raw.slice(2, 4), 16),
+    Number.parseInt(raw.slice(4, 6), 16),
+  ];
+}
+
+function rgbToHex([r, g, b]: [number, number, number]): string {
+  return `#${[r, g, b]
+    .map((channel) => Math.max(0, Math.min(255, Math.round(channel))).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
+function mixHex(base: string, overlay: string, overlayWeight: number): string {
+  const weight = Math.max(0, Math.min(1, overlayWeight));
+  const [baseR, baseG, baseB] = hexToRgb(base);
+  const [overlayR, overlayG, overlayB] = hexToRgb(overlay);
+  return rgbToHex([
+    baseR * (1 - weight) + overlayR * weight,
+    baseG * (1 - weight) + overlayG * weight,
+    baseB * (1 - weight) + overlayB * weight,
+  ]);
+}
+
+function getResolvedDefaultColor(key: ColorKey, colors?: Partial<CustomColors>): string {
+  if (key === "appTextMuted") {
+    return mixHex(
+      colors?.surface ?? DEFAULTS.surface,
+      colors?.appText ?? colors?.fg ?? DEFAULTS.appText,
+      0.68,
+    );
+  }
+  if (key === "appTextSubtle") {
+    return mixHex(
+      colors?.surface ?? DEFAULTS.surface,
+      colors?.appText ?? colors?.fg ?? DEFAULTS.appText,
+      0.45,
+    );
+  }
+  return DEFAULTS[key];
+}
+
+function withDerivedTextColors(preset: BasePreset): Preset {
+  return {
+    ...preset,
+    colors: {
+      ...preset.colors,
+      appTextMuted: getResolvedDefaultColor("appTextMuted", preset.colors),
+      appTextSubtle: getResolvedDefaultColor("appTextSubtle", preset.colors),
+    },
+  };
+}
+
+const PRESETS: Preset[] = BASE_PRESETS.map(withDerivedTextColors);
 
 function cssVar(key: string): string {
   return `--color-${key.replace(/[A-Z]/g, (m) => "-" + m.toLowerCase())}`;
@@ -356,6 +473,10 @@ function normalizePreset(preset: CustomColorPreset): CustomColorPreset {
     ...preset,
     name: preset.name.trim(),
     colors: normalizeCustomColors(preset.colors),
+    settingsCardOpacity:
+      preset.settingsCardOpacity === undefined
+        ? undefined
+        : normalizeSettingsCardOpacity(preset.settingsCardOpacity),
   };
 }
 
@@ -368,6 +489,7 @@ function presetsEqual(a: CustomColorPreset[], b: CustomColorPreset[]): boolean {
       left.id !== right.id ||
       left.name !== right.name ||
       left.createdAt !== right.createdAt ||
+      left.settingsCardOpacity !== right.settingsCardOpacity ||
       JSON.stringify(left.colors) !== JSON.stringify(right.colors)
     ) {
       return false;
@@ -382,11 +504,13 @@ function colorsEqual(a: CustomColors, b: CustomColors): boolean {
 
 function buildPresetColors(colors: CustomColors): Record<ColorKey, string> {
   return Object.fromEntries(
-    COLOR_TOKENS.map((token) => [token.key, colors[token.key] ?? DEFAULTS[token.key]]),
+    COLOR_TOKENS.map((token) => [token.key, colors[token.key] ?? getResolvedDefaultColor(token.key, colors)]),
   ) as Record<ColorKey, string>;
 }
 
-function parseImportedPreset(value: unknown): { name: string; colors: CustomColors } | null {
+function parseImportedPreset(
+  value: unknown,
+): { name: string; colors: CustomColors; settingsCardOpacity?: number } | null {
   if (!value || typeof value !== "object") return null;
 
   const data = value as Record<string, unknown>;
@@ -402,7 +526,13 @@ function parseImportedPreset(value: unknown): { name: string; colors: CustomColo
   if (!rawColors || typeof rawColors !== "object") return null;
 
   const colors = normalizeCustomColors(rawColors as CustomColors);
-  return { name, colors };
+  const rawOpacity = preset.settingsCardOpacity;
+  return {
+    name,
+    colors,
+    settingsCardOpacity:
+      typeof rawOpacity === "number" ? normalizeSettingsCardOpacity(rawOpacity) : undefined,
+  };
 }
 
 function applyColorsToDocument(colors: CustomColors) {
@@ -417,6 +547,14 @@ function applyColorsToDocument(colors: CustomColors) {
   }
 }
 
+function applySettingsCardOpacityToDocument(opacity: number) {
+  const normalized = normalizeSettingsCardOpacity(opacity);
+  const root = document.documentElement;
+  root.style.setProperty("--settings-card-opacity", `${normalized}%`);
+  root.style.setProperty("--settings-card-opacity-mid", `${Math.min(normalized + 2, 100)}%`);
+  root.style.setProperty("--settings-card-opacity-hover", `${Math.min(normalized + 4, 100)}%`);
+}
+
 function slugify(value: string): string {
   return value
     .replace(/[^a-z0-9]+/gi, "_")
@@ -429,6 +567,9 @@ const TOKEN_LABEL_KEYS: Record<ColorKey, { label: string; desc: string }> = {
   surfaceEl: { label: "colorCustomization.tokens.surfaceEl", desc: "colorCustomization.tokens.surfaceElDesc" },
   nav: { label: "colorCustomization.tokens.nav", desc: "colorCustomization.tokens.navDesc" },
   fg: { label: "colorCustomization.tokens.foreground", desc: "colorCustomization.tokens.foregroundDesc" },
+  appText: { label: "colorCustomization.tokens.appText", desc: "colorCustomization.tokens.appTextDesc" },
+  appTextMuted: { label: "colorCustomization.tokens.appTextMuted", desc: "colorCustomization.tokens.appTextMutedDesc" },
+  appTextSubtle: { label: "colorCustomization.tokens.appTextSubtle", desc: "colorCustomization.tokens.appTextSubtleDesc" },
   accent: { label: "colorCustomization.tokens.accent", desc: "colorCustomization.tokens.accentDesc" },
   info: { label: "colorCustomization.tokens.info", desc: "colorCustomization.tokens.infoDesc" },
   warning: { label: "colorCustomization.tokens.warning", desc: "colorCustomization.tokens.warningDesc" },
@@ -462,13 +603,20 @@ const PRESET_NAME_KEYS: Record<string, string> = {
 };
 
 export function ColorCustomizationPage() {
-  const { setCustomColors: setThemeCustomColors } = useTheme();
+  const {
+    setCustomColors: setThemeCustomColors,
+    setSettingsCardOpacity: setThemeSettingsCardOpacity,
+  } = useTheme();
   const { t } = useI18n();
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [workingColors, setWorkingColors] = useState<CustomColors>({});
   const [initialColors, setInitialColors] = useState<CustomColors>({});
+  const [settingsCardOpacity, setSettingsCardOpacity] = useState(SETTINGS_CARD_OPACITY_DEFAULT);
+  const [initialSettingsCardOpacity, setInitialSettingsCardOpacity] = useState(
+    SETTINGS_CARD_OPACITY_DEFAULT,
+  );
   const [importedPresets, setImportedPresets] = useState<CustomColorPreset[]>([]);
   const [initialImportedPresets, setInitialImportedPresets] = useState<CustomColorPreset[]>([]);
   const [appliedPresetName, setAppliedPresetName] = useState<string | null>(null);
@@ -479,18 +627,23 @@ export function ColorCustomizationPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [storedColors, storedPresets] = await Promise.all([
+        const [storedColors, storedPresets, storedSettingsCardOpacity] = await Promise.all([
           getCustomColors(),
           getCustomColorPresets(),
+          getSettingsCardOpacity(),
         ]);
         const normalizedColors = normalizeCustomColors(storedColors ?? {});
         const normalizedPresets = (storedPresets ?? []).map(normalizePreset);
+        const normalizedSettingsCardOpacity = normalizeSettingsCardOpacity(storedSettingsCardOpacity);
 
         setWorkingColors(normalizedColors);
         setInitialColors(normalizedColors);
+        setSettingsCardOpacity(normalizedSettingsCardOpacity);
+        setInitialSettingsCardOpacity(normalizedSettingsCardOpacity);
         setImportedPresets(normalizedPresets);
         setInitialImportedPresets(normalizedPresets);
         applyColorsToDocument(normalizedColors);
+        applySettingsCardOpacityToDocument(normalizedSettingsCardOpacity);
       } catch (error) {
         console.error("Failed to load color customization settings:", error);
         toast.error("Load failed", "Could not load saved color settings.");
@@ -507,12 +660,25 @@ export function ColorCustomizationPage() {
     applyColorsToDocument(workingColors);
   }, [workingColors, isLoading]);
 
+  useEffect(() => {
+    if (isLoading) return;
+    applySettingsCardOpacityToDocument(settingsCardOpacity);
+  }, [settingsCardOpacity, isLoading]);
+
   const isDirty = useMemo(() => {
     return (
       !colorsEqual(workingColors, initialColors) ||
+      settingsCardOpacity !== initialSettingsCardOpacity ||
       !presetsEqual(importedPresets, initialImportedPresets)
     );
-  }, [workingColors, initialColors, importedPresets, initialImportedPresets]);
+  }, [
+    workingColors,
+    initialColors,
+    settingsCardOpacity,
+    initialSettingsCardOpacity,
+    importedPresets,
+    initialImportedPresets,
+  ]);
 
   const getEffective = (key: ColorKey): string => workingColors[key] ?? "";
 
@@ -523,7 +689,7 @@ export function ColorCustomizationPage() {
 
   const getDisplayColor = (key: ColorKey): string => {
     const v = getDraftOrValue(key);
-    return isValidHex(v) ? v : DEFAULTS[key];
+    return isValidHex(v) ? v : getResolvedDefaultColor(key, workingColors);
   };
 
   const getUniqueModifiedPresetName = useCallback(
@@ -547,33 +713,68 @@ export function ColorCustomizationPage() {
     [importedPresets],
   );
 
-  const applyManualEdit = useCallback(
-    (next: CustomColors) => {
-      const normalized = normalizeCustomColors(next);
-      if (colorsEqual(normalized, workingColors)) return;
+  const trackDerivedPreset = useCallback(
+    (nextColors: CustomColors, nextOpacity: number) => {
+      if (!appliedPresetName) return;
 
-      if (appliedPresetName) {
-        if (derivedPresetId) {
-          setImportedPresets((prev) =>
-            prev.map((preset) =>
-              preset.id === derivedPresetId ? { ...preset, colors: normalized } : preset,
-            ),
-          );
-        } else {
-          const createdPreset: CustomColorPreset = {
-            id: crypto.randomUUID(),
-            name: getUniqueModifiedPresetName(appliedPresetName),
-            colors: normalized,
-            createdAt: Date.now(),
-          };
-          setImportedPresets((prev) => [...prev, createdPreset]);
-          setDerivedPresetId(createdPreset.id);
-        }
+      if (derivedPresetId) {
+        setImportedPresets((prev) =>
+          prev.map((preset) =>
+            preset.id === derivedPresetId
+              ? {
+                  ...preset,
+                  colors: nextColors,
+                  settingsCardOpacity: nextOpacity,
+                }
+              : preset,
+          ),
+        );
+        return;
       }
 
-      setWorkingColors(normalized);
+      const createdPreset: CustomColorPreset = {
+        id: crypto.randomUUID(),
+        name: getUniqueModifiedPresetName(appliedPresetName),
+        colors: nextColors,
+        settingsCardOpacity: nextOpacity,
+        createdAt: Date.now(),
+      };
+      setImportedPresets((prev) => [...prev, createdPreset]);
+      setDerivedPresetId(createdPreset.id);
     },
-    [appliedPresetName, derivedPresetId, getUniqueModifiedPresetName, workingColors],
+    [appliedPresetName, derivedPresetId, getUniqueModifiedPresetName],
+  );
+
+  const commitWorkingState = useCallback(
+    (nextColors: CustomColors, nextOpacity: number) => {
+      const normalizedColors = normalizeCustomColors(nextColors);
+      const normalizedOpacity = normalizeSettingsCardOpacity(nextOpacity);
+      if (
+        colorsEqual(normalizedColors, workingColors) &&
+        normalizedOpacity === settingsCardOpacity
+      ) {
+        return;
+      }
+
+      trackDerivedPreset(normalizedColors, normalizedOpacity);
+      setWorkingColors(normalizedColors);
+      setSettingsCardOpacity(normalizedOpacity);
+    },
+    [settingsCardOpacity, trackDerivedPreset, workingColors],
+  );
+
+  const applyManualEdit = useCallback(
+    (next: CustomColors) => {
+      commitWorkingState(next, settingsCardOpacity);
+    },
+    [commitWorkingState, settingsCardOpacity],
+  );
+
+  const handleSettingsCardOpacityChange = useCallback(
+    (value: number) => {
+      commitWorkingState(workingColors, value);
+    },
+    [commitWorkingState, workingColors],
   );
 
   const handleChange = useCallback(
@@ -609,13 +810,18 @@ export function ColorCustomizationPage() {
   );
 
   const handleResetAll = useCallback(() => {
-    applyManualEdit({});
+    commitWorkingState({}, SETTINGS_CARD_OPACITY_DEFAULT);
     setDrafts({});
-  }, [applyManualEdit]);
+  }, [commitWorkingState]);
 
   const applyPreset = useCallback(
-    (preset: { name: string; colors: Record<ColorKey, string> | CustomColors }) => {
+    (preset: {
+      name: string;
+      colors: Record<ColorKey, string> | CustomColors;
+      settingsCardOpacity?: number;
+    }) => {
       setWorkingColors(normalizeCustomColors(preset.colors));
+      setSettingsCardOpacity(normalizeSettingsCardOpacity(preset.settingsCardOpacity));
       setDrafts({});
       setAppliedPresetName(preset.name);
       setDerivedPresetId(null);
@@ -629,10 +835,14 @@ export function ColorCustomizationPage() {
     try {
       const normalizedColors = normalizeCustomColors(workingColors);
       const normalizedPresets = importedPresets.map(normalizePreset);
+      const normalizedSettingsCardOpacity = normalizeSettingsCardOpacity(settingsCardOpacity);
       await persistCustomColors(normalizedColors);
+      await persistSettingsCardOpacity(normalizedSettingsCardOpacity);
       await setCustomColorPresets(normalizedPresets);
       setThemeCustomColors(normalizedColors);
+      setThemeSettingsCardOpacity(normalizedSettingsCardOpacity);
       setInitialColors(normalizedColors);
+      setInitialSettingsCardOpacity(normalizedSettingsCardOpacity);
       setInitialImportedPresets(normalizedPresets);
       toast.success("Saved", "Color customization updated.");
     } catch (error) {
@@ -645,19 +855,21 @@ export function ColorCustomizationPage() {
     isDirty,
     isSaving,
     workingColors,
+    settingsCardOpacity,
     importedPresets,
     setThemeCustomColors,
-    persistCustomColors,
+    setThemeSettingsCardOpacity,
   ]);
 
   const handleDiscard = useCallback(() => {
     if (!isDirty) return;
     setWorkingColors(initialColors);
+    setSettingsCardOpacity(initialSettingsCardOpacity);
     setImportedPresets(initialImportedPresets);
     setDrafts({});
     setAppliedPresetName(null);
     setDerivedPresetId(null);
-  }, [isDirty, initialColors, initialImportedPresets]);
+  }, [isDirty, initialColors, initialImportedPresets, initialSettingsCardOpacity]);
 
   const handleImportJson = useCallback((rawJson: string) => {
     let parsed: unknown;
@@ -687,6 +899,7 @@ export function ColorCustomizationPage() {
       id: crypto.randomUUID(),
       name: imported.name,
       colors: imported.colors,
+      settingsCardOpacity: imported.settingsCardOpacity,
       createdAt,
     };
 
@@ -709,6 +922,7 @@ export function ColorCustomizationPage() {
       preset: {
         name,
         colors: buildPresetColors(workingColors),
+        settingsCardOpacity,
       },
     };
 
@@ -722,7 +936,7 @@ export function ColorCustomizationPage() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
-  }, [workingColors]);
+  }, [settingsCardOpacity, workingColors]);
 
   const handleRenameImportedPreset = useCallback((preset: CustomColorPreset) => {
     const nextName = window.prompt("Rename preset", preset.name)?.trim();
@@ -769,22 +983,26 @@ export function ColorCustomizationPage() {
     };
   }, [handleSave, isDirty, isSaving]);
 
-  const hasAnyCustom = COLOR_TOKENS.some((tok) => workingColors[tok.key]);
+  const hasAnyCustom =
+    COLOR_TOKENS.some((tok) => workingColors[tok.key]) ||
+    settingsCardOpacity !== SETTINGS_CARD_OPACITY_DEFAULT;
 
   const isPresetActive = (preset: Preset | CustomColorPreset) => {
-    const presetColors = "createdAt" in preset ? preset.colors : preset.colors;
+    const presetColors = preset.colors;
+    const presetOpacity = normalizeSettingsCardOpacity(preset.settingsCardOpacity);
     return COLOR_TOKENS.every((tok) => {
-      const current = workingColors[tok.key];
+      const current = workingColors[tok.key] ?? getResolvedDefaultColor(tok.key, workingColors);
+      const candidate = presetColors[tok.key] ?? getResolvedDefaultColor(tok.key, presetColors);
       return (
-        current === presetColors[tok.key] || (!current && presetColors[tok.key] === DEFAULTS[tok.key])
+        current === candidate
       );
-    });
+    }) && settingsCardOpacity === presetOpacity;
   };
 
   if (isLoading) return null;
 
   return (
-    <div className="flex h-full flex-col pb-16">
+    <div className="color-customization-editor-scope flex h-full flex-col pb-16">
       <section className="flex-1 min-h-0 overflow-y-auto px-3 pt-3 space-y-5">
         <input
           ref={importInputRef}
@@ -867,7 +1085,13 @@ export function ColorCustomizationPage() {
                 <button
                   key={preset.name}
                   type="button"
-                  onClick={() => applyPreset({ name: preset.name, colors: preset.colors })}
+                  onClick={() =>
+                    applyPreset({
+                      name: preset.name,
+                      colors: preset.colors,
+                      settingsCardOpacity: preset.settingsCardOpacity,
+                    })
+                  }
                   className={cn(
                     "flex items-center gap-2.5 rounded-lg border px-3 py-2",
                     interactive.transition.fast,
@@ -917,7 +1141,13 @@ export function ColorCustomizationPage() {
                   >
                     <button
                       type="button"
-                      onClick={() => applyPreset({ name: preset.name, colors: preset.colors })}
+                      onClick={() =>
+                        applyPreset({
+                          name: preset.name,
+                          colors: preset.colors,
+                          settingsCardOpacity: preset.settingsCardOpacity,
+                        })
+                      }
                       className="flex min-w-0 flex-1 items-center gap-2.5"
                     >
                       <div className="flex gap-1 shrink-0">
@@ -961,6 +1191,38 @@ export function ColorCustomizationPage() {
           </div>
         )}
 
+        <div>
+          <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
+            {t("colorCustomization.settingsCardsLabel")}
+          </h2>
+          <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3">
+            <div className="flex items-center justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-fg">
+                  {t("colorCustomization.settingsCardsOpacity")}
+                </div>
+                <div className="text-[11px] text-fg/45">
+                  {t("colorCustomization.settingsCardsOpacityDesc")}
+                </div>
+              </div>
+              <div className="min-w-[3.5rem] rounded-md border border-fg/10 bg-fg/5 px-2.5 py-1 text-right text-xs font-medium text-fg">
+                {settingsCardOpacity}%
+              </div>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={settingsCardOpacity}
+              onChange={(event) =>
+                handleSettingsCardOpacityChange(Number.parseInt(event.target.value, 10))
+              }
+              className="mt-4 w-full accent-[var(--color-accent)]"
+            />
+          </div>
+        </div>
+
         {/* Grouped token editors */}
         {TOKEN_GROUPS.map((group) => {
           const tokens = COLOR_TOKENS.filter((tok) => tok.group === group.id);
@@ -972,7 +1234,7 @@ export function ColorCustomizationPage() {
               <div className="space-y-2.5">
                 {tokens.map((token) => {
                   const displayColor = getDisplayColor(token.key);
-                  const inputValue = getDraftOrValue(token.key) || DEFAULTS[token.key];
+                  const inputValue = getDraftOrValue(token.key) || getResolvedDefaultColor(token.key, workingColors);
                   const isCustom = Boolean(workingColors[token.key]);
 
                   return (
@@ -1014,7 +1276,7 @@ export function ColorCustomizationPage() {
                             value={inputValue}
                             onChange={(e) => handleChange(token.key, e.target.value)}
                             onBlur={() => handleBlur(token.key)}
-                            placeholder={DEFAULTS[token.key]}
+                            placeholder={getResolvedDefaultColor(token.key, workingColors)}
                             spellCheck={false}
                             className={cn(
                               "w-22.5 rounded-lg border px-2.5 py-1.5 font-mono text-xs text-fg",
@@ -1050,9 +1312,15 @@ export function ColorCustomizationPage() {
           </h2>
           <div className="rounded-xl border border-fg/10 bg-surface p-4 space-y-4">
             <div className="space-y-1">
-              <p className="text-sm font-medium text-fg">Primary text</p>
-              <p className="text-xs text-fg/60">Secondary text at 60% opacity</p>
-              <p className="text-[11px] text-fg/35">Tertiary text at 35% opacity</p>
+              <p className="text-sm font-medium" style={{ color: "var(--color-app-text)" }}>
+                Primary text
+              </p>
+              <p className="text-xs" style={{ color: "var(--color-app-text-muted)" }}>
+                Muted text color
+              </p>
+              <p className="text-[11px]" style={{ color: "var(--color-app-text-subtle)" }}>
+                Subtle text color
+              </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
@@ -1070,15 +1338,17 @@ export function ColorCustomizationPage() {
               </span>
             </div>
 
-            <div className="rounded-lg border border-fg/10 bg-surface-el p-3 space-y-2">
+            <div className="rounded-lg border border-fg/10 bg-fg/5 p-3 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-medium text-fg">Sample Card</span>
+                <span className="text-xs font-medium" style={{ color: "var(--color-app-text)" }}>
+                  Sample Card
+                </span>
                 <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[10px] font-medium text-accent">
                   Active
                 </span>
               </div>
-              <p className="text-[11px] text-fg/50">
-                This card uses the elevated surface background with foreground text.
+              <p className="text-[11px]" style={{ color: "var(--color-app-text-subtle)" }}>
+                This preview uses the current settings-card opacity and app text colors.
               </p>
               <div className="flex gap-2">
                 <div className="flex-1 rounded-md bg-accent/10 px-2 py-1.5 text-center text-[10px] font-medium text-accent">
@@ -1090,8 +1360,10 @@ export function ColorCustomizationPage() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between rounded-lg border border-fg/10 bg-surface-el px-3 py-2.5">
-              <span className="text-xs text-fg/70">Sample toggle</span>
+            <div className="flex items-center justify-between rounded-lg border border-fg/10 bg-fg/5 px-3 py-2.5">
+              <span className="text-xs" style={{ color: "var(--color-app-text-muted)" }}>
+                Sample toggle
+              </span>
               <div className="relative inline-flex h-6 w-11 rounded-full bg-accent">
                 <span className="inline-block h-5 w-5 translate-x-5 transform rounded-full bg-fg transition" />
               </div>

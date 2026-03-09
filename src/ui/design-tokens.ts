@@ -72,8 +72,8 @@ export const colors = {
     },
     text: {
         primary: 'text-fg',
-        secondary: 'text-fg/80',
-        tertiary: 'text-fg/50',
+        secondary: 'text-fg/60',
+        tertiary: 'text-fg/40',
         disabled: 'text-fg/30',
     },
     accent: {
