@@ -22,6 +22,7 @@ import { useAvatar } from "../../hooks/useAvatar";
 import { useImageData } from "../../hooks/useImageData";
 import { AvatarImage } from "../../components/AvatarImage";
 import { toast } from "../../components/toast";
+import { MarkdownRenderer } from "../chats/components/MarkdownRenderer";
 import {
   colorToLuminance,
   computeBubbleTextClass,
@@ -29,6 +30,37 @@ import {
 } from "../../../core/utils/imageAnalysis";
 
 type AppearanceKey = keyof ChatAppearanceSettings;
+
+const SAMPLE_MESSAGES: { role: "assistant" | "user"; text: string }[] = [
+  {
+    role: "assistant",
+    text: "Hey! How are you doing today? You seemed *really* busy earlier, so I didn't want to interrupt.",
+  },
+  {
+    role: "user",
+    text: "I'm doing **great**, thanks for asking! Just needed a minute to finish a few things before I could relax.",
+  },
+  {
+    role: "assistant",
+    text: `That's good to hear. I was thinking about the trip we mentioned last time *(the lake cabin plan)* and wanted to revisit it.
+
+> You said you wanted somewhere quiet and close to the water.`,
+  },
+  {
+    role: "user",
+    text: "Oh right, that one. Did you find anything *actually quiet*, or just the **usual crowded spots** people keep recommending?",
+  },
+  {
+    role: "assistant",
+    text: "I found a place that looks **perfect**. It's small, close to the water, and the view in the morning looks *incredible* from the deck.",
+  },
+  {
+    role: "user",
+    text: `That sounds amazing. Send me the **details** when you can, and I'll check the route tonight *(plus the weather and traffic)*.
+
+> If the road is clear, we could leave early Saturday.`,
+  },
+];
 
 function normalizeOverride(override: ChatAppearanceOverride): ChatAppearanceOverride {
   const normalized = { ...override } as ChatAppearanceOverride;
@@ -389,21 +421,11 @@ function LivePreview({
           opacity01,
           settings.textMode,
         );
-
-  const sampleMessages: { role: "assistant" | "user"; text: string }[] = [
-    { role: "assistant", text: "Hey! How are you doing today?" },
-    { role: "user", text: "I'm doing great, thanks for asking!" },
-    {
-      role: "assistant",
-      text: "That's wonderful to hear! I was just thinking about what we talked about last time.",
-    },
-    { role: "user", text: "Oh right, the trip we were planning. Did you find any good spots?" },
-    {
-      role: "assistant",
-      text: "I did! There's a cozy little place by the lake that I think you'd absolutely love. The scenery is breathtaking.",
-    },
-    { role: "user", text: "That sounds amazing, let's go this weekend!" },
-  ];
+  const textColors = {
+    plain: settings.plainTextColorHex ?? "currentColor",
+    italic: settings.italicTextColorHex ?? "currentColor",
+    quoted: settings.quotedTextColorHex ?? "currentColor",
+  };
 
   const useLive = liveMode && character;
   const hasBg = useLive && backgroundUrl;
@@ -441,7 +463,7 @@ function LivePreview({
         />
       )}
       <div className={cn("relative flex flex-col", gap)}>
-        {sampleMessages.map((msg, i) =>
+        {SAMPLE_MESSAGES.map((msg, i) =>
           msg.role === "assistant" ? (
             <div key={i} className="flex items-end gap-1.5">
               {showAvatars && (
@@ -472,7 +494,11 @@ function LivePreview({
                 )}
                 style={assistantBubbleStyle}
               >
-                {msg.text}
+                <MarkdownRenderer
+                  content={msg.text}
+                  className="text-inherit leading-[inherit] [&_a]:text-info [&_code]:bg-black/30"
+                  textColors={textColors}
+                />
               </div>
             </div>
           ) : (
@@ -490,7 +516,11 @@ function LivePreview({
                 )}
                 style={userBubbleStyle}
               >
-                {msg.text}
+                <MarkdownRenderer
+                  content={msg.text}
+                  className="text-inherit leading-[inherit] [&_a]:text-info [&_code]:bg-black/30"
+                  textColors={textColors}
+                />
               </div>
               {showAvatars && (
                 <div
