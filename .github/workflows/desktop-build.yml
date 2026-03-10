@@ -1075,6 +1075,8 @@ jobs:
           RUSTFLAGS: "--cfg DEV_BUILD -C target-feature=-crt-static"
           CMAKE_MSVC_RUNTIME_LIBRARY: "MultiThreadedDLL"
           CMAKE_GENERATOR: "Ninja"
+          CMAKE_BUILD_PARALLEL_LEVEL: "2"
+          CARGO_BUILD_JOBS: "2"
           CC: "cl.exe"
           CXX: "cl.exe"
           CMAKE_C_COMPILER: "cl.exe"
@@ -1103,7 +1105,7 @@ jobs:
             Write-Warning "vulkaninfo failed: $($_.Exception.Message)"
             Write-Warning "Continuing because Vulkan runtime diagnostics are optional on CI runners."
           }
-          $env:CMAKE_ARGS="-DGGML_VULKAN=ON"
+          $env:CMAKE_ARGS="-DGGML_VULKAN=ON -DGGML_CCACHE=OFF"
           bun run tauri build --config dev-config.json --features llama-gpu-vulkan
 
       - name: Package Windows Vulkan zip
