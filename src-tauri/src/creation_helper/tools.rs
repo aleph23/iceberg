@@ -7,6 +7,23 @@ use crate::chat_manager::tooling::ToolDefinition;
 use serde_json::json;
 use std::collections::HashSet;
 
+fn character_format_guidance() -> &'static str {
+    r#"## Character Format Guidance
+- Character definitions should be plain prose or short labeled sections, not JSON, XML, YAML, or code blocks
+- Focus the definition on stable character information: personality, speaking style, motivations, boundaries, background, competencies, and relationship hooks
+- Keep the definition specific and readable; usually a few short paragraphs or concise bullet-like lines is better than a giant wall of text
+- Do not write the definition as a first-message scene, chat transcript, or roleplay exchange
+- Avoid generic filler like "can talk about anything" unless the user explicitly wants that
+
+## Scene Format Guidance
+- A scene's `content` should read like the actual opening message or opening situation the user will start from
+- Write scenes in natural roleplay prose/dialogue, not as notes about what the scene should be
+- Keep scenes concrete and playable: who is present, what is happening, and what tension or hook starts the interaction
+- Prefer one strong opening scene over several weak ones
+- Put meta guidance such as pacing, tone, or hidden intent in the scene `direction` field when needed, not inside the visible scene content
+- Do not output JSON, speaker labels for both sides, or placeholders like `[Scene starts here]` unless the user explicitly wants them"#
+}
+
 /// Get all tool definitions for the creation helper
 pub fn get_creation_helper_tools(
     goal: &CreationGoal,
@@ -276,7 +293,8 @@ pub fn get_creation_helper_system_prompt(
     smart_selection: bool,
 ) -> String {
     if !smart_selection {
-        return r#"You are a creation assistant for a roleplay app. You can help create characters, personas, or lorebooks based on the user's request.
+        return format!(
+            r#"You are a creation assistant for a roleplay app. You can help create characters, personas, or lorebooks based on the user's request.
 
 ## Your Approach
 1. Use the user's request to decide what to create (character, persona, or lorebook)
@@ -293,12 +311,16 @@ pub fn get_creation_helper_system_prompt(
 - Persona tools: list_personas, upsert_persona, use_uploaded_image_as_persona_avatar, generate_image, show_preview, request_confirmation, delete_persona, get_default_persona
 - Lorebook tools: list_lorebooks, upsert_lorebook, delete_lorebook, list_lorebook_entries, get_lorebook_entry, upsert_lorebook_entry, delete_lorebook_entry, create_blank_lorebook_entry, reorder_lorebook_entries, show_preview, request_confirmation
 
-Remember: You are helping the user create something useful for roleplay. Make the process fun and collaborative!"#
-            .to_string();
+{}
+
+Remember: You are helping the user create something useful for roleplay. Make the process fun and collaborative!"#,
+            character_format_guidance()
+        );
     }
 
     let mut base = match goal {
-        CreationGoal::Character => r#"You are a character creation assistant for a roleplay app. Your goal is to help the user create a compelling character through conversation.
+        CreationGoal::Character => format!(
+            r#"You are a character creation assistant for a roleplay app. Your goal is to help the user create a compelling character through conversation.
 
 ## Your Approach
 1. Start by asking what kind of character they want to create
@@ -332,8 +354,11 @@ Remember: You are helping the user create something useful for roleplay. Make th
 - list_character_lorebooks: List lorebooks on the character
 - set_character_lorebooks: Assign lorebooks to the character
 
-Remember: You're helping create a character for roleplay. Make the process fun and collaborative!"#
-            .to_string(),
+{}
+
+Remember: You're helping create a character for roleplay. Make the process fun and collaborative!"#,
+            character_format_guidance()
+        ),
         CreationGoal::Persona => r#"You are a persona creation assistant. Your goal is to help the user craft a reusable persona (their voice, style, or identity) through conversation.
 
 ## Your Approach

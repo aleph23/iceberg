@@ -873,11 +873,23 @@ fn build_turn_guidance(
         }
     };
 
+    let mut extra_guidance = String::new();
+    if tool_names.iter().any(|name| name == "set_character_definition") {
+        extra_guidance.push_str(" When writing a character definition, use plain prose or short labeled sections. Focus on stable traits, voice, motives, background, and boundaries. Do not format it as JSON, XML, or a dialogue transcript.");
+    }
+    if tool_names
+        .iter()
+        .any(|name| name == "add_scene" || name == "update_scene")
+    {
+        extra_guidance.push_str(" When writing a scene, make the `content` the actual playable opening message or opening situation, not notes about the scene. Put meta instructions in `direction` when needed.");
+    }
+
     format!(
-        "Current phase: {}. Tools available on this turn: {}. {} Never mention or invent unavailable tools.",
+        "Current phase: {}. Tools available on this turn: {}. {}{} Never mention or invent unavailable tools.",
         stage_label(stage),
         tool_names.join(", "),
-        phase_instruction
+        phase_instruction,
+        extra_guidance
     )
 }
 
