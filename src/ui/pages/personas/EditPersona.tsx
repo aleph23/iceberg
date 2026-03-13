@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams } from "react-router-dom";
-import { Loader2, X, Download } from "lucide-react";
+import { Loader2, X, Download, Bookmark, CheckCircle } from "lucide-react";
 import { motion } from "framer-motion";
 import { usePersonaFormController } from "./hooks/usePersonaFormController";
 import {
@@ -10,6 +10,7 @@ import {
 } from "../../../core/storage/personaTransfer";
 import { AvatarPicker } from "../../components/AvatarPicker";
 import { useI18n } from "../../../core/i18n/context";
+import { typography, radius, spacing, interactive, cn } from "../../design-tokens";
 
 const wordCount = (text: string) => {
   const trimmed = text.trim();
@@ -109,129 +110,246 @@ export function EditPersonaPage() {
             </div>
           )}
 
-          {/* Avatar Section */}
-          <div className="flex flex-col items-center py-4">
-            <div className="relative">
-              <AvatarPicker
-                currentAvatarPath={avatarPath ?? ""}
-                onAvatarChange={handleAvatarChange}
-                avatarCrop={avatarCrop}
-                onAvatarCropChange={setAvatarCrop}
-                avatarRoundPath={avatarRoundPath}
-                onAvatarRoundChange={setAvatarRoundPath}
-                placeholder={title.trim().charAt(0).toUpperCase() || "?"}
-              />
+          <div className="grid gap-8 xl:grid-cols-[minmax(0,480px)_minmax(0,1fr)] xl:items-start">
+            <div className="space-y-5">
+              <div className="flex flex-col items-center py-4 xl:items-start xl:py-0">
+                <div className="relative">
+                  <AvatarPicker
+                    currentAvatarPath={avatarPath ?? ""}
+                    onAvatarChange={handleAvatarChange}
+                    avatarCrop={avatarCrop}
+                    onAvatarCropChange={setAvatarCrop}
+                    avatarRoundPath={avatarRoundPath}
+                    onAvatarRoundChange={setAvatarRoundPath}
+                    placeholder={title.trim().charAt(0).toUpperCase() || "?"}
+                  />
 
-              {/* Remove Button */}
-              {avatarPath && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAvatarPath(null);
-                    setAvatarCrop(null);
-                    setAvatarRoundPath(null);
-                  }}
-                  className="absolute -top-1 -left-1 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-fg/10 bg-surface-el text-fg/60 transition hover:bg-danger/80 hover:border-danger/50 hover:text-fg active:scale-95"
-                >
-                  <X size={14} strokeWidth={2.5} />
-                </button>
-              )}
-            </div>
-            <p className="mt-3 text-xs text-fg/40">{t("personas.edit.avatarHint")}</p>
-          </div>
-
-          {/* Title Input */}
-          <div className="space-y-2">
-            <label className="text-[11px] font-medium text-fg/70">{t("personas.edit.nameLabel")}</label>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder={t("personas.edit.namePlaceholder")}
-              className="w-full rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-2 text-fg placeholder-fg/40 transition focus:border-fg/30 focus:outline-none"
-            />
-            <p className="text-xs text-fg/50">{t("personas.edit.nameHint")}</p>
-          </div>
-
-          {/* Nickname Input */}
-          <div className="space-y-2">
-            <label className="text-[11px] font-medium text-fg/70">{t("personas.edit.nicknameLabel")}</label>
-            <input
-              value={nickname}
-              onChange={(e) => setNickname(e.target.value)}
-              placeholder={t("personas.edit.nicknamePlaceholder")}
-              className="w-full rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-2 text-fg placeholder-fg/40 transition focus:border-fg/30 focus:outline-none"
-            />
-            <p className="text-xs text-fg/50">{t("personas.edit.nicknameHint")}</p>
-          </div>
-
-          {/* Description Input */}
-          <div className="space-y-2">
-            <label className="text-[11px] font-medium text-fg/70">{t("personas.edit.descriptionLabel")}</label>
-            <textarea
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={6}
-              placeholder={t("personas.edit.descriptionPlaceholder")}
-              className="w-full resize-none rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-2 text-fg placeholder-fg/40 transition focus:border-fg/30 focus:outline-none"
-            />
-            <div className="flex justify-end text-[11px] text-fg/40">
-              {wordCount(description)} {t("personas.edit.wordCount")}
-            </div>
-            <p className="text-xs text-fg/50">{t("personas.edit.descriptionHint")}</p>
-          </div>
-
-          {/* Default Toggle */}
-          <div className="space-y-2">
-            <div className="flex items-start justify-between gap-4 rounded-xl border border-fg/10 bg-surface-el/90 p-4">
-              <div className="flex-1">
-                <label className="block text-sm font-semibold text-fg">{t("personas.edit.setAsDefault")}</label>
-                <p className="mt-1 text-xs text-fg/50">
-                  {t("personas.edit.defaultDescription")}
+                  {avatarPath && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAvatarPath(null);
+                        setAvatarCrop(null);
+                        setAvatarRoundPath(null);
+                      }}
+                      className="absolute -top-1 -left-1 z-10 flex h-10 w-10 items-center justify-center rounded-full border border-fg/10 bg-surface-el text-fg/60 transition hover:bg-danger/80 hover:border-danger/50 hover:text-fg active:scale-95"
+                    >
+                      <X size={14} strokeWidth={2.5} />
+                    </button>
+                  )}
+                </div>
+                <p className="mt-3 text-center text-xs text-fg/40 xl:text-left">
+                  {t("personas.edit.avatarHint")}
                 </p>
               </div>
-              <div className="flex items-center">
-                <input
-                  id="set-as-default"
-                  type="checkbox"
-                  checked={isDefault}
-                  onChange={(e) => setIsDefault(e.target.checked)}
-                  className="peer sr-only"
-                />
+
+              <div className={spacing.field}>
                 <label
-                  htmlFor="set-as-default"
-                  className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-all duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-accent/40 ${
-                    isDefault ? "bg-accent shadow-lg shadow-accent/30" : "bg-fg/20"
-                  }`}
+                  className={cn(
+                    typography.label.size,
+                    typography.label.weight,
+                    typography.label.tracking,
+                    "uppercase text-fg/70",
+                  )}
                 >
-                  <span
-                    className={`inline-block h-5 w-5 transform rounded-full bg-fg shadow ring-0 transition duration-200 ease-in-out ${
-                      isDefault ? "translate-x-5" : "translate-x-0"
-                    }`}
-                  />
+                  {t("personas.edit.nameLabel")}
                 </label>
+                <div className="relative">
+                  <input
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder={t("personas.edit.namePlaceholder")}
+                    className={cn(
+                      "w-full border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
+                      radius.md,
+                      typography.body.size,
+                      interactive.transition.default,
+                      "focus:border-fg/30 focus:bg-surface-el/30 focus:outline-none",
+                      title.trim() ? "border-accent/30 bg-accent/5" : "border-fg/10",
+                    )}
+                  />
+                  {title.trim() && (
+                    <motion.div
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
+                    >
+                      <div
+                        className={cn(
+                          "flex h-6 w-6 items-center justify-center",
+                          radius.full,
+                          "bg-accent/20",
+                        )}
+                      >
+                        <CheckCircle className="h-3 w-3 text-accent/80" />
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
+                <p className={cn(typography.bodySmall.size, "text-fg/40")}>
+                  {t("personas.edit.nameHint")}
+                </p>
+              </div>
+
+              <div className={spacing.field}>
+                <label
+                  className={cn(
+                    typography.label.size,
+                    typography.label.weight,
+                    typography.label.tracking,
+                    "uppercase text-fg/70",
+                  )}
+                >
+                  {t("personas.edit.nicknameLabel")}
+                </label>
+                <input
+                  value={nickname}
+                  onChange={(e) => setNickname(e.target.value)}
+                  placeholder={t("personas.edit.nicknamePlaceholder")}
+                  className={cn(
+                    "w-full border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
+                    radius.md,
+                    typography.body.size,
+                    interactive.transition.default,
+                    "focus:border-fg/30 focus:bg-surface-el/30 focus:outline-none",
+                    nickname.trim() ? "border-accent/30 bg-accent/5" : "border-fg/10",
+                  )}
+                />
+                <p className={cn(typography.bodySmall.size, "text-fg/40")}>
+                  {t("personas.edit.nicknameHint")}
+                </p>
+              </div>
+
+              <div className={spacing.field}>
+                <button
+                  type="button"
+                  onClick={() => setIsDefault(!isDefault)}
+                  className={cn(
+                    "flex w-full items-center justify-between border border-fg/10 bg-surface-el/20 px-4 py-3 backdrop-blur-xl",
+                    radius.md,
+                    interactive.transition.default,
+                    "hover:border-fg/25 hover:bg-fg/5 active:scale-[0.99]",
+                  )}
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={cn(
+                        "p-2 transition",
+                        radius.lg,
+                        isDefault ? "bg-accent/20 text-accent/80" : "bg-fg/10 text-fg/50",
+                      )}
+                    >
+                      <Bookmark size={16} />
+                    </div>
+                    <div className="text-left">
+                      <h3 className="text-sm font-medium text-fg">
+                        {t("personas.edit.setAsDefault")}
+                      </h3>
+                      <p className="text-xs text-fg/40">{t("personas.edit.defaultDescription")}</p>
+                    </div>
+                  </div>
+
+                  <div className="relative">
+                    <div
+                      className={cn(
+                        "h-6 w-11 transition-colors",
+                        radius.full,
+                        isDefault ? "bg-accent/40" : "bg-fg/20",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "absolute top-0.5 h-5 w-5 transition-transform",
+                          radius.full,
+                          isDefault ? "translate-x-5 bg-accent" : "translate-x-0.5 bg-fg",
+                        )}
+                      />
+                    </div>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-5">
+              <div className={spacing.field}>
+                <label
+                  className={cn(
+                    typography.label.size,
+                    typography.label.weight,
+                    typography.label.tracking,
+                    "uppercase text-fg/70",
+                  )}
+                >
+                  {t("personas.edit.descriptionLabel")}
+                </label>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  rows={10}
+                  placeholder={t("personas.edit.descriptionPlaceholder")}
+                  className={cn(
+                    "min-h-35 max-h-[24rem] w-full resize-y border bg-surface-el/20 px-4 py-3.5 text-sm leading-relaxed text-fg placeholder-fg/40 backdrop-blur-xl xl:min-h-[18rem]",
+                    radius.md,
+                    interactive.transition.default,
+                    "focus:border-fg/30 focus:bg-surface-el/30 focus:outline-none",
+                    description.trim() ? "border-accent/30 bg-accent/5" : "border-fg/10",
+                  )}
+                />
+                <div className="flex justify-end text-[11px] text-fg/40">
+                  {wordCount(description)} {t("personas.edit.wordCount")}
+                </div>
+                <p className={cn(typography.bodySmall.size, "text-fg/40")}>
+                  {t("personas.edit.descriptionHint")}
+                </p>
               </div>
             </div>
           </div>
 
-          {/* Export Button */}
-          <motion.button
-            onClick={handleExport}
-            disabled={!personaId || exporting}
-            whileTap={{ scale: exporting ? 1 : 0.98 }}
-            className="w-full rounded-xl border border-info/40 bg-info/20 px-4 py-3.5 text-sm font-semibold text-info transition hover:bg-info/30 disabled:opacity-50"
-          >
-            {exporting ? (
-              <span className="flex items-center justify-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                {t("common.buttons.exporting")}
-              </span>
-            ) : (
-              <span className="flex items-center justify-center gap-2">
-                <Download className="h-4 w-4" />
-                {t("personas.edit.exportButton")}
-              </span>
-            )}
-          </motion.button>
+          <div className="flex flex-col gap-3 border-t border-fg/10 pt-4 xl:flex-row xl:items-center xl:justify-between">
+            <motion.button
+              onClick={handleExport}
+              disabled={!personaId || exporting}
+              whileTap={{ scale: exporting ? 1 : 0.98 }}
+              className={cn(
+                "w-full border border-info/40 bg-info/20 px-4 py-3.5 text-sm font-semibold text-info transition hover:bg-info/30 disabled:opacity-50 xl:w-auto xl:min-w-56",
+                radius.md,
+              )}
+            >
+              {exporting ? (
+                <span className="flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t("common.buttons.exporting")}
+                </span>
+              ) : (
+                <span className="flex items-center justify-center gap-2">
+                  <Download className="h-4 w-4" />
+                  {t("personas.edit.exportButton")}
+                </span>
+              )}
+            </motion.button>
+
+            <motion.button
+              disabled={!canSave}
+              onClick={handleSave}
+              whileTap={{ scale: canSave ? 0.98 : 1 }}
+              className={cn(
+                "w-full py-3.5 text-sm font-semibold transition xl:w-auto xl:min-w-64",
+                radius.md,
+                canSave
+                  ? "border border-accent/40 bg-accent/20 text-accent/70 shadow-[0_8px_24px_rgba(52,211,153,0.15)] hover:border-accent/60 hover:bg-accent/30"
+                  : "cursor-not-allowed border border-fg/5 bg-fg/5 text-fg/30",
+              )}
+            >
+              {saving ? (
+                <div className="flex items-center justify-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <span>{t("common.buttons.saving")}</span>
+                </div>
+              ) : (
+                t("common.buttons.save")
+              )}
+            </motion.button>
+          </div>
         </motion.div>
       </main>
     </div>
