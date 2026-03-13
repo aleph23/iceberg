@@ -51,8 +51,6 @@ import {
 import { storageBridge } from "../../../core/storage/files";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { playAccessibilitySound } from "../../../core/utils/accessibilityAudio";
-
-import { useChatController } from "./hooks/useChatController";
 import { replacePlaceholders } from "../../../core/utils/placeholders";
 import { splitThinkTags } from "../../../core/utils/thinkTags";
 import {
@@ -84,8 +82,9 @@ export function ChatConversationPage() {
   const { t } = useI18n();
   const sessionId = searchParams.get("sessionId") || undefined;
   const jumpToMessageId = searchParams.get("jumpToMessage");
+  const { backgroundImageData, isBackgroundLight, theme, chatAppearance, chatController } =
+    useChatLayoutContext();
 
-  const chatController = useChatController(characterId, { sessionId });
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const pressStartPosition = useRef<{ x: number; y: number } | null>(null);
   const [sessionForHeader, setSessionForHeader] = useState(chatController.session);
@@ -377,7 +376,6 @@ export function ChatConversationPage() {
   const isGenerating = sending || regeneratingMessageId !== null;
   const lastMessageContentLength = messages[messages.length - 1]?.content.length ?? 0;
 
-  const { backgroundImageData, isBackgroundLight, theme, chatAppearance } = useChatLayoutContext();
   const unloadProviderIdRef = useRef<string | null>(null);
 
   useEffect(() => {

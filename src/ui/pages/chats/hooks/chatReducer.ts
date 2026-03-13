@@ -70,6 +70,7 @@ export type ChatAction =
   | { type: "SET_LOADING"; payload: boolean }
   | { type: "SET_SENDING"; payload: boolean }
   | { type: "SET_ERROR"; payload: string | null }
+  | { type: "SET_STREAMING_REASONING"; payload: Record<string, string> }
   | { type: "SET_MESSAGE_ACTION"; payload: MessageActionState | null }
   | { type: "SET_ACTION_ERROR"; payload: string | null }
   | { type: "SET_ACTION_STATUS"; payload: string | null }
@@ -152,6 +153,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
 
     case "SET_ERROR":
       return { ...state, error: action.payload };
+
+    case "SET_STREAMING_REASONING":
+      return {
+        ...state,
+        streamingReasoning: pruneStreamingReasoning(action.payload, state.messages),
+      };
 
     case "SET_MESSAGE_ACTION":
       return { ...state, messageAction: action.payload };

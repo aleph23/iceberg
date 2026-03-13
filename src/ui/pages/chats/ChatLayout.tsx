@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Outlet, useOutletContext, useParams } from "react-router-dom";
+import { Outlet, useOutletContext, useParams, useSearchParams } from "react-router-dom";
 import type { Character, ChatAppearanceSettings } from "../../../core/storage/schemas";
 import {
   createDefaultChatAppearanceSettings,
@@ -8,6 +8,7 @@ import {
 import { listCharacters, readSettings } from "../../../core/storage/repo";
 import { SETTINGS_UPDATED_EVENT } from "../../../core/storage/repo";
 import { useImageData } from "../../hooks/useImageData";
+import { useChatController, type ChatController } from "./hooks/useChatController";
 import {
   analyzeImageBrightness,
   computeChatTheme,
@@ -22,6 +23,7 @@ export interface ChatLayoutContext {
   isBackgroundLight: boolean;
   theme: ThemeColors;
   chatAppearance: ChatAppearanceSettings;
+  chatController: ChatController;
   reloadCharacter: () => void;
 }
 
@@ -31,15 +33,18 @@ export function useChatLayoutContext() {
 
 export function ChatLayout() {
   const { characterId } = useParams<{ characterId: string }>();
+  const [searchParams] = useSearchParams();
   const [character, setCharacter] = useState<Character | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadCount, setLoadCount] = useState(0);
+  const sessionId = searchParams.get("sessionId") || undefined;
 
   const [bgBrightness, setBgBrightness] = useState<number | null>(null);
   const [chatAppearance, setChatAppearance] = useState<ChatAppearanceSettings>(
     createDefaultChatAppearanceSettings(),
   );
   const [theme, setTheme] = useState<ThemeColors>(getDefaultThemeSync());
+  const chatController = useChatController(characterId, { sessionId });
 
   useEffect(() => {
     let cancelled = false;
@@ -121,6 +126,7 @@ export function ChatLayout() {
     isBackgroundLight,
     theme,
     chatAppearance,
+    chatController,
     reloadCharacter,
   };
 

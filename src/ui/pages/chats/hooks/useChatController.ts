@@ -36,7 +36,13 @@ import {
   abortMessage,
   addChatMessageAttachment,
 } from "../../../../core/chat/manager";
-import { chatReducer, initialChatState, type MessageActionState } from "./chatReducer";
+import {
+  chatReducer,
+  initialChatState,
+  type ChatAction,
+  type ChatState,
+  type MessageActionState,
+} from "./chatReducer";
 import { logManager } from "../../../../core/utils/logger";
 import { generateImage, type ImageGenerationRequest } from "../../../../core/image-generation";
 import type { GeneratedImage } from "../../../../core/image-generation";
@@ -56,6 +62,53 @@ const IMAGE_DIRECTIVE_RE = /<<image:(\{[\s\S]*?\})>>/g;
 
 // Global lock to prevent concurrent session saves
 const sessionSaveQueue = new Map<string, Promise<void>>();
+const liveChatStateCache = new Map<string, ChatState>();
+const liveChatSubscribers = new Map<string, Set<(state: ChatState | null) => void>>();
+
+function setLiveChatState(sessionId: string, state: ChatState | null) {
+  if (state) {
+    liveChatStateCache.set(sessionId, state);
+  } else {
+    liveChatStateCache.delete(sessionId);
+  }
+
+  const subscribers = liveChatSubscribers.get(sessionId);
+  if (!subscribers || subscribers.size === 0) {
+    if (!state) {
+      liveChatSubscribers.delete(sessionId);
+    }
+    return;
+  }
+
+  subscribers.forEach((subscriber) => subscriber(state));
+  if (!state && subscribers.size === 0) {
+    liveChatSubscribers.delete(sessionId);
+  }
+}
+
+function applyLiveChatAction(sessionId: string, fallbackState: ChatState, action: ChatAction) {
+  const nextState = chatReducer(liveChatStateCache.get(sessionId) ?? fallbackState, action);
+  setLiveChatState(sessionId, nextState);
+}
+
+function subscribeToLiveChatState(
+  sessionId: string,
+  subscriber: (state: ChatState | null) => void,
+) {
+  const existing =
+    liveChatSubscribers.get(sessionId) ?? new Set<(state: ChatState | null) => void>();
+  existing.add(subscriber);
+  liveChatSubscribers.set(sessionId, existing);
+
+  return () => {
+    const current = liveChatSubscribers.get(sessionId);
+    if (!current) return;
+    current.delete(subscriber);
+    if (current.size === 0) {
+      liveChatSubscribers.delete(sessionId);
+    }
+  };
+}
 
 /**
  * Safely saves a session with locking to prevent race conditions.
@@ -806,6 +859,33 @@ export function useChatController(
     messagesRef.current = state.messages;
   }, [state.messages]);
 
+  useEffect(() => {
+    const liveSessionId = state.session?.id ?? sessionId;
+    if (!liveSessionId) return;
+
+    const applySnapshot = (snapshot: ChatState | null) => {
+      if (!snapshot) return;
+      messagesRef.current = snapshot.messages;
+      dispatch({
+        type: "BATCH",
+        actions: [
+          ...(snapshot.session
+            ? [{ type: "SET_SESSION" as const, payload: snapshot.session }]
+            : []),
+          { type: "SET_MESSAGES", payload: snapshot.messages },
+          { type: "SET_SENDING", payload: snapshot.sending },
+          { type: "SET_ERROR", payload: snapshot.error },
+          { type: "SET_REGENERATING_MESSAGE_ID", payload: snapshot.regeneratingMessageId },
+          { type: "SET_ACTIVE_REQUEST_ID", payload: snapshot.activeRequestId },
+          { type: "SET_STREAMING_REASONING", payload: snapshot.streamingReasoning },
+        ],
+      });
+    };
+
+    applySnapshot(liveChatStateCache.get(liveSessionId) ?? null);
+    return subscribeToLiveChatState(liveSessionId, applySnapshot);
+  }, [sessionId, state.session?.id]);
+
   const reloadSessionStateFromStorage = useCallback(
     async (sessionId: string) => {
       const limit = Math.max(
@@ -1099,6 +1179,7 @@ export function useChatController(
       options?: { swapPlaces?: boolean },
     ) => {
       if (!state.session || !state.character) return;
+      const currentSessionId = state.session.id;
       const requestId = crypto.randomUUID();
 
       // Use provided attachments or fall back to pending attachments from state
@@ -1122,6 +1203,15 @@ export function useChatController(
           { type: "CLEAR_PENDING_ATTACHMENTS" },
         ],
       });
+      applyLiveChatAction(currentSessionId, state, {
+        type: "BATCH",
+        actions: [
+          { type: "SET_SENDING", payload: true },
+          { type: "SET_ACTIVE_REQUEST_ID", payload: requestId },
+          { type: "SET_MESSAGES", payload: optimisticMessages },
+          { type: "SET_ERROR", payload: null },
+        ],
+      });
 
       let unlistenNormalized: UnlistenFn | null = null;
       const streamBatcher = createStreamBatcher(dispatch);
@@ -1140,6 +1230,10 @@ export function useChatController(
               );
               if (content) {
                 streamBatcher.update(assistantPlaceholder.id, content);
+                applyLiveChatAction(currentSessionId, state, {
+                  type: "UPDATE_MESSAGE_CONTENT",
+                  payload: { messageId: assistantPlaceholder.id, content },
+                });
               }
               if (reasoning) {
                 dispatch({
@@ -1148,6 +1242,10 @@ export function useChatController(
                     messageId: assistantPlaceholder.id,
                     reasoning,
                   },
+                });
+                applyLiveChatAction(currentSessionId, state, {
+                  type: "UPDATE_MESSAGE_REASONING",
+                  payload: { messageId: assistantPlaceholder.id, reasoning },
                 });
               }
               if (content || reasoning) {
@@ -1161,8 +1259,19 @@ export function useChatController(
                   reasoning: String(payload.data.text),
                 },
               });
+              applyLiveChatAction(currentSessionId, state, {
+                type: "UPDATE_MESSAGE_REASONING",
+                payload: {
+                  messageId: assistantPlaceholder.id,
+                  reasoning: String(payload.data.text),
+                },
+              });
             } else if (payload && payload.type === "error" && payload.data?.message) {
               dispatch({ type: "SET_ERROR", payload: String(payload.data.message) });
+              applyLiveChatAction(currentSessionId, state, {
+                type: "SET_ERROR",
+                payload: String(payload.data.message),
+              });
             }
           } catch {
             // ignore malformed payloads
@@ -1203,21 +1312,44 @@ export function useChatController(
             },
           ],
         });
+        applyLiveChatAction(currentSessionId, state, {
+          type: "BATCH",
+          actions: [
+            { type: "SET_SESSION", payload: updatedSession },
+            { type: "SET_MESSAGES", payload: replaced },
+            {
+              type: "TRANSFER_REASONING",
+              payload: { fromId: assistantPlaceholder.id, toId: result.assistantMessage.id },
+            },
+          ],
+        });
         if (result.assistantMessage.reasoning) {
           dispatch({ type: "CLEAR_STREAMING_REASONING", payload: result.assistantMessage.id });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "CLEAR_STREAMING_REASONING",
+            payload: result.assistantMessage.id,
+          });
         }
 
         void runInChatImageGeneration(result.assistantMessage.id);
       } catch (err) {
         console.error("ChatController: send failed", err);
         dispatch({ type: "SET_ERROR", payload: err instanceof Error ? err.message : String(err) });
+        applyLiveChatAction(currentSessionId, state, {
+          type: "SET_ERROR",
+          payload: err instanceof Error ? err.message : String(err),
+        });
         try {
-          await reloadSessionStateFromStorage(state.session.id);
+          await reloadSessionStateFromStorage(currentSessionId);
         } catch (reloadErr) {
           console.warn("ChatController: failed to resync session after send error", reloadErr);
           const cleaned = messagesRef.current.filter((msg) => msg.id !== assistantPlaceholder.id);
           messagesRef.current = cleaned;
           dispatch({ type: "SET_MESSAGES", payload: cleaned });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "SET_MESSAGES",
+            payload: cleaned,
+          });
         }
       } finally {
         const tail = finalizeThinkStream(thinkState);
@@ -1226,9 +1358,17 @@ export function useChatController(
             type: "UPDATE_MESSAGE_CONTENT",
             payload: { messageId: assistantPlaceholder.id, content: tail.content },
           });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "UPDATE_MESSAGE_CONTENT",
+            payload: { messageId: assistantPlaceholder.id, content: tail.content },
+          });
         }
         if (tail.reasoning) {
           dispatch({
+            type: "UPDATE_MESSAGE_REASONING",
+            payload: { messageId: assistantPlaceholder.id, reasoning: tail.reasoning },
+          });
+          applyLiveChatAction(currentSessionId, state, {
             type: "UPDATE_MESSAGE_REASONING",
             payload: { messageId: assistantPlaceholder.id, reasoning: tail.reasoning },
           });
@@ -1242,6 +1382,7 @@ export function useChatController(
             { type: "SET_ACTIVE_REQUEST_ID", payload: null },
           ],
         });
+        setLiveChatState(currentSessionId, null);
       }
     },
     [
@@ -1256,6 +1397,7 @@ export function useChatController(
   const handleContinue = useCallback(
     async (options?: { swapPlaces?: boolean }) => {
       if (!state.session || !state.character) return;
+      const currentSessionId = state.session.id;
       const requestId = crypto.randomUUID();
 
       const assistantPlaceholder = createPlaceholderMessage("assistant", "");
@@ -1269,6 +1411,15 @@ export function useChatController(
           { type: "SET_SENDING", payload: true },
           { type: "SET_ACTIVE_REQUEST_ID", payload: requestId },
           { type: "SET_MESSAGES", payload: optimisticMessages },
+        ],
+      });
+      applyLiveChatAction(currentSessionId, state, {
+        type: "BATCH",
+        actions: [
+          { type: "SET_SENDING", payload: true },
+          { type: "SET_ACTIVE_REQUEST_ID", payload: requestId },
+          { type: "SET_MESSAGES", payload: optimisticMessages },
+          { type: "SET_ERROR", payload: null },
         ],
       });
 
@@ -1289,9 +1440,17 @@ export function useChatController(
               );
               if (content) {
                 streamBatcher.update(assistantPlaceholder.id, content);
+                applyLiveChatAction(currentSessionId, state, {
+                  type: "UPDATE_MESSAGE_CONTENT",
+                  payload: { messageId: assistantPlaceholder.id, content },
+                });
               }
               if (reasoning) {
                 dispatch({
+                  type: "UPDATE_MESSAGE_REASONING",
+                  payload: { messageId: assistantPlaceholder.id, reasoning },
+                });
+                applyLiveChatAction(currentSessionId, state, {
                   type: "UPDATE_MESSAGE_REASONING",
                   payload: { messageId: assistantPlaceholder.id, reasoning },
                 });
@@ -1307,8 +1466,19 @@ export function useChatController(
                   reasoning: String(payload.data.text),
                 },
               });
+              applyLiveChatAction(currentSessionId, state, {
+                type: "UPDATE_MESSAGE_REASONING",
+                payload: {
+                  messageId: assistantPlaceholder.id,
+                  reasoning: String(payload.data.text),
+                },
+              });
             } else if (payload && payload.type === "error" && payload.data?.message) {
               dispatch({ type: "SET_ERROR", payload: String(payload.data.message) });
+              applyLiveChatAction(currentSessionId, state, {
+                type: "SET_ERROR",
+                payload: String(payload.data.message),
+              });
             }
           } catch {
             // ignore malformed payloads
@@ -1349,8 +1519,31 @@ export function useChatController(
             },
           ],
         });
+        applyLiveChatAction(currentSessionId, state, {
+          type: "BATCH",
+          actions: [
+            {
+              type: "SET_SESSION",
+              payload: {
+                ...state.session,
+                id: result.sessionId,
+                updatedAt: result.sessionUpdatedAt,
+                messages: replaced,
+              },
+            },
+            { type: "SET_MESSAGES", payload: replaced },
+            {
+              type: "TRANSFER_REASONING",
+              payload: { fromId: assistantPlaceholder.id, toId: result.assistantMessage.id },
+            },
+          ],
+        });
         if (result.assistantMessage.reasoning) {
           dispatch({ type: "CLEAR_STREAMING_REASONING", payload: result.assistantMessage.id });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "CLEAR_STREAMING_REASONING",
+            payload: result.assistantMessage.id,
+          });
         }
 
         void runInChatImageGeneration(result.assistantMessage.id);
@@ -1358,6 +1551,7 @@ export function useChatController(
         console.error("ChatController: continue failed", err);
         const errMsg = err instanceof Error ? err.message : String(err);
         dispatch({ type: "SET_ERROR", payload: errMsg });
+        applyLiveChatAction(currentSessionId, state, { type: "SET_ERROR", payload: errMsg });
 
         const abortedByUser =
           errMsg.toLowerCase().includes("aborted by user") ||
@@ -1366,6 +1560,10 @@ export function useChatController(
           const cleaned = messagesRef.current.filter((msg) => msg.id !== assistantPlaceholder.id);
           messagesRef.current = cleaned;
           dispatch({ type: "SET_MESSAGES", payload: cleaned });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "SET_MESSAGES",
+            payload: cleaned,
+          });
         }
       } finally {
         const tail = finalizeThinkStream(thinkState);
@@ -1374,9 +1572,17 @@ export function useChatController(
             type: "UPDATE_MESSAGE_CONTENT",
             payload: { messageId: assistantPlaceholder.id, content: tail.content },
           });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "UPDATE_MESSAGE_CONTENT",
+            payload: { messageId: assistantPlaceholder.id, content: tail.content },
+          });
         }
         if (tail.reasoning) {
           dispatch({
+            type: "UPDATE_MESSAGE_REASONING",
+            payload: { messageId: assistantPlaceholder.id, reasoning: tail.reasoning },
+          });
+          applyLiveChatAction(currentSessionId, state, {
             type: "UPDATE_MESSAGE_REASONING",
             payload: { messageId: assistantPlaceholder.id, reasoning: tail.reasoning },
           });
@@ -1390,6 +1596,7 @@ export function useChatController(
             { type: "SET_ACTIVE_REQUEST_ID", payload: null },
           ],
         });
+        setLiveChatState(currentSessionId, null);
       }
     },
     [runInChatImageGeneration, state.character, state.persona?.id, state.session],
@@ -1398,6 +1605,7 @@ export function useChatController(
   const handleRegenerate = useCallback(
     async (message: StoredMessage, options?: { swapPlaces?: boolean }) => {
       if (!state.session) return;
+      const currentSessionId = state.session.id;
       if (
         state.messages.length === 0 ||
         state.messages[state.messages.length - 1]?.id !== message.id
@@ -1444,6 +1652,18 @@ export function useChatController(
         msg.id === message.id ? { ...msg, content: "", reasoning: undefined } : msg,
       );
       messagesRef.current = regeneratingMessages;
+      applyLiveChatAction(currentSessionId, state, {
+        type: "BATCH",
+        actions: [
+          { type: "SET_REGENERATING_MESSAGE_ID", payload: message.id },
+          { type: "SET_ACTIVE_REQUEST_ID", payload: requestId },
+          { type: "SET_SENDING", payload: true },
+          { type: "SET_ERROR", payload: null },
+          { type: "SET_HELD_MESSAGE_ID", payload: null },
+          { type: "CLEAR_STREAMING_REASONING", payload: message.id },
+          { type: "SET_MESSAGES", payload: regeneratingMessages },
+        ],
+      });
 
       const streamBatcher = createStreamBatcher(dispatch);
       const thinkState = createThinkStreamState();
@@ -1461,9 +1681,17 @@ export function useChatController(
               );
               if (content) {
                 streamBatcher.update(message.id, content);
+                applyLiveChatAction(currentSessionId, state, {
+                  type: "UPDATE_MESSAGE_CONTENT",
+                  payload: { messageId: message.id, content },
+                });
               }
               if (reasoning) {
                 dispatch({
+                  type: "UPDATE_MESSAGE_REASONING",
+                  payload: { messageId: message.id, reasoning },
+                });
+                applyLiveChatAction(currentSessionId, state, {
                   type: "UPDATE_MESSAGE_REASONING",
                   payload: { messageId: message.id, reasoning },
                 });
@@ -1476,8 +1704,16 @@ export function useChatController(
                 type: "UPDATE_MESSAGE_REASONING",
                 payload: { messageId: message.id, reasoning: String(payload.data.text) },
               });
+              applyLiveChatAction(currentSessionId, state, {
+                type: "UPDATE_MESSAGE_REASONING",
+                payload: { messageId: message.id, reasoning: String(payload.data.text) },
+              });
             } else if (payload && payload.type === "error" && payload.data?.message) {
               dispatch({ type: "SET_ERROR", payload: String(payload.data.message) });
+              applyLiveChatAction(currentSessionId, state, {
+                type: "SET_ERROR",
+                payload: String(payload.data.message),
+              });
             }
           } catch {
             // ignore malformed payloads
@@ -1511,8 +1747,27 @@ export function useChatController(
             { type: "SET_MESSAGES", payload: replaced },
           ],
         });
+        applyLiveChatAction(currentSessionId, state, {
+          type: "BATCH",
+          actions: [
+            {
+              type: "SET_SESSION",
+              payload: {
+                ...state.session,
+                id: result.sessionId,
+                updatedAt: result.sessionUpdatedAt,
+                messages: replaced,
+              },
+            },
+            { type: "SET_MESSAGES", payload: replaced },
+          ],
+        });
         if (result.assistantMessage.reasoning) {
           dispatch({ type: "CLEAR_STREAMING_REASONING", payload: result.assistantMessage.id });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "CLEAR_STREAMING_REASONING",
+            payload: result.assistantMessage.id,
+          });
         }
 
         void runInChatImageGeneration(result.assistantMessage.id);
@@ -1526,6 +1781,10 @@ export function useChatController(
       } catch (err) {
         console.error("ChatController: regenerate failed", err);
         dispatch({ type: "SET_ERROR", payload: err instanceof Error ? err.message : String(err) });
+        applyLiveChatAction(currentSessionId, state, {
+          type: "SET_ERROR",
+          payload: err instanceof Error ? err.message : String(err),
+        });
         const meta = await getSessionMeta(state.session.id).catch(() => null);
         const refreshed = await listMessages(state.session.id, {
           limit: Math.max(INITIAL_MESSAGE_LIMIT, messagesRef.current.length),
@@ -1541,8 +1800,19 @@ export function useChatController(
               { type: "SET_MESSAGES", payload: ordered },
             ],
           });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "BATCH",
+            actions: [
+              { type: "SET_SESSION", payload: { ...meta, messages: ordered } },
+              { type: "SET_MESSAGES", payload: ordered },
+            ],
+          });
         } else {
           dispatch({ type: "SET_MESSAGES", payload: ordered });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "SET_MESSAGES",
+            payload: ordered,
+          });
         }
       } finally {
         const tail = finalizeThinkStream(thinkState);
@@ -1551,9 +1821,17 @@ export function useChatController(
             type: "UPDATE_MESSAGE_CONTENT",
             payload: { messageId: message.id, content: tail.content },
           });
+          applyLiveChatAction(currentSessionId, state, {
+            type: "UPDATE_MESSAGE_CONTENT",
+            payload: { messageId: message.id, content: tail.content },
+          });
         }
         if (tail.reasoning) {
           dispatch({
+            type: "UPDATE_MESSAGE_REASONING",
+            payload: { messageId: message.id, reasoning: tail.reasoning },
+          });
+          applyLiveChatAction(currentSessionId, state, {
             type: "UPDATE_MESSAGE_REASONING",
             payload: { messageId: message.id, reasoning: tail.reasoning },
           });
@@ -1568,6 +1846,7 @@ export function useChatController(
             { type: "SET_SENDING", payload: false },
           ],
         });
+        setLiveChatState(currentSessionId, null);
       }
     },
     [runInChatImageGeneration, state.messageAction, state.regeneratingMessageId, state.session],
