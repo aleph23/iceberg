@@ -163,24 +163,38 @@ export function TopNav({ currentPath, onBackOverride, titleOverride, rightAction
   }, [basePath]);
 
   const showLayoutToggle = useMemo(() => {
-    return basePath === "/chat" || basePath === "/";
+    return basePath === "/chat" || basePath === "/" || basePath === "/settings/models";
   }, [basePath]);
 
-  // Track chats view mode from window global (set by Chats page)
-  const [chatsViewMode, setChatsViewMode] = useState<string>("hero");
+  const [layoutViewMode, setLayoutViewMode] = useState<string>("hero");
   useEffect(() => {
     if (!showLayoutToggle) return;
     const sync = () => {
+      if (basePath === "/settings/models") {
+        const mode = (window as any).__modelsViewMode;
+        if (mode) setLayoutViewMode(mode);
+        return;
+      }
       const mode = (window as any).__chatsViewMode;
-      if (mode) setChatsViewMode(mode);
+      if (mode) setLayoutViewMode(mode);
     };
     sync();
-    window.addEventListener("chats:viewModeChanged", sync);
-    return () => window.removeEventListener("chats:viewModeChanged", sync);
-  }, [showLayoutToggle]);
+    const eventName =
+      basePath === "/settings/models" ? "models:viewModeChanged" : "chats:viewModeChanged";
+    window.addEventListener(eventName, sync);
+    return () => window.removeEventListener(eventName, sync);
+  }, [basePath, showLayoutToggle]);
 
   const LayoutToggleIcon =
-    chatsViewMode === "hero" ? LayoutGrid : chatsViewMode === "gallery" ? Grid3X3 : LayoutList;
+    basePath === "/settings/models"
+      ? layoutViewMode === "grid"
+        ? LayoutList
+        : LayoutGrid
+      : layoutViewMode === "hero"
+        ? LayoutGrid
+        : layoutViewMode === "gallery"
+          ? Grid3X3
+          : LayoutList;
 
   const showAddButton = useMemo(() => {
     if (basePath.startsWith("/settings/providers")) return true;
@@ -505,7 +519,15 @@ export function TopNav({ currentPath, onBackOverride, titleOverride, rightAction
         <div className="flex items-center justify-end gap-1 shrink-0 min-w-10 h-full">
           {showLayoutToggle && (
             <button
-              onClick={() => window.dispatchEvent(new CustomEvent("chats:cycleViewMode"))}
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent(
+                    basePath === "/settings/models"
+                      ? "models:cycleViewMode"
+                      : "chats:cycleViewMode",
+                  ),
+                )
+              }
               className={cn(
                 "hidden lg:flex items-center px-[0.6em] py-[0.3em] justify-center rounded-full",
                 "text-fg/70 hover:text-fg hover:bg-fg/10",

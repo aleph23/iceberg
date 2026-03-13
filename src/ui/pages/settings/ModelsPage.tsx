@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
   ChevronRight,
@@ -32,7 +33,30 @@ import type { Model } from "../../../core/storage/schemas";
 import type { ModelExportFormat } from "../../components/ModelExportMenu";
 
 type SortMode = "alphabetical" | "provider";
+type ModelsViewMode = "list" | "grid";
 const SORT_STORAGE_KEY = "lettuce.models.sortMode";
+const VIEW_STORAGE_KEY = "lettuce.models.viewMode";
+
+type ModelGroup = {
+  label: string;
+  key: string;
+  models: Model[];
+};
+
+const viewModeTransition = {
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
+  transition: { duration: 0.2, ease: "easeInOut" as const },
+};
+
+function chunkGroups<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
 
 export function ModelsPage() {
   const { t } = useI18n();
@@ -46,6 +70,10 @@ export function ModelsPage() {
     if (typeof window === "undefined") return "alphabetical";
     const stored = window.localStorage.getItem(SORT_STORAGE_KEY);
     return stored === "provider" ? "provider" : "alphabetical";
+  });
+  const [viewMode, setViewMode] = useState<ModelsViewMode>(() => {
+    if (typeof window === "undefined") return "list";
+    return window.localStorage.getItem(VIEW_STORAGE_KEY) === "grid" ? "grid" : "list";
   });
   const [showSortMenu, setShowSortMenu] = useState(false);
   const { toNewModel, toEditModel } = useNavigationManager();
@@ -113,6 +141,21 @@ export function ModelsPage() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(SORT_STORAGE_KEY, sortMode);
   }, [sortMode]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(VIEW_STORAGE_KEY, viewMode);
+    (window as any).__modelsViewMode = viewMode;
+    window.dispatchEvent(new CustomEvent("models:viewModeChanged"));
+  }, [viewMode]);
+
+  useEffect(() => {
+    const handler = () => {
+      setViewMode((prev) => (prev === "list" ? "grid" : "list"));
+    };
+    window.addEventListener("models:cycleViewMode", handler);
+    return () => window.removeEventListener("models:cycleViewMode", handler);
+  }, []);
 
   const getProviderLabel = useMemo(
     () => (model: Model) => {
@@ -182,28 +225,80 @@ export function ModelsPage() {
     });
   }, [models, sortMode, getProviderLabel]);
 
-  const listItems = useMemo(() => {
-    if (sortMode !== "provider") {
-      return sortedModels.map((model) => ({ type: "model" as const, model }));
-    }
-    const items: Array<
-      { type: "divider"; label: string; key: string } | { type: "model"; model: any }
-    > = [];
-    let lastProvider = "";
+  const providerGroups = useMemo<ModelGroup[]>(() => {
+    if (sortMode !== "provider") return [];
+    const groups = new Map<string, ModelGroup>();
     for (const model of sortedModels) {
-      const providerLabel = getProviderLabel(model);
-      if (providerLabel !== lastProvider) {
-        lastProvider = providerLabel;
-        items.push({
-          type: "divider",
-          label: providerLabel,
-          key: `provider-${providerLabel}`,
-        });
+      const label = getProviderLabel(model);
+      const existing = groups.get(label);
+      if (existing) {
+        existing.models.push(model);
+        continue;
       }
-      items.push({ type: "model", model });
+      groups.set(label, {
+        label,
+        key: `provider-${label}`,
+        models: [model],
+      });
     }
-    return items;
+    return Array.from(groups.values());
   }, [sortedModels, sortMode, getProviderLabel]);
+
+  const providerGroupRows = useMemo(() => chunkGroups(providerGroups, 2), [providerGroups]);
+
+  const renderModelCard = (model: Model, compact = false) => {
+    const isDefault = model.id === defaultModelId;
+    const providerLabel = getProviderLabel(model);
+    return (
+      <button
+        key={model.id}
+        onClick={() => setSelectedModel(model)}
+        className={cn(
+          "group w-full rounded-xl border border-fg/10 bg-fg/5 text-left transition hover:border-fg/20 hover:bg-fg/10 focus:outline-none focus:ring-2 focus:ring-fg/20 active:scale-[0.99]",
+          compact ? "px-3 py-2.5" : "px-4 py-3",
+        )}
+      >
+        <div className="flex items-center gap-3">
+          {getProviderIcon(model.providerId)}
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span
+                className={cn("truncate font-medium text-fg", compact ? "text-[13px]" : "text-sm")}
+              >
+                {model.displayName || model.name}
+              </span>
+              {isDefault && (
+                <span className="inline-flex items-center gap-1 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent/80">
+                  <Check className="h-2.5 w-2.5" />
+                  Default
+                </span>
+              )}
+            </div>
+            <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-fg/50">
+              <span className="truncate">{providerLabel}</span>
+              <span className="opacity-40">•</span>
+              <span className="truncate max-w-37.5 font-mono text-[10px]">{model.name}</span>
+
+              {(model.inputScopes?.includes("image") || model.outputScopes?.includes("image")) && (
+                <>
+                  <span className="opacity-40">•</span>
+                  <span className="text-info/80">Vision</span>
+                </>
+              )}
+
+              {(model.inputScopes?.includes("audio") || model.outputScopes?.includes("audio")) && (
+                <>
+                  <span className="opacity-40">•</span>
+                  <span className="text-secondary/80">Audio</span>
+                </>
+              )}
+            </div>
+          </div>
+          <ChevronRight className="h-4 w-4 text-fg/30 group-hover:text-fg/60 transition" />
+        </div>
+      </button>
+    );
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -249,67 +344,62 @@ export function ModelsPage() {
         )}
 
         {/* Model Cards */}
-        {listItems.map((item, idx) => {
-          if (item.type === "divider") {
-            return (
-              <div key={item.key} className={cn("flex items-center gap-3 px-1", idx > 0 && "pt-2")}>
-                <span className="text-[10px] font-semibold uppercase tracking-wider text-fg/40">
-                  {item.label}
-                </span>
-                <div className="h-px flex-1 bg-fg/5" />
-              </div>
-            );
-          }
-          const model = item.model;
-          const isDefault = model.id === defaultModelId;
-          const providerLabel = getProviderLabel(model);
-          return (
-            <button
-              key={model.id}
-              onClick={() => setSelectedModel(model)}
-              className="group w-full rounded-xl border border-fg/10 bg-fg/5 px-4 py-3 text-left transition hover:border-fg/20 hover:bg-fg/10 focus:outline-none focus:ring-2 focus:ring-fg/20 active:scale-[0.99]"
+        <AnimatePresence mode="wait" initial={false}>
+          {viewMode === "grid" && sortMode !== "provider" && (
+            <motion.div
+              key="grid-models"
+              {...viewModeTransition}
+              className="grid grid-cols-1 gap-3 lg:grid-cols-2"
             >
-              <div className="flex items-center gap-3">
-                {getProviderIcon(model.providerId)}
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate text-sm font-medium text-fg">
-                      {model.displayName || model.name}
-                    </span>
-                    {isDefault && (
-                      <span className="inline-flex items-center gap-1 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent/80">
-                        <Check className="h-2.5 w-2.5" />
-                        Default
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-fg/50">
-                    <span className="truncate">{providerLabel}</span>
-                    <span className="opacity-40">•</span>
-                    <span className="truncate max-w-37.5 font-mono text-[10px]">{model.name}</span>
+              {sortedModels.map((model) => renderModelCard(model))}
+            </motion.div>
+          )}
 
-                    {(model.inputScopes?.includes("image") ||
-                      model.outputScopes?.includes("image")) && (
-                      <>
-                        <span className="opacity-40">•</span>
-                        <span className="text-info/80">Vision</span>
-                      </>
-                    )}
-
-                    {(model.inputScopes?.includes("audio") ||
-                      model.outputScopes?.includes("audio")) && (
-                      <>
-                        <span className="opacity-40">•</span>
-                        <span className="text-secondary/80">Audio</span>
-                      </>
-                    )}
-                  </div>
+          {viewMode === "grid" && sortMode === "provider" && (
+            <motion.div key="grid-provider" {...viewModeTransition} className="space-y-3">
+              {providerGroupRows.map((row, rowIndex) => (
+                <div
+                  key={`provider-row-${rowIndex}`}
+                  className="grid grid-cols-1 gap-3 lg:grid-cols-2"
+                >
+                  {row.map((group) => (
+                    <section key={group.key} className="min-w-0">
+                      <div className="mb-3 flex items-center gap-3 px-1">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-fg/40">
+                          {group.label}
+                        </span>
+                        <div className="h-px flex-1 bg-fg/5" />
+                      </div>
+                      <div className="space-y-2">
+                        {group.models.map((model) => renderModelCard(model, true))}
+                      </div>
+                    </section>
+                  ))}
                 </div>
-                <ChevronRight className="h-4 w-4 text-fg/30 group-hover:text-fg/60 transition" />
-              </div>
-            </button>
-          );
-        })}
+              ))}
+            </motion.div>
+          )}
+
+          {viewMode === "list" && (
+            <motion.div key={`list-${sortMode}`} {...viewModeTransition} className="space-y-3">
+              {sortMode === "provider"
+                ? providerGroups.map((group, idx) => (
+                    <div key={group.key} className="space-y-3">
+                      <div className={cn("flex items-center gap-3 px-1", idx > 0 && "pt-2")}>
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-fg/40">
+                          {group.label}
+                        </span>
+                        <div className="h-px flex-1 bg-fg/5" />
+                      </div>
+                      <div className="space-y-3">
+                        {group.models.map((model) => renderModelCard(model))}
+                      </div>
+                    </div>
+                  ))
+                : sortedModels.map((model) => <div key={model.id}>{renderModelCard(model)}</div>)}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       <BottomMenu
