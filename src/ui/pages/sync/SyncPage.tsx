@@ -34,6 +34,7 @@ type SyncStatus =
   | { status: "PendingSyncStart"; details: { ip: string; device_name: string } }
   | { status: "PassengerConnecting" }
   | { status: "PassengerConnected"; details: { driver_ip: string } }
+  | { status: "WaitingConfirmation"; details: { driver_ip: string } }
   | { status: "Syncing"; details: { phase: string; progress: number | null } }
   | { status: "SyncCompleted" }
   | { status: "Error"; details: { message: string } };
@@ -164,6 +165,7 @@ export function SyncPage() {
   const isError = status.status === "Error";
   const isConnecting = status.status === "PassengerConnecting";
   const isConnected = status.status === "PassengerConnected";
+  const isWaitingConfirmation = status.status === "WaitingConfirmation";
   const isPendingApproval = status.status === "PendingApproval";
   const isReadyToStart = status.status === "PendingSyncStart";
   const warningMessage =
@@ -292,7 +294,9 @@ export function SyncPage() {
               <Check className="h-8 w-8 text-green-300" />
             </div>
           </div>
-          <h4 className="text-lg font-medium text-white mb-1">{t("sync.modals.connectionEstablished")}</h4>
+          <h4 className="text-lg font-medium text-white mb-1">
+            {t("sync.modals.connectionEstablished")}
+          </h4>
           <p className="text-sm text-white/50 mb-2">
             {(status as any).details?.device_name} {t("sync.modals.deviceReady")}
           </p>
@@ -353,7 +357,9 @@ export function SyncPage() {
           <div className="flex items-center gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 p-3">
             <AlertTriangle className="h-5 w-5 shrink-0 text-amber-300" />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-amber-200">{t("sync.messages.outdatedClient")}</p>
+              <p className="text-sm font-medium text-amber-200">
+                {t("sync.messages.outdatedClient")}
+              </p>
               <p className="text-xs text-amber-200/70">{warningMessage}</p>
             </div>
           </div>
@@ -472,7 +478,9 @@ export function SyncPage() {
                 />
               </div>
               <div>
-                <label className="mb-1.5 block text-xs font-medium text-white/50">{t("sync.fields.pinCode")}</label>
+                <label className="mb-1.5 block text-xs font-medium text-white/50">
+                  {t("sync.fields.pinCode")}
+                </label>
                 <input
                   type="text"
                   value={pin}
@@ -525,12 +533,8 @@ export function SyncPage() {
               <div className="flex items-start gap-3">
                 <Monitor className="h-5 w-5 text-white/40 mt-0.5" />
                 <div>
-                  <p className="text-sm text-white/70">
-                    {t("sync.hostingDesc1")}
-                  </p>
-                  <p className="mt-1 text-xs text-white/40">
-                    {t("sync.hostingDesc2")}
-                  </p>
+                  <p className="text-sm text-white/70">{t("sync.hostingDesc1")}</p>
+                  <p className="mt-1 text-xs text-white/40">{t("sync.hostingDesc2")}</p>
                 </div>
               </div>
             </div>
@@ -558,37 +562,44 @@ export function SyncPage() {
         )}
 
         {/* Connecting / Syncing UI (Passenger Only) */}
-        {role === "client" && (isConnecting || isSyncing || isConnected) && (
-          <div className="space-y-3">
-            <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-white/35">
-              {t("sync.sections.status")}
-            </h2>
-            <div className="border border-blue-400/20 bg-blue-400/10 p-4 rounded-xl">
-              <div className="flex items-center gap-3">
-                <Loader2 className="h-5 w-5 animate-spin text-blue-300" />
-                <div className="flex-1">
-                  <p className="text-sm font-medium text-blue-200">
-                    {isConnecting && t("sync.status.connecting")}
-                    {isConnected && t("sync.status.connected")}
-                    {isSyncing && t("sync.status.syncing")}
-                  </p>
-                  {isSyncing && (
-                    <p className="text-xs text-blue-200/60">{(status as any).details?.phase}</p>
-                  )}
+        {role === "client" &&
+          (isConnecting || isSyncing || isConnected || isWaitingConfirmation) && (
+            <div className="space-y-3">
+              <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-white/35">
+                {t("sync.sections.status")}
+              </h2>
+              <div className="border border-blue-400/20 bg-blue-400/10 p-4 rounded-xl">
+                <div className="flex items-center gap-3">
+                  <Loader2 className="h-5 w-5 animate-spin text-blue-300" />
+                  <div className="flex-1">
+                    <p className="text-sm font-medium text-blue-200">
+                      {isConnecting && t("sync.status.connecting")}
+                      {isConnected && t("sync.status.connected")}
+                      {isWaitingConfirmation && t("sync.status.waitingConfirmation")}
+                      {isSyncing && t("sync.status.syncing")}
+                    </p>
+                    {isWaitingConfirmation && (
+                      <p className="text-xs text-blue-200/60">
+                        {t("sync.status.waitingConfirmationDesc")}
+                      </p>
+                    )}
+                    {isSyncing && (
+                      <p className="text-xs text-blue-200/60">{(status as any).details?.phase}</p>
+                    )}
+                  </div>
                 </div>
               </div>
+              <button
+                onClick={stopSync}
+                className={cn(
+                  "w-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-white/70",
+                  radius.lg,
+                )}
+              >
+                {t("common.buttons.cancel")}
+              </button>
             </div>
-            <button
-              onClick={stopSync}
-              className={cn(
-                "w-full border border-white/10 bg-white/5 px-4 py-3 text-sm font-medium text-white/70",
-                radius.lg,
-              )}
-            >
-              {t("common.buttons.cancel")}
-            </button>
-          </div>
-        )}
+          )}
 
         {/* Active Host UI */}
         {role === "host" && (isDriver || isPendingApproval || isReadyToStart || isSyncing) && (
@@ -615,7 +626,9 @@ export function SyncPage() {
                     <div className="flex h-45 w-45 items-center justify-center mb-6">
                       <div className="text-center">
                         <Loader2 className="h-12 w-12 animate-spin text-blue-400 mx-auto mb-4" />
-                        <p className="text-lg font-medium text-blue-200">{t("sync.status.syncing")}</p>
+                        <p className="text-lg font-medium text-blue-200">
+                          {t("sync.status.syncing")}
+                        </p>
                         <p className="text-sm text-blue-200/60 mt-1">
                           {(status as any).details?.phase || "Transferring data"}
                         </p>
@@ -679,9 +692,7 @@ export function SyncPage() {
                 <code className="text-4xl font-mono font-bold text-emerald-300 tracking-[0.4em]">
                   {(status as any).details?.pin || "------"}
                 </code>
-                <p className="text-xs text-emerald-200/40 mt-2">
-                  {t("sync.pinDescription")}
-                </p>
+                <p className="text-xs text-emerald-200/40 mt-2">{t("sync.pinDescription")}</p>
               </div>
             )}
 

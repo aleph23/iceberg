@@ -2470,6 +2470,8 @@ export const enMessages = {
     status: {
       connecting: "Connecting...",
       connected: "Connected",
+      waitingConfirmation: "Waiting for host",
+      waitingConfirmationDesc: "Connected successfully. Waiting for the host to start syncing.",
       syncing: "Syncing...",
       transferringData: "Transferring data",
       syncInProgress: "Sync in Progress",

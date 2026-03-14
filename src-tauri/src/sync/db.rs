@@ -2588,7 +2588,8 @@ fn fetch_global_core(conn: &DbConnection) -> Result<GlobalCoreData, String> {
 
 fn fetch_lorebooks(conn: &DbConnection, ids: &[String]) -> Result<Vec<u8>, String> {
     if ids.is_empty() {
-        return Ok(vec![]);
+        return bincode::serialize(&(Vec::<SyncLorebook>::new(), Vec::<SyncLorebookEntry>::new()))
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e));
     }
 
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");

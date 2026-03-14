@@ -90,6 +90,7 @@ pub enum P2PMessage {
 
     // Control
     SyncComplete,
+    SyncApplied,
     StatusUpdate(String),
     Disconnect,
     Error(String),

@@ -17,7 +17,7 @@ use crate::sync::db as sync_db;
 use crate::sync::protocol::{ChangeOp, P2PMessage, SyncDomain};
 use crate::utils::{log_error, log_info, log_warn};
 
-const PROTOCOL_VERSION: u32 = 8;
+const PROTOCOL_VERSION: u32 = 9;
 
 struct PendingAssetFile {
     path: String,
@@ -52,6 +52,9 @@ pub enum SyncStatus {
     },
     PassengerConnecting,
     PassengerConnected {
+        driver_ip: String,
+    },
+    WaitingConfirmation {
         driver_ip: String,
     },
     Syncing {
@@ -560,7 +563,45 @@ async fn handle_advertise_cursors(
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     let state = app.state::<SyncManagerState>();
-    state.set_status(app, SyncStatus::SyncCompleted).await;
+    state
+        .set_status(
+            app,
+            SyncStatus::Syncing {
+                phase: "Waiting for receiver confirmation".into(),
+                progress: None,
+            },
+        )
+        .await;
+
+    match framed.next().await {
+        Some(Ok(P2PMessage::SyncApplied)) => {
+            state.set_status(app, SyncStatus::SyncCompleted).await;
+        }
+        Some(Ok(P2PMessage::Disconnect)) => {
+            return Err(crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                "Passenger disconnected before confirming sync completion",
+            ));
+        }
+        Some(Ok(other)) => {
+            return Err(crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Expected SyncApplied, got {:?}", other),
+            ));
+        }
+        Some(Err(e)) => {
+            return Err(crate::utils::err_to_string(module_path!(), line!(), e));
+        }
+        None => {
+            return Err(crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                "Connection closed before passenger confirmed sync completion",
+            ));
+        }
+    }
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     Ok(())
@@ -749,7 +790,7 @@ async fn run_passenger_session(
     state
         .set_status(
             &app,
-            SyncStatus::PassengerConnected {
+            SyncStatus::WaitingConfirmation {
                 driver_ip: "unknown".into(),
             },
         )
@@ -778,15 +819,6 @@ async fn run_passenger_session(
             )
             .await;
     }
-    state
-        .set_status(
-            &app,
-            SyncStatus::Syncing {
-                phase: "Receiving Data".into(),
-                progress: None,
-            },
-        )
-        .await;
 
     let mut pending_asset_batch: Option<PendingAssetBatch> = None;
 
@@ -801,6 +833,10 @@ async fn run_passenger_session(
                 match msg {
                     Some(Ok(P2PMessage::PushChanges { domain, changes })) => {
                         log_info(&app, "sync_passenger", format!("Received {} changes for {:?}", changes.len(), domain));
+                        state.set_status(&app, SyncStatus::Syncing {
+                            phase: "Receiving Data".into(),
+                            progress: None,
+                        }).await;
                         let last_change_id = changes.last().map(|change| change.change_id).unwrap_or(0);
                         if domain == SyncDomain::Assets {
                             if pending_asset_batch.is_some() {
@@ -949,6 +985,10 @@ async fn run_passenger_session(
                             ));
                         }
                         log_info(&app, "sync_passenger", "Received SyncComplete");
+                        framed
+                            .send(P2PMessage::SyncApplied)
+                            .await
+                            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
                         state.set_status(&app, SyncStatus::SyncCompleted).await;
                         break;
                     }
