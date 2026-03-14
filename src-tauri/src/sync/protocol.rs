@@ -7,7 +7,8 @@ pub enum SyncDomain {
     Lorebooks,
     Characters,
     Groups,
-    Conversations,
+    Sessions,
+    Messages,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]

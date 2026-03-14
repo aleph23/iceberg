@@ -17,7 +17,7 @@ use crate::sync::protocol::{P2PMessage, SyncDomain, SyncManifest};
 use crate::utils::{log_error, log_info, log_warn};
 use std::path::Path;
 
-const PROTOCOL_VERSION: u32 = 6;
+const PROTOCOL_VERSION: u32 = 7;
 
 fn derive_key(pin: &str, salt: &[u8]) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new_derive_key("lettuce_sync_v1");
@@ -913,7 +913,8 @@ fn sync_status_text(domain: SyncDomain) -> &'static str {
         SyncDomain::Lorebooks => "Syncing Lorebooks...",
         SyncDomain::Characters => "Syncing Characters...",
         SyncDomain::Groups => "Syncing Groups...",
-        SyncDomain::Conversations => "Syncing Conversations...",
+        SyncDomain::Sessions => "Syncing Sessions...",
+        SyncDomain::Messages => "Syncing Messages...",
     }
 }
 
@@ -954,7 +955,7 @@ async fn send_domain_assets(
 
             Ok(())
         }
-        SyncDomain::Conversations => {
+        SyncDomain::Messages => {
             let session_asset_info = {
                 let conn = crate::storage_manager::db::open_db(app)?;
                 let mut stmt = conn
@@ -973,7 +974,7 @@ async fn send_domain_assets(
 
             Ok(())
         }
-        SyncDomain::Tts | SyncDomain::Lorebooks => Ok(()),
+        SyncDomain::Sessions | SyncDomain::Tts | SyncDomain::Lorebooks => Ok(()),
     }
 }
 

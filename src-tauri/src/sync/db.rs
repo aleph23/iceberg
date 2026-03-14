@@ -102,8 +102,12 @@ struct SyncGroupSessionRecord {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct ConversationsSnapshot {
+struct SessionsSnapshot {
     sessions: Vec<Session>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct MessagesSnapshot {
     messages: Vec<Message>,
     message_variants: Vec<MessageVariant>,
     usage_records: Vec<UsageRecord>,
@@ -117,7 +121,8 @@ pub fn build_sync_manifest(conn: &DbConnection) -> Result<SyncManifest, String> 
         SyncDomain::Lorebooks,
         SyncDomain::Characters,
         SyncDomain::Groups,
-        SyncDomain::Conversations,
+        SyncDomain::Sessions,
+        SyncDomain::Messages,
     ];
 
     let mut manifest = SyncManifest::default();
@@ -139,7 +144,8 @@ pub fn fetch_domain_snapshot(conn: &DbConnection, domain: SyncDomain) -> Result<
         SyncDomain::Lorebooks => serialize_lorebooks_snapshot(conn),
         SyncDomain::Characters => serialize_characters_snapshot(conn),
         SyncDomain::Groups => serialize_groups_snapshot(conn),
-        SyncDomain::Conversations => serialize_conversations_snapshot(conn),
+        SyncDomain::Sessions => serialize_sessions_snapshot(conn),
+        SyncDomain::Messages => serialize_messages_snapshot(conn),
     }
 }
 
@@ -154,7 +160,8 @@ pub fn apply_domain_snapshot(
         SyncDomain::Lorebooks => apply_lorebooks_snapshot(conn, payload),
         SyncDomain::Characters => apply_characters_snapshot(conn, payload),
         SyncDomain::Groups => apply_groups_snapshot(conn, payload),
-        SyncDomain::Conversations => apply_conversations_snapshot(conn, payload),
+        SyncDomain::Sessions => apply_sessions_snapshot(conn, payload),
+        SyncDomain::Messages => apply_messages_snapshot(conn, payload),
     }
 }
 
@@ -259,13 +266,20 @@ fn serialize_groups_snapshot(conn: &DbConnection) -> Result<Vec<u8>, String> {
     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
-fn serialize_conversations_snapshot(conn: &DbConnection) -> Result<Vec<u8>, String> {
+fn serialize_sessions_snapshot(conn: &DbConnection) -> Result<Vec<u8>, String> {
     let session_ids = collect_text_ids(conn, "SELECT id FROM sessions")?;
-    let (sessions, messages, message_variants, session_usage_records, session_usage_metadata) =
+    let (sessions, _, _, _, _) = fetch_sessions_data(conn, &session_ids)?;
+
+    bincode::serialize(&SessionsSnapshot { sessions })
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+fn serialize_messages_snapshot(conn: &DbConnection) -> Result<Vec<u8>, String> {
+    let session_ids = collect_text_ids(conn, "SELECT id FROM sessions")?;
+    let (_, messages, message_variants, session_usage_records, session_usage_metadata) =
         fetch_sessions_data(conn, &session_ids)?;
 
-    bincode::serialize(&ConversationsSnapshot {
-        sessions,
+    bincode::serialize(&MessagesSnapshot {
         messages,
         message_variants,
         usage_records: session_usage_records,
@@ -475,7 +489,12 @@ fn apply_core_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Result<(), St
     }
     delete_missing_rows(&tx, "personas", "id", &persona_ids)?;
 
-    for table in ["models", "secrets", "provider_credentials", "prompt_templates"] {
+    for table in [
+        "models",
+        "secrets",
+        "provider_credentials",
+        "prompt_templates",
+    ] {
         tx.execute(&format!("DELETE FROM {}", table), [])
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     }
@@ -985,8 +1004,8 @@ fn apply_groups_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Result<(), 
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
-fn apply_conversations_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Result<(), String> {
-    let snapshot: ConversationsSnapshot = bincode::deserialize(payload)
+fn apply_sessions_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Result<(), String> {
+    let snapshot: SessionsSnapshot = bincode::deserialize(payload)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let tx = conn
         .transaction()
@@ -1003,8 +1022,18 @@ fn apply_conversations_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Resu
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
     };
 
-    if !existing_session_ids.is_empty() {
-        let placeholders = existing_session_ids
+    let incoming_session_ids = snapshot
+        .sessions
+        .iter()
+        .map(|session| session.id.clone())
+        .collect::<Vec<_>>();
+    let removed_session_ids = existing_session_ids
+        .into_iter()
+        .filter(|id| !incoming_session_ids.contains(id))
+        .collect::<Vec<_>>();
+
+    if !removed_session_ids.is_empty() {
+        let placeholders = removed_session_ids
             .iter()
             .map(|_| "?")
             .collect::<Vec<_>>()
@@ -1015,7 +1044,7 @@ fn apply_conversations_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Resu
         );
         tx.execute(
             &delete_usage_metadata_sql,
-            rusqlite::params_from_iter(existing_session_ids.iter()),
+            rusqlite::params_from_iter(removed_session_ids.iter()),
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
@@ -1025,14 +1054,9 @@ fn apply_conversations_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Resu
         );
         tx.execute(
             &delete_usage_sql,
-            rusqlite::params_from_iter(existing_session_ids.iter()),
+            rusqlite::params_from_iter(removed_session_ids.iter()),
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-    }
-
-    for table in ["message_variants", "messages", "sessions"] {
-        tx.execute(&format!("DELETE FROM {}", table), [])
-            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     }
 
     for session in snapshot.sessions {
@@ -1066,6 +1090,77 @@ fn apply_conversations_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Resu
                 session.memory_status,
                 session.memory_error
             ],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    }
+
+    delete_missing_rows(&tx, "sessions", "id", &incoming_session_ids)?;
+
+    tx.commit()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+fn apply_messages_snapshot(conn: &mut DbConnection, payload: &[u8]) -> Result<(), String> {
+    let snapshot: MessagesSnapshot = bincode::deserialize(payload)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let session_ids = {
+        let mut stmt = tx
+            .prepare("SELECT id FROM sessions")
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    };
+
+    if !session_ids.is_empty() {
+        let placeholders = session_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let delete_usage_metadata_sql = format!(
+            "DELETE FROM usage_metadata WHERE usage_id IN (SELECT id FROM usage_records WHERE session_id IN ({}))",
+            placeholders
+        );
+        tx.execute(
+            &delete_usage_metadata_sql,
+            rusqlite::params_from_iter(session_ids.iter()),
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+        let delete_usage_sql = format!(
+            "DELETE FROM usage_records WHERE session_id IN ({})",
+            placeholders
+        );
+        tx.execute(
+            &delete_usage_sql,
+            rusqlite::params_from_iter(session_ids.iter()),
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+        let delete_variants_sql = format!(
+            "DELETE FROM message_variants WHERE message_id IN (SELECT id FROM messages WHERE session_id IN ({}))",
+            placeholders
+        );
+        tx.execute(
+            &delete_variants_sql,
+            rusqlite::params_from_iter(session_ids.iter()),
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+        let delete_messages_sql = format!(
+            "DELETE FROM messages WHERE session_id IN ({})",
+            placeholders
+        );
+        tx.execute(
+            &delete_messages_sql,
+            rusqlite::params_from_iter(session_ids.iter()),
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     }
