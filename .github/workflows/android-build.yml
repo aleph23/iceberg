@@ -297,7 +297,26 @@ jobs:
         run: |
           bun run tauri android build --ci --config "$TAURI_CONFIG_OVERRIDE" --apk
 
-      - name: Ensure signed APK output
+      - name: Build split APK flavors
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+          NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          LETTUCE_ANDROID_APPLICATION_ID: dev.lettuceai.app
+          RUST_BACKTRACE: 1
+          RUSTFLAGS: "--cfg DEV_BUILD"
+          TAURI_CONFIG_OVERRIDE: ${{ env.TAURI_CONFIG_OVERRIDE }}
+        run: |
+          cd src-tauri/gen/android
+          ./gradlew \
+            assembleArm64Release \
+            assembleArmRelease \
+            assembleX86Release \
+            assembleX86_64Release
+
+      - name: Ensure signed APK outputs
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
@@ -305,48 +324,54 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ env.ANDROID_KEY_PASSWORD }}
           ANDROID_KEYSTORE_PATH: ${{ env.ANDROID_KEYSTORE_PATH }}
         run: |
-          APK_DIR="src-tauri/gen/android/app/build/outputs/apk/universal/release"
-          SIGNED_APK="$APK_DIR/app-universal-release.apk"
-          UNSIGNED_APK="$APK_DIR/app-universal-release-unsigned.apk"
-
-          if [ ! -f "$SIGNED_APK" ] && [ ! -f "$UNSIGNED_APK" ]; then
-            echo "No APK found in $APK_DIR"
-            ls -la "$APK_DIR"
-            exit 1
-          fi
-
           BUILD_TOOLS="$(ls "$ANDROID_SDK_ROOT/build-tools" | sort -V | tail -1)"
           ZIPALIGN="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/zipalign"
           APKSIGNER="$ANDROID_SDK_ROOT/build-tools/$BUILD_TOOLS/apksigner"
+          APK_ROOT="src-tauri/gen/android/app/build/outputs/apk"
+          FLAVORS=(universal arm64 arm x86 x86_64)
 
-          if [ -f "$UNSIGNED_APK" ]; then
-            ALIGNED_APK="$APK_DIR/app-universal-release-aligned.apk"
-            "$ZIPALIGN" -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
-            "$APKSIGNER" sign \
-              --ks "$ANDROID_KEYSTORE_PATH" \
-              --ks-pass "pass:$ANDROID_KEY_PASSWORD" \
-              --key-pass "pass:$ANDROID_KEY_PASSWORD" \
-              --ks-key-alias "$ANDROID_KEY_ALIAS" \
-              --out "$SIGNED_APK" \
-              "$ALIGNED_APK"
-            rm -f "$ALIGNED_APK"
-          fi
+          for flavor in "${FLAVORS[@]}"; do
+            APK_DIR="$APK_ROOT/$flavor/release"
+            SIGNED_APK="$APK_DIR/app-$flavor-release.apk"
+            UNSIGNED_APK="$APK_DIR/app-$flavor-release-unsigned.apk"
 
-          "$APKSIGNER" verify --verbose "$SIGNED_APK"
-          rm -f "$UNSIGNED_APK"
+            if [ ! -f "$SIGNED_APK" ] && [ ! -f "$UNSIGNED_APK" ]; then
+              echo "No APK found in $APK_DIR"
+              ls -la "$APK_DIR" || true
+              exit 1
+            fi
+
+            if [ -f "$UNSIGNED_APK" ]; then
+              ALIGNED_APK="$APK_DIR/app-$flavor-release-aligned.apk"
+              "$ZIPALIGN" -f 4 "$UNSIGNED_APK" "$ALIGNED_APK"
+              "$APKSIGNER" sign \
+                --ks "$ANDROID_KEYSTORE_PATH" \
+                --ks-pass "pass:$ANDROID_KEY_PASSWORD" \
+                --key-pass "pass:$ANDROID_KEY_PASSWORD" \
+                --ks-key-alias "$ANDROID_KEY_ALIAS" \
+                --out "$SIGNED_APK" \
+                "$ALIGNED_APK"
+              rm -f "$ALIGNED_APK"
+              rm -f "$UNSIGNED_APK"
+            fi
+
+            "$APKSIGNER" verify --verbose "$SIGNED_APK"
+          done
 
       - name: Package Android artifacts
         run: |
           APK_ROOT="src-tauri/gen/android/app/build/outputs/apk"
-          SIGNED_APK="$APK_ROOT/universal/release/app-universal-release.apk"
           mkdir -p dist-artifacts
+          FLAVORS=(universal arm64 arm x86 x86_64)
 
-          if [ ! -f "$SIGNED_APK" ]; then
-            echo "Signed universal APK not found at $SIGNED_APK"
-            exit 1
-          fi
-
-          cp "$SIGNED_APK" dist-artifacts/android-universal-release.apk
+          for flavor in "${FLAVORS[@]}"; do
+            SIGNED_APK="$APK_ROOT/$flavor/release/app-$flavor-release.apk"
+            if [ ! -f "$SIGNED_APK" ]; then
+              echo "Signed APK not found at $SIGNED_APK"
+              exit 1
+            fi
+            cp "$SIGNED_APK" "dist-artifacts/android-$flavor-release.apk"
+          done
 
           (
             cd "$APK_ROOT"
@@ -364,6 +389,10 @@ jobs:
           tag_name: ${{ needs.prepare_release.outputs.tag }}
           files: |
             dist-artifacts/android-universal-release.apk
+            dist-artifacts/android-arm64-release.apk
+            dist-artifacts/android-arm-release.apk
+            dist-artifacts/android-x86-release.apk
+            dist-artifacts/android-x86_64-release.apk
             dist-artifacts/android-apk-bundle.zip
           fail_on_unmatched_files: true
 
