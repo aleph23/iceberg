@@ -680,6 +680,19 @@ export async function createBranchedSession(
       };
     });
 
+  const branchedMemoryEmbeddings = (sourceSession.memoryEmbeddings ?? []).map((memory) => ({
+    ...memory,
+    embedding: [...memory.embedding],
+  }));
+  const branchedMemoryToolEvents = (sourceSession.memoryToolEvents ?? []).map((event) => ({
+    ...event,
+    windowMessageIds: event.windowMessageIds ? [...event.windowMessageIds] : undefined,
+    actions: event.actions.map((action) => ({
+      ...action,
+      updatedMemories: action.updatedMemories ? [...action.updatedMemories] : undefined,
+    })),
+  }));
+
   const s: Session = {
     id,
     characterId: sourceSession.characterId,
@@ -689,7 +702,10 @@ export async function createBranchedSession(
     personaId: sourceSession.personaId,
     personaDisabled: sourceSession.personaDisabled ?? false,
     memories: [...sourceSession.memories],
-    memorySummaryTokenCount: 0,
+    memoryEmbeddings: branchedMemoryEmbeddings,
+    memorySummary: sourceSession.memorySummary ?? "",
+    memorySummaryTokenCount: sourceSession.memorySummaryTokenCount ?? 0,
+    memoryToolEvents: branchedMemoryToolEvents,
     messages: branchedMessages,
     archived: false,
     createdAt: timestamp,
