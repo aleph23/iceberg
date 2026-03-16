@@ -12,7 +12,8 @@ pub struct ChutesAdapter;
 
 impl ProviderAdapter for ChutesAdapter {
     fn endpoint(&self, base_url: &str) -> String {
-        DeepSeekAdapter.endpoint(base_url)
+        let normalized = normalize_chutes_base_url(base_url);
+        DeepSeekAdapter.endpoint(&normalized)
     }
 
     fn system_role(&self) -> std::borrow::Cow<'static, str> {
@@ -73,4 +74,15 @@ impl ProviderAdapter for ChutesAdapter {
             reasoning_budget,
         )
     }
+}
+
+fn normalize_chutes_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim();
+    if trimmed.is_empty() {
+        return "https://llm.chutes.ai".to_string();
+    }
+
+    trimmed
+        .replace("://api.chutes.ai", "://llm.chutes.ai")
+        .replace("://www.api.chutes.ai", "://llm.chutes.ai")
 }

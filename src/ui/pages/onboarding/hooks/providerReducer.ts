@@ -67,7 +67,7 @@ export function getDefaultBaseUrl(providerId: string): string {
     case "intenserp":
       return "http://127.0.0.1:7777/v1";
     case "chutes":
-      return "https://api.chutes.ai";
+      return "https://llm.chutes.ai";
     case "featherless":
       return "https://api.featherless.ai/v1";
     case "openrouter":
