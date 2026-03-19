@@ -866,6 +866,20 @@ pub fn get_help_me_reply_prompt(app: &AppHandle, style: &str) -> String {
     }
 }
 
+pub fn get_scene_generation_prompt(app: &AppHandle) -> String {
+    match get_template(app, APP_SCENE_GENERATION_TEMPLATE_ID) {
+        Ok(Some(template)) => {
+            let merged = template_entries_to_content(&template.entries);
+            if merged.is_empty() {
+                template.content
+            } else {
+                merged
+            }
+        }
+        _ => get_base_prompt(PromptType::SceneGenerationPrompt),
+    }
+}
+
 /// Get the Group Chat template from DB, falling back to default if not found
 #[allow(dead_code)]
 pub fn get_group_chat_prompt(app: &AppHandle) -> String {

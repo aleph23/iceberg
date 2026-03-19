@@ -43,10 +43,10 @@ use super::storage::{
 use super::tooling::{parse_tool_calls, ToolCall, ToolChoice, ToolConfig, ToolDefinition};
 use super::types::{
     Character, ChatAddMessageAttachmentArgs, ChatCompletionArgs, ChatContinueArgs,
-    ChatGenerateSceneImageArgs, ChatRegenerateArgs, ChatTurnResult, ContinueResult,
-    MemoryEmbedding, MemoryRetrievalStrategy, Model, Persona, PromptEntryPosition, PromptScope,
-    ProviderCredential, RegenerateResult, Session, Settings, StoredMessage, SystemPromptEntry,
-    SystemPromptTemplate,
+    ChatGenerateSceneImageArgs, ChatGenerateScenePromptArgs, ChatRegenerateArgs, ChatTurnResult,
+    ContinueResult, MemoryEmbedding, MemoryRetrievalStrategy, Model, Persona, PromptEntryPosition,
+    PromptScope, ProviderCredential, RegenerateResult, Session, Settings, StoredMessage,
+    SystemPromptEntry, SystemPromptTemplate,
 };
 use crate::storage_manager::sessions::{
     messages_upsert_batch, session_conversation_count, session_upsert_meta,
@@ -6811,10 +6811,30 @@ fn build_scene_generation_request(
             "Do not swap, merge, or borrow identity-defining features between reference images."
                 .to_string(),
         );
-        reference_lines.push(
-            "If only one reference image is attached, do not invent the missing person from it."
-                .to_string(),
-        );
+        match (has_character_reference, has_persona_reference) {
+            (true, false) => reference_lines.push(format!(
+                "Only {} has a reference image attached. Do not invent {} from {}'s appearance.",
+                character.name,
+                persona
+                    .and_then(|value| value.nickname.as_deref())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| persona.map(|value| value.title.as_str()).unwrap_or("the persona")),
+                character.name
+            )),
+            (false, true) => reference_lines.push(format!(
+                "Only {} has a reference image attached. Do not invent {} from {}'s appearance.",
+                persona
+                    .and_then(|value| value.nickname.as_deref())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| persona.map(|value| value.title.as_str()).unwrap_or("the persona")),
+                character.name,
+                persona
+                    .and_then(|value| value.nickname.as_deref())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| persona.map(|value| value.title.as_str()).unwrap_or("the persona"))
+            )),
+            _ => {}
+        }
         prompt_sections.push(reference_lines.join("\n"));
     }
 
@@ -6864,6 +6884,95 @@ async fn generate_scene_image_with_retry(
     }
 
     Err(last_error.unwrap_or_else(|| "No images found in response".to_string()))
+}
+
+fn build_scene_prompt_context_messages(
+    session: &Session,
+    message_id: &str,
+) -> Result<String, String> {
+    let target_index = session
+        .messages
+        .iter()
+        .position(|message| message.id == message_id)
+        .ok_or_else(|| "Message not found in loaded session window".to_string())?;
+
+    let start_index = target_index.saturating_sub(2);
+    let context_slice = &session.messages[start_index..=target_index];
+
+    let context = context_slice
+        .iter()
+        .filter(|message| {
+            matches!(message.role.as_str(), "user" | "assistant" | "scene")
+                && !message.content.trim().is_empty()
+        })
+        .map(|message| {
+            let role = match message.role.as_str() {
+                "assistant" => "Assistant",
+                "scene" => "Scene",
+                _ => "User",
+            };
+            format!("{}: {}", role, message.content.trim())
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    if context.trim().is_empty() {
+        return Err("No conversation context available for scene prompt generation".to_string());
+    }
+
+    Ok(context)
+}
+
+fn condense_prompt_whitespace(input: String) -> String {
+    let mut output = input;
+    while output.contains("\n\n\n") {
+        output = output.replace("\n\n\n", "\n\n");
+    }
+    output.trim().to_string()
+}
+
+fn render_scene_generation_prompt(
+    app: &AppHandle,
+    character: &Character,
+    persona: Option<&Persona>,
+    recent_messages_text: &str,
+) -> String {
+    let mut prompt = prompts::get_scene_generation_prompt(app);
+    let char_name = character.name.as_str();
+    let char_desc = character
+        .definition
+        .as_deref()
+        .or(character.description.as_deref())
+        .unwrap_or("");
+    let persona_name = persona.map(|value| value.title.as_str()).unwrap_or("User");
+    let persona_desc = persona
+        .map(|value| value.description.as_str())
+        .unwrap_or("");
+
+    prompt = prompt.replace("{{char.name}}", char_name);
+    prompt = prompt.replace("{{char}}", char_name);
+    prompt = prompt.replace("{{user}}", persona_name);
+    prompt = prompt.replace("{{persona}}", persona_name);
+    prompt = prompt.replace("{{char.desc}}", char_desc);
+    prompt = prompt.replace("{{persona.name}}", persona_name);
+    prompt = prompt.replace("{{persona.desc}}", persona_desc);
+    prompt = prompt.replace("{{recent_messages}}", recent_messages_text);
+    let scene_request = if let Some(persona) = persona {
+        format!(
+            "Create one polished scene image prompt for the visual moment described by the recent messages. Focus on the currently active beat involving {} and {}. Keep {} and {} visually distinct, and make the result immediately usable for image generation.",
+            character.name, persona.title, character.name, persona.title
+        )
+    } else {
+        format!(
+            "Create one polished scene image prompt for the visual moment described by the recent messages. Focus on the currently active beat involving {}. Make the result immediately usable for image generation.",
+            character.name
+        )
+    };
+    prompt = prompt.replace("{{scene_request}}", &scene_request);
+    prompt = prompt.replace("{{image[character]}}", "");
+    prompt = prompt.replace("{{image[persona]}}", "");
+
+    condense_prompt_whitespace(prompt)
 }
 
 #[tauri::command]
@@ -7085,6 +7194,139 @@ pub async fn chat_generate_scene_image(
     }
 
     Ok(updated_message)
+}
+
+#[tauri::command]
+pub async fn chat_generate_scene_prompt(
+    app: AppHandle,
+    args: ChatGenerateScenePromptArgs,
+) -> Result<String, String> {
+    let ChatGenerateScenePromptArgs {
+        session_id,
+        message_id,
+    } = args;
+
+    let context = ChatContext::initialize(app.clone())?;
+    let settings = &context.settings;
+    let session = context
+        .load_session(&session_id)?
+        .ok_or_else(|| "Session not found".to_string())?;
+    let character = context.find_character(&session.character_id)?;
+    let persona = context.choose_persona(resolve_persona_id(&session, None));
+    let (model, provider_cred) = context.select_model(&character)?;
+    let api_key = resolve_api_key(&app, provider_cred, "scene_prompt")?;
+
+    let recent_messages_text = build_scene_prompt_context_messages(&session, &message_id)?;
+    let system_prompt =
+        render_scene_generation_prompt(&app, &character, persona, &recent_messages_text);
+
+    let messages_for_api: Vec<Value> = vec![
+        json!({ "role": "system", "content": system_prompt }),
+        json!({
+            "role": "user",
+            "content": "Return only one final scene image prompt. Do not explain your reasoning and do not wrap the result in tags, quotes, or code fences."
+        }),
+    ];
+
+    let context_length = resolve_context_length(&session, model, settings);
+    let extra_body_fields = if provider_cred.provider_id == "llamacpp" {
+        build_llama_extra_fields(&session, model, settings)
+    } else if provider_cred.provider_id == "ollama" {
+        build_ollama_extra_fields(
+            &session,
+            model,
+            settings,
+            context_length,
+            1280,
+            0.7,
+            1.0,
+            None,
+            None,
+            None,
+        )
+    } else {
+        None
+    };
+
+    let built = super::request_builder::build_chat_request(
+        provider_cred,
+        &api_key,
+        &model.name,
+        &messages_for_api,
+        None,
+        0.7,
+        1.0,
+        1280,
+        context_length,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        extra_body_fields,
+    );
+
+    let api_request_payload = ApiRequest {
+        url: built.url,
+        method: Some("POST".into()),
+        headers: Some(built.headers),
+        query: None,
+        body: Some(built.body),
+        timeout_ms: Some(60_000),
+        stream: Some(false),
+        request_id: None,
+        provider_id: Some(provider_cred.provider_id.clone()),
+    };
+
+    let api_response = api_request(app.clone(), api_request_payload).await?;
+    if !api_response.ok {
+        return Err(format!(
+            "API request failed with status {}",
+            api_response.status
+        ));
+    }
+
+    let generated_text = extract_text(&api_response.data, Some(&provider_cred.provider_id))
+        .ok_or_else(|| "Failed to extract text from response".to_string())?;
+
+    let cleaned = condense_prompt_whitespace(
+        generated_text
+            .trim()
+            .trim_matches('"')
+            .trim()
+            .trim_start_matches("<img>")
+            .trim_end_matches("</img>")
+            .trim_end_matches("[CONTINUE]")
+            .trim_end_matches("[continue]")
+            .trim_end_matches("[/continue]")
+            .trim()
+            .to_string(),
+    );
+
+    let usage = super::sse::usage_from_value(&api_response.data);
+    super::service::record_usage_if_available(
+        &context,
+        &usage,
+        &session,
+        &character,
+        model,
+        provider_cred,
+        &api_key,
+        now_millis().unwrap_or(0),
+        UsageOperationType::ReplyHelper,
+        "scene_prompt",
+    )
+    .await;
+
+    if cleaned.is_empty() {
+        return Err("Scene prompt generation returned an empty result".to_string());
+    }
+
+    Ok(cleaned)
 }
 
 #[tauri::command]

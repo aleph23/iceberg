@@ -5,6 +5,7 @@ import { impactFeedback } from "@tauri-apps/plugin-haptics";
 import {
   addChatMessageAttachment,
   generateSceneImageForMessage,
+  generateScenePromptForMessage,
 } from "../../../../core/chat/manager";
 import {
   generateImage,
@@ -458,6 +459,127 @@ export function useChatEnhancementsController({ context }: UseChatEnhancementsCo
     ],
   );
 
+  const generateAiScenePrompt = useCallback(
+    async (messageId: string): Promise<string> => {
+      if (!state.session) {
+        throw new Error("Session not loaded");
+      }
+
+      return generateScenePromptForMessage({
+        sessionId: state.session.id,
+        messageId,
+      });
+    },
+    [state.session],
+  );
+
+  const applySceneImagePrompt = useCallback(
+    async (
+      message: StoredMessage,
+      scenePrompt: string,
+      options?: { existingAttachmentId?: string | null },
+    ) => {
+      if (!state.session) {
+        throw new Error("Session not loaded");
+      }
+
+      const prompt = scenePrompt.trim();
+      if (!prompt) {
+        throw new Error("Scene prompt cannot be empty");
+      }
+
+      const attachmentId = options?.existingAttachmentId?.trim() || crypto.randomUUID();
+      const previousMessage = message;
+      const hasExistingAttachment = Boolean(options?.existingAttachmentId?.trim());
+      const placeholderAttachment: ImageAttachment = {
+        id: attachmentId,
+        data: "",
+        mimeType: "image/webp",
+        width: 1024,
+        height: 1024,
+        filename: prompt,
+      };
+
+      const optimisticMessage: StoredMessage = {
+        ...previousMessage,
+        attachments: hasExistingAttachment
+          ? (previousMessage.attachments ?? []).map((attachment) =>
+              attachment.id === attachmentId ? placeholderAttachment : attachment,
+            )
+          : [...(previousMessage.attachments ?? []), placeholderAttachment],
+      };
+
+      const optimisticMessages = messagesRef.current.map((entry) =>
+        entry.id === optimisticMessage.id ? optimisticMessage : entry,
+      );
+      messagesRef.current = optimisticMessages;
+
+      const optimisticSession: Session = {
+        ...state.session,
+        messages: optimisticMessages,
+        updatedAt: Date.now(),
+      };
+
+      dispatch({
+        type: "BATCH",
+        actions: [
+          { type: "SET_MESSAGES", payload: optimisticMessages },
+          { type: "SET_SESSION", payload: optimisticSession },
+        ],
+      });
+
+      try {
+        const updated = await generateSceneImageForMessage({
+          sessionId: state.session.id,
+          messageId: previousMessage.id,
+          attachmentId,
+          scenePrompt: prompt,
+        });
+
+        const nextMessages = messagesRef.current.map((entry) =>
+          entry.id === updated.id ? updated : entry,
+        );
+        messagesRef.current = nextMessages;
+
+        const nextSession: Session = {
+          ...state.session,
+          messages: nextMessages,
+          updatedAt: Date.now(),
+        };
+
+        dispatch({
+          type: "BATCH",
+          actions: [
+            { type: "SET_MESSAGES", payload: nextMessages },
+            { type: "SET_SESSION", payload: nextSession },
+          ],
+        });
+      } catch (error) {
+        const revertedMessages = messagesRef.current.map((entry) =>
+          entry.id === previousMessage.id ? previousMessage : entry,
+        );
+        messagesRef.current = revertedMessages;
+
+        const revertedSession: Session = {
+          ...state.session,
+          messages: revertedMessages,
+          updatedAt: Date.now(),
+        };
+
+        dispatch({
+          type: "BATCH",
+          actions: [
+            { type: "SET_MESSAGES", payload: revertedMessages },
+            { type: "SET_SESSION", payload: revertedSession },
+          ],
+        });
+
+        throw error;
+      }
+    },
+    [dispatch, messagesRef, state.session],
+  );
+
   const initializeLongPressTimer = useCallback((timer: number | null) => {
     if (timer === null) {
       if (longPressTimerRef.current !== null) {
@@ -471,6 +593,8 @@ export function useChatEnhancementsController({ context }: UseChatEnhancementsCo
   }, []);
 
   return {
+    applySceneImagePrompt,
+    generateAiScenePrompt,
     initializeLongPressTimer,
     runInChatImageGeneration,
     triggerTypingHaptic,

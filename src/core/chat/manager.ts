@@ -176,3 +176,15 @@ export async function generateSceneImageForMessage(params: {
     },
   });
 }
+
+export async function generateScenePromptForMessage(params: {
+  sessionId: string;
+  messageId: string;
+}): Promise<string> {
+  return invoke<string>("chat_generate_scene_prompt", {
+    args: {
+      sessionId: params.sessionId,
+      messageId: params.messageId,
+    },
+  });
+}

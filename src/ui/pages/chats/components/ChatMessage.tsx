@@ -605,9 +605,29 @@ function ChatMessageInner({
           <TypingIndicator />
         ) : computed.showTypingIndicator ? null : (
           <>
-            {/* Display attachments if present (with lazy loading support) */}
+            <MarkdownRenderer
+              key={message.id + ":" + computed.selectedVariantIndex}
+              content={resolvedDisplayContent}
+              className="text-inherit select-none"
+              onImageClick={onImageClick}
+              textColors={
+                chatAppearance?.messageTextColorHex ||
+                chatAppearance?.plainTextColorHex ||
+                chatAppearance?.italicTextColorHex ||
+                chatAppearance?.quotedTextColorHex
+                  ? {
+                      texts: chatAppearance.messageTextColorHex ?? chatAppearance.plainTextColorHex,
+                      plain: chatAppearance.plainTextColorHex,
+                      italic: chatAppearance.italicTextColorHex,
+                      quoted: chatAppearance.quotedTextColorHex,
+                    }
+                  : undefined
+              }
+            />
+
+            {/* Display attachments below the message content */}
             {loadedAttachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 {loadedAttachments.map((attachment) => (
                   <div
                     key={attachment.id}
@@ -639,7 +659,6 @@ function ChatMessageInner({
                         }}
                       />
                     ) : (
-                      // Loading placeholder
                       <div
                         className="flex items-center justify-center bg-white/5"
                         style={{
@@ -654,26 +673,6 @@ function ChatMessageInner({
                 ))}
               </div>
             )}
-
-            <MarkdownRenderer
-              key={message.id + ":" + computed.selectedVariantIndex}
-              content={resolvedDisplayContent}
-              className="text-inherit select-none"
-              onImageClick={onImageClick}
-              textColors={
-                chatAppearance?.messageTextColorHex ||
-                chatAppearance?.plainTextColorHex ||
-                chatAppearance?.italicTextColorHex ||
-                chatAppearance?.quotedTextColorHex
-                  ? {
-                      texts: chatAppearance.messageTextColorHex ?? chatAppearance.plainTextColorHex,
-                      plain: chatAppearance.plainTextColorHex,
-                      italic: chatAppearance.italicTextColorHex,
-                      quoted: chatAppearance.quotedTextColorHex,
-                    }
-                  : undefined
-              }
-            />
           </>
         )}
 

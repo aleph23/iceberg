@@ -718,6 +718,15 @@ pub struct ChatGenerateSceneImageArgs {
     pub scene_prompt: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGenerateScenePromptArgs {
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(alias = "messageId")]
+    pub message_id: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RegenerateResult {

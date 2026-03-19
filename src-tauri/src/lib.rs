@@ -369,6 +369,7 @@ pub fn run() {
             chat_manager::chat_continue,
             chat_manager::chat_add_message_attachment,
             chat_manager::chat_generate_scene_image,
+            chat_manager::chat_generate_scene_prompt,
             chat_manager::get_default_character_rules,
             chat_manager::get_default_system_prompt_template,
             chat_manager::search_messages,

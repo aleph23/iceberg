@@ -12,6 +12,7 @@ import {
   GitBranch,
   Users,
   Paintbrush,
+  Image,
   TriangleAlert,
   type LucideIcon,
 } from "lucide-react";
@@ -45,6 +46,8 @@ interface MessageActionsBottomSheetProps {
   onBranchToGroupChat: (message: StoredMessage) => void;
   handleTogglePin: (message: StoredMessage) => Promise<void>;
   setMessageAction: (value: MessageActionState | null) => void;
+  onOpenSceneImageFlow: (message: StoredMessage) => void;
+  hasSceneImage?: boolean;
   characterMemoryType?: string | null;
   characterDefaultModelId?: string | null;
   characterId?: string;
@@ -116,6 +119,8 @@ export function MessageActionsBottomSheet({
   onBranchToGroupChat,
   handleTogglePin,
   setMessageAction,
+  onOpenSceneImageFlow,
+  hasSceneImage = false,
   characterMemoryType,
   characterDefaultModelId,
   characterId,
@@ -365,6 +370,22 @@ export function MessageActionsBottomSheet({
                   label={t("chats.actions.rewindToHere")}
                   iconBg="bg-cyan-500/20"
                   onClick={() => void handleRewindToMessage(messageAction.message)}
+                  disabled={actionBusy}
+                />
+              )}
+
+              {(messageAction.message.role === "assistant" ||
+                messageAction.message.role === "scene" ||
+                messageAction.message.role === "user") && (
+                <ActionRow
+                  icon={Image}
+                  label={
+                    hasSceneImage
+                      ? t("chats.actions.regenerateSceneImage")
+                      : t("chats.actions.generateSceneImage")
+                  }
+                  iconBg="bg-emerald-500/20"
+                  onClick={() => onOpenSceneImageFlow(messageAction.message)}
                   disabled={actionBusy}
                 />
               )}

@@ -82,6 +82,12 @@ export interface ChatController {
   resetMessageActions: () => void;
   initializeLongPressTimer: (id: number | null) => void;
   isStartingSceneMessage: (message: StoredMessage) => boolean;
+  generateAiScenePrompt: (messageId: string) => Promise<string>;
+  applySceneImagePrompt: (
+    message: StoredMessage,
+    scenePrompt: string,
+    options?: { existingAttachmentId?: string | null },
+  ) => Promise<void>;
 }
 
 export function useChatController(
@@ -126,10 +132,15 @@ export function useChatController(
     hasMoreMessagesBeforeRef,
     loadingOlderRef,
   };
-  const { initializeLongPressTimer, runInChatImageGeneration, triggerTypingHaptic } =
-    useChatEnhancementsController({
-      context: controllerContext,
-    });
+  const {
+    applySceneImagePrompt,
+    generateAiScenePrompt,
+    initializeLongPressTimer,
+    runInChatImageGeneration,
+    triggerTypingHaptic,
+  } = useChatEnhancementsController({
+    context: controllerContext,
+  });
 
   const { reloadSessionStateFromStorage, loadOlderMessages, ensureMessageLoaded } =
     useChatSessionController({
@@ -198,7 +209,10 @@ export function useChatController(
     hasMoreMessagesBefore: hasMoreMessagesBeforeRef.current,
 
     // Setters
-    setDraft: useCallback((value: string) => dispatch({ type: "SET_DRAFT", payload: value }), [dispatch]),
+    setDraft: useCallback(
+      (value: string) => dispatch({ type: "SET_DRAFT", payload: value }),
+      [dispatch],
+    ),
     setError: useCallback(
       (value: string | null) => dispatch({ type: "SET_ERROR", payload: value }),
       [],
@@ -264,6 +278,8 @@ export function useChatController(
     handleTogglePin,
     resetMessageActions,
     initializeLongPressTimer,
+    generateAiScenePrompt,
+    applySceneImagePrompt,
     isStartingSceneMessage: useCallback((message: StoredMessage) => {
       return isStartingSceneMessage(message);
     }, []),
