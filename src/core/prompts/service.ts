@@ -18,6 +18,7 @@ export {
   resetHelpMeReplyConversationalTemplate,
   resetAvatarGenerationTemplate,
   resetAvatarEditTemplate,
+  resetSceneGenerationTemplate,
   getRequiredTemplateVariables,
   validateTemplateVariables,
 } from "./index";

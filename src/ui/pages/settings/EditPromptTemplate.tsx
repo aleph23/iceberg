@@ -41,6 +41,7 @@ import {
   resetHelpMeReplyTemplate,
   resetAvatarGenerationTemplate,
   resetAvatarEditTemplate,
+  resetSceneGenerationTemplate,
   renderPromptPreview,
   getRequiredTemplateVariables,
 } from "../../../core/prompts/service";
@@ -55,6 +56,7 @@ import {
   APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID,
   APP_AVATAR_GENERATION_TEMPLATE_ID,
   APP_AVATAR_EDIT_TEMPLATE_ID,
+  APP_SCENE_GENERATION_TEMPLATE_ID,
   isProtectedPromptTemplate,
 } from "../../../core/prompts/constants";
 
@@ -65,6 +67,7 @@ type PromptType =
   | "reply"
   | "avatar_generation"
   | "avatar_edit"
+  | "scene_generation"
   | "group_chat"
   | "group_chat_roleplay"
   | null;
@@ -131,6 +134,32 @@ const VARIABLES_BY_TYPE: Record<string, Variable[]> = {
       desc: "The prompt used for the current avatar image",
     },
     { var: "{{edit_request}}", label: "Edit Request", desc: "Requested avatar changes" },
+  ],
+  scene_generation: [
+    { var: "{{char.name}}", label: "Character Name", desc: "The character's display name" },
+    { var: "{{char.desc}}", label: "Character Definition", desc: "Full character definition" },
+    { var: "{{persona.name}}", label: "User Name", desc: "The user's persona name" },
+    { var: "{{persona.desc}}", label: "User Description", desc: "User persona description" },
+    {
+      var: "{{image[character]}}",
+      label: "Character Reference Image",
+      desc: "Injected image block for the character avatar reference",
+    },
+    {
+      var: "{{image[persona]}}",
+      label: "Persona Reference Image",
+      desc: "Injected image block for the persona avatar reference",
+    },
+    {
+      var: "{{recent_messages}}",
+      label: "Recent Messages",
+      desc: "Recent chat lines used to derive the scene",
+    },
+    {
+      var: "{{scene_request}}",
+      label: "Scene Request",
+      desc: "Manual or automatic scene image request",
+    },
   ],
   group_chat: [
     { var: "{{char.name}}", label: "Character Name", desc: "The character's display name" },
@@ -821,6 +850,8 @@ function getPromptTypeName(type: PromptType): string {
       return "Avatar Generation";
     case "avatar_edit":
       return "Avatar Image Edit";
+    case "scene_generation":
+      return "Scene Generation";
     case "group_chat":
       return "Group Chat";
     case "group_chat_roleplay":
@@ -905,7 +936,8 @@ export function EditPromptTemplate() {
       promptType === "memory" ||
       promptType === "reply" ||
       promptType === "avatar_generation" ||
-      promptType === "avatar_edit");
+      promptType === "avatar_edit" ||
+      promptType === "scene_generation");
 
   const usesEntryEditor = true;
   const quickInsertY = useMotionValue(0);
@@ -1089,6 +1121,8 @@ export function EditPromptTemplate() {
             detectedType = "avatar_generation";
           } else if (template.id === APP_AVATAR_EDIT_TEMPLATE_ID) {
             detectedType = "avatar_edit";
+          } else if (template.id === APP_SCENE_GENERATION_TEMPLATE_ID) {
+            detectedType = "scene_generation";
           } else if (template.id === APP_GROUP_CHAT_TEMPLATE_ID) {
             detectedType = "group_chat";
           } else if (template.id === APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID) {
@@ -1258,9 +1292,15 @@ export function EditPromptTemplate() {
   async function handleReset() {
     if (!isAppDefault || !promptType) return;
     if (
-      !["system", "summary", "memory", "reply", "avatar_generation", "avatar_edit"].includes(
-        promptType,
-      )
+      ![
+        "system",
+        "summary",
+        "memory",
+        "reply",
+        "avatar_generation",
+        "avatar_edit",
+        "scene_generation",
+      ].includes(promptType)
     ) {
       return;
     }
@@ -1287,6 +1327,8 @@ export function EditPromptTemplate() {
         updated = await resetHelpMeReplyTemplate();
       } else if (promptType === "avatar_generation") {
         updated = await resetAvatarGenerationTemplate();
+      } else if (promptType === "scene_generation") {
+        updated = await resetSceneGenerationTemplate();
       } else {
         updated = await resetAvatarEditTemplate();
       }

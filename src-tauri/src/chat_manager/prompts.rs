@@ -1,6 +1,7 @@
 use super::types::{
     PromptEntryPosition, PromptEntryRole, PromptScope, SystemPromptEntry, SystemPromptTemplate,
 };
+use crate::chat_manager::prompt_engine;
 use crate::{
     chat_manager::storage::{get_base_prompt, get_base_prompt_entries, PromptType},
     storage_manager::db::open_db,
@@ -19,6 +20,7 @@ pub const APP_GROUP_CHAT_TEMPLATE_ID: &str = "prompt_app_group_chat";
 pub const APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID: &str = "prompt_app_group_chat_roleplay";
 pub const APP_AVATAR_GENERATION_TEMPLATE_ID: &str = "prompt_app_avatar_generation";
 pub const APP_AVATAR_EDIT_TEMPLATE_ID: &str = "prompt_app_avatar_edit";
+pub const APP_SCENE_GENERATION_TEMPLATE_ID: &str = "prompt_app_scene_generation";
 const APP_DEFAULT_TEMPLATE_NAME: &str = "App Default";
 const APP_DYNAMIC_SUMMARY_TEMPLATE_NAME: &str = "Dynamic Memory: Summarizer";
 const APP_DYNAMIC_MEMORY_TEMPLATE_NAME: &str = "Dynamic Memory: Memory Manager";
@@ -26,115 +28,10 @@ const APP_HELP_ME_REPLY_TEMPLATE_NAME: &str = "Reply Helper";
 const APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_NAME: &str = "Reply Helper (Conversational)";
 const APP_AVATAR_GENERATION_TEMPLATE_NAME: &str = "Avatar Generation";
 const APP_AVATAR_EDIT_TEMPLATE_NAME: &str = "Avatar Image Edit";
+const APP_SCENE_GENERATION_TEMPLATE_NAME: &str = "Scene Generation";
 
 fn supports_entry_prompts(_id: &str) -> bool {
     true
-}
-
-fn default_modular_prompt_entries() -> Vec<SystemPromptEntry> {
-    vec![
-        SystemPromptEntry {
-            id: "entry_base".to_string(),
-            name: "Base Directive".to_string(),
-            role: PromptEntryRole::System,
-            content:
-                "You are participating in an immersive roleplay. Your goal is to fully embody your character and create an engaging, authentic experience.".to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: true,
-        },
-        SystemPromptEntry {
-            id: "entry_scenario".to_string(),
-            name: "Scenario".to_string(),
-            role: PromptEntryRole::System,
-            content: "# Scenario\n{{scene}}\n\n# Scene Direction\n{{scene_direction}}\n\nThis is your hidden directive for how this scene should unfold. Guide the narrative toward this outcome naturally and organically through your character's actions, dialogue, and the world's events. NEVER explicitly mention or reveal this direction to {{persona.name}} - let it emerge through immersive roleplay."
-                .to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: false,
-        },
-        SystemPromptEntry {
-            id: "entry_character".to_string(),
-            name: "Character Definition".to_string(),
-            role: PromptEntryRole::System,
-            content: "# Your Character: {{char.name}}\n{{char.desc}}\n\nEmbody {{char.name}}'s personality, mannerisms, and speech patterns completely. Stay true to their character traits, background, and motivations in every response.".to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: false,
-        },
-        SystemPromptEntry {
-            id: "entry_persona".to_string(),
-            name: "Persona Definition".to_string(),
-            role: PromptEntryRole::System,
-            content: "# {{persona.name}}'s Character\n{{persona.desc}}".to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: false,
-        },
-        SystemPromptEntry {
-            id: "entry_world_info".to_string(),
-            name: "World Information".to_string(),
-            role: PromptEntryRole::System,
-            content: "# World Information\n    The following is essential lore about this world, its characters, locations, items, and concepts. You MUST incorporate this information naturally into your roleplay when relevant. Treat this as established canon that shapes how characters behave, what they know, and how the world works.\n    {{lorebook}}"
-                .to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: false,
-        },
-        SystemPromptEntry {
-            id: "entry_context_summary".to_string(),
-            name: "Context Summary".to_string(),
-            role: PromptEntryRole::System,
-            content: "# Context Summary\n{{context_summary}}".to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: false,
-        },
-        SystemPromptEntry {
-            id: "entry_key_memories".to_string(),
-            name: "Key Memories".to_string(),
-            role: PromptEntryRole::System,
-            content:
-                "# Key Memories\nImportant facts to remember in this conversation:\n{{key_memories}}"
-                    .to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: false,
-        },
-        SystemPromptEntry {
-            id: "entry_instructions".to_string(),
-            name: "Instructions".to_string(),
-            role: PromptEntryRole::System,
-            content: "# Instructions\n**Character & Roleplay:**\n- Write as {{char.name}} from their perspective, responding based on their personality, background, and current situation\n- You may also portray NPCs and background characters when relevant to the scene, but NEVER speak or act as {{persona.name}}\n- Show emotions through actions, body language, and dialogue - don't just state them\n- React authentically to {{persona.name}}'s actions and dialogue\n- Never break character unless {{persona.name}} explicitly asks you to step out of roleplay\n\n**World & Lore:**\n- ACTIVELY incorporate the World Information above when locations, characters, items, or concepts from the lore are relevant\n- Maintain consistency with established facts and the scenario\n\n**Pacing & Style:**\n- Keep responses concise and focused so {{persona.name}} can actively participate\n- Let scenes unfold naturally - avoid summarizing or rushing\n- Use vivid, sensory details for immersion\n- If you see [CONTINUE], continue exactly where you left off without restarting\n\n{{content_rules}}".to_string(),
-            enabled: true,
-            injection_position: PromptEntryPosition::Relative,
-            injection_depth: 0,
-            conditional_min_messages: None,
-            interval_turns: None,
-            system_prompt: false,
-        },
-    ]
 }
 
 fn single_entry_from_content(content: &str) -> Vec<SystemPromptEntry> {
@@ -196,6 +93,43 @@ fn maybe_backfill_entries(
     Ok(())
 }
 
+fn append_missing_entry(
+    app: &AppHandle,
+    id: &str,
+    entry_id: &str,
+    entry: SystemPromptEntry,
+) -> Result<(), String> {
+    let template = match get_template(app, id)? {
+        Some(template) => template,
+        None => return Ok(()),
+    };
+
+    if template
+        .entries
+        .iter()
+        .any(|existing| existing.id == entry_id)
+    {
+        return Ok(());
+    }
+
+    let mut next_entries = template.entries;
+    next_entries.push(entry);
+    let next_content = template_entries_to_content(&next_entries);
+
+    let _ = update_template(
+        app,
+        id.to_string(),
+        None,
+        None,
+        None,
+        Some(next_content),
+        Some(next_entries),
+        None,
+    )?;
+
+    Ok(())
+}
+
 /// Get required variables for a specific template ID
 pub fn get_required_variables(template_id: &str) -> Vec<String> {
     match template_id {
@@ -245,6 +179,10 @@ pub fn get_required_variables(template_id: &str) -> Vec<String> {
         APP_AVATAR_EDIT_TEMPLATE_ID => vec![
             "{{current_avatar_prompt}}".to_string(),
             "{{edit_request}}".to_string(),
+        ],
+        APP_SCENE_GENERATION_TEMPLATE_ID => vec![
+            "{{recent_messages}}".to_string(),
+            "{{scene_request}}".to_string(),
         ],
         _ => vec![],
     }
@@ -522,7 +460,16 @@ pub fn ensure_app_default_template(app: &AppHandle) -> Result<String, String> {
             app,
             APP_DEFAULT_TEMPLATE_ID,
             PromptType::SystemPrompt,
-            default_modular_prompt_entries(),
+            prompt_engine::default_modular_prompt_entries(),
+        );
+        let _ = append_missing_entry(
+            app,
+            APP_DEFAULT_TEMPLATE_ID,
+            "entry_scene_image_protocol",
+            prompt_engine::default_modular_prompt_entries()
+                .into_iter()
+                .find(|entry| entry.id == "entry_scene_image_protocol")
+                .expect("scene image protocol entry should exist"),
         );
         return Ok(existing.id);
     }
@@ -530,7 +477,7 @@ pub fn ensure_app_default_template(app: &AppHandle) -> Result<String, String> {
     let conn = open_db(app)?;
     let now = now();
     let content = get_base_prompt(PromptType::SystemPrompt);
-    let entries_json = serde_json::to_string(&default_modular_prompt_entries())
+    let entries_json = serde_json::to_string(&prompt_engine::default_modular_prompt_entries())
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     conn.execute(
         "INSERT OR IGNORE INTO prompt_templates (id, name, scope, target_ids, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6, ?6)",
@@ -616,6 +563,7 @@ pub fn is_app_default_template(id: &str) -> bool {
         || id == APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID
         || id == APP_AVATAR_GENERATION_TEMPLATE_ID
         || id == APP_AVATAR_EDIT_TEMPLATE_ID
+        || id == APP_SCENE_GENERATION_TEMPLATE_ID
 }
 
 pub fn reset_app_default_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
@@ -627,7 +575,7 @@ pub fn reset_app_default_template(app: &AppHandle) -> Result<SystemPromptTemplat
         None,
         None,
         Some(content.clone()),
-        Some(default_modular_prompt_entries()),
+        Some(prompt_engine::default_modular_prompt_entries()),
         None,
     )
 }
@@ -781,6 +729,39 @@ pub fn ensure_avatar_image_templates(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn ensure_scene_generation_template(app: &AppHandle) -> Result<(), String> {
+    let conn = open_db(app)?;
+    let now = now();
+
+    if get_template(app, APP_SCENE_GENERATION_TEMPLATE_ID)?.is_none() {
+        let content = get_base_prompt(PromptType::SceneGenerationPrompt);
+        let entries = get_base_prompt_entries(PromptType::SceneGenerationPrompt);
+        let entries_json = serde_json::to_string(&entries)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO prompt_templates (id, name, scope, target_ids, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, '[]', ?4, ?5, ?6, ?6)",
+            params![
+                APP_SCENE_GENERATION_TEMPLATE_ID,
+                APP_SCENE_GENERATION_TEMPLATE_NAME,
+                scope_to_str(&PromptScope::AppWide),
+                content,
+                entries_json,
+                now
+            ],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    } else {
+        let _ = maybe_backfill_entries(
+            app,
+            APP_SCENE_GENERATION_TEMPLATE_ID,
+            PromptType::SceneGenerationPrompt,
+            get_base_prompt_entries(PromptType::SceneGenerationPrompt),
+        );
+    }
+
+    Ok(())
+}
+
 pub fn reset_help_me_reply_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::HelpMeReplyPrompt);
     let entries = get_base_prompt_entries(PromptType::HelpMeReplyPrompt);
@@ -834,6 +815,21 @@ pub fn reset_avatar_edit_template(app: &AppHandle) -> Result<SystemPromptTemplat
     update_template(
         app,
         APP_AVATAR_EDIT_TEMPLATE_ID.to_string(),
+        None,
+        None,
+        None,
+        Some(content.clone()),
+        Some(entries),
+        None,
+    )
+}
+
+pub fn reset_scene_generation_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
+    let content = get_base_prompt(PromptType::SceneGenerationPrompt);
+    let entries = get_base_prompt_entries(PromptType::SceneGenerationPrompt);
+    update_template(
+        app,
+        APP_SCENE_GENERATION_TEMPLATE_ID.to_string(),
         None,
         None,
         None,

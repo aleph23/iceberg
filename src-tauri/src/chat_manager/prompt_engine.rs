@@ -47,6 +47,10 @@ pub fn default_avatar_edit_prompt() -> String {
     join_entries(&default_avatar_edit_entries())
 }
 
+pub fn default_scene_generation_prompt() -> String {
+    join_entries(&default_scene_generation_entries())
+}
+
 fn join_entries(entries: &[SystemPromptEntry]) -> String {
     entries
         .iter()
@@ -757,6 +761,95 @@ pub fn default_avatar_edit_entries() -> Vec<SystemPromptEntry> {
     ]
 }
 
+pub fn default_scene_generation_entries() -> Vec<SystemPromptEntry> {
+    vec![
+        SystemPromptEntry {
+            id: "scene_gen_task".to_string(),
+            name: "Task".to_string(),
+            role: PromptEntryRole::System,
+            content: "You write a single high-quality image generation prompt for a roleplay scene. Your job is to convert the current conversation context and scene request into one clear visual prompt for an image model.".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: true,
+        },
+        SystemPromptEntry {
+            id: "scene_gen_context".to_string(),
+            name: "Scene Context".to_string(),
+            role: PromptEntryRole::System,
+            content: "# Scene Context\nCharacter: {{char.name}}\n{{char.desc}}\n\nPersona: {{persona.name}}\n{{persona.desc}}\n\nRecent Messages:\n{{recent_messages}}".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+        },
+        SystemPromptEntry {
+            id: "scene_gen_character_image".to_string(),
+            name: "Character Reference Image".to_string(),
+            role: PromptEntryRole::System,
+            content: "{{image[character]}}".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+        },
+        SystemPromptEntry {
+            id: "scene_gen_persona_image".to_string(),
+            name: "Persona Reference Image".to_string(),
+            role: PromptEntryRole::System,
+            content: "{{image[persona]}}".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+        },
+        SystemPromptEntry {
+            id: "scene_gen_request".to_string(),
+            name: "Scene Request".to_string(),
+            role: PromptEntryRole::System,
+            content: "# Scene Request\n{{scene_request}}".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+        },
+        SystemPromptEntry {
+            id: "scene_gen_rules".to_string(),
+            name: "Prompt Rules".to_string(),
+            role: PromptEntryRole::System,
+            content: "Write one polished scene prompt for an image model.\n- Focus on who is present, what is happening, where the scene is set, mood, lighting, composition, camera framing, and key visual details.\n- Preserve identity-defining details from the conversation context.\n- Keep character and persona identities separate.\n- Do not swap, merge, or borrow features between them.\n- Prefer concrete visual details over abstract interpretation.\n- Do not add text, logos, watermarks, UI, split panels, or dialogue bubbles unless explicitly requested.\n- Do not explain your reasoning.".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+        },
+        SystemPromptEntry {
+            id: "scene_gen_output".to_string(),
+            name: "Output".to_string(),
+            role: PromptEntryRole::System,
+            content: "Output only the final image prompt text.".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+        },
+    ]
+}
+
 /// Get lorebook content for the current conversation context
 /// Scans recent messages and returns formatted lorebook entries
 fn get_lorebook_content(
@@ -968,6 +1061,18 @@ pub fn default_modular_prompt_entries() -> Vec<SystemPromptEntry> {
             content:
                 "# Key Memories\nImportant facts to remember in this conversation:\n{{key_memories}}"
                     .to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::Relative,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+        },
+        SystemPromptEntry {
+            id: "entry_scene_image_protocol".to_string(),
+            name: "Scene Image Protocol".to_string(),
+            role: PromptEntryRole::System,
+            content: "# Scene Image Generation\nIf you want the app to generate a scene image after your response is fully finished, append an image instruction using exactly this format at the very end of your reply:\n<img>detailed scene prompt here</img>\n\nRules:\n- Use this only after you have completed your normal text response.\n- Place the <img>...</img> block after the response body, never in the middle of it.\n- The content inside <img>...</img> must be only one final detailed image prompt, with no surrounding explanation.\n- Make the prompt rich and self-contained: describe who is present, their appearance, clothing, expressions, actions, the environment, mood, lighting, composition, camera framing, and other visually important details.\n- Preserve character and persona identity details when they are relevant to the scene.\n- Prefer concrete visual details over abstract summary.\n- Do not explain the tag, do not wrap it in code fences, and do not mention it in-character.\n- Use it only when a scene image would meaningfully add value.".to_string(),
             enabled: true,
             injection_position: PromptEntryPosition::Relative,
             injection_depth: 0,

@@ -8,6 +8,7 @@ export const APP_GROUP_CHAT_TEMPLATE_ID = "prompt_app_group_chat";
 export const APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID = "prompt_app_group_chat_roleplay";
 export const APP_AVATAR_GENERATION_TEMPLATE_ID = "prompt_app_avatar_generation";
 export const APP_AVATAR_EDIT_TEMPLATE_ID = "prompt_app_avatar_edit";
+export const APP_SCENE_GENERATION_TEMPLATE_ID = "prompt_app_scene_generation";
 
 const PROTECTED_TEMPLATE_IDS = new Set([
   APP_DEFAULT_TEMPLATE_ID,
@@ -19,6 +20,7 @@ const PROTECTED_TEMPLATE_IDS = new Set([
   APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID,
   APP_AVATAR_GENERATION_TEMPLATE_ID,
   APP_AVATAR_EDIT_TEMPLATE_ID,
+  APP_SCENE_GENERATION_TEMPLATE_ID,
 ]);
 
 const NON_SYSTEM_TEMPLATE_IDS = new Set([
@@ -30,6 +32,7 @@ const NON_SYSTEM_TEMPLATE_IDS = new Set([
   APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID,
   APP_AVATAR_GENERATION_TEMPLATE_ID,
   APP_AVATAR_EDIT_TEMPLATE_ID,
+  APP_SCENE_GENERATION_TEMPLATE_ID,
 ]);
 
 export function isProtectedPromptTemplate(id: string): boolean {
@@ -58,6 +61,8 @@ export function getPromptTypeLabel(id: string): string {
       return "Avatar Generation";
     case APP_AVATAR_EDIT_TEMPLATE_ID:
       return "Avatar Image Edit";
+    case APP_SCENE_GENERATION_TEMPLATE_ID:
+      return "Scene Generation";
     default:
       return "System";
   }
