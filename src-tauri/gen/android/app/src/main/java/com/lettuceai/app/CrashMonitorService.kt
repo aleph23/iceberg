@@ -13,8 +13,13 @@ import android.os.IBinder
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.util.Base64
 import org.json.JSONObject
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
+import java.nio.charset.StandardCharsets
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -133,7 +138,7 @@ private class CrashMonitorRepository(private val context: Context) {
   fun readCurrentSession(): MonitorSession? {
     if (!sessionFile.exists()) return null
     return runCatching {
-      val json = JSONObject(sessionFile.readText())
+      val json = JSONObject(sessionFile.readText(StandardCharsets.UTF_8))
       MonitorSession(
         sessionId = json.optString("session_id"),
         appVersion = json.optString("app_version"),
@@ -182,7 +187,7 @@ private class CrashMonitorRepository(private val context: Context) {
     if (!previousSessionFile.exists()) return
 
     val session = runCatching {
-      val json = JSONObject(previousSessionFile.readText())
+      val json = JSONObject(previousSessionFile.readText(StandardCharsets.UTF_8))
       MonitorSession(
         sessionId = json.optString("session_id"),
         appVersion = json.optString("app_version"),
@@ -268,7 +273,7 @@ private class CrashMonitorRepository(private val context: Context) {
       .sortedBy { it.timestamp }
       .forEach { info ->
         val traceText = runCatching {
-          info.traceInputStream?.bufferedReader()?.use { reader -> reader.readText() }
+          info.traceInputStream?.use { stream -> formatTracePayload(stream.readBytes()) }
         }.getOrNull()
 
         val content = buildString {
@@ -309,7 +314,7 @@ private class CrashMonitorRepository(private val context: Context) {
 
   private fun activeOrPreviousSessionId(): String? {
     return runCatching {
-      val json = JSONObject(previousSessionFile.readText())
+      val json = JSONObject(previousSessionFile.readText(StandardCharsets.UTF_8))
       json.optString("session_id").takeIf { it.isNotBlank() }
     }.getOrNull() ?: readCurrentSession()?.sessionId
   }
@@ -317,7 +322,7 @@ private class CrashMonitorRepository(private val context: Context) {
   private fun readCrashContextForSession(sessionId: String?): CrashContext? {
     if (sessionId.isNullOrBlank() || !crashContextFile.exists()) return null
     return runCatching {
-      val json = JSONObject(crashContextFile.readText())
+      val json = JSONObject(crashContextFile.readText(StandardCharsets.UTF_8))
       val fileSessionId = json.optString("session_id")
       if (fileSessionId == sessionId) {
         CrashContext(
@@ -347,7 +352,7 @@ private class CrashMonitorRepository(private val context: Context) {
   private fun appendBreadcrumbTail(builder: StringBuilder, sessionId: String?) {
     if (sessionId.isNullOrBlank() || !breadcrumbsFile.exists()) return
     val tail = runCatching {
-      breadcrumbsFile.readLines()
+      breadcrumbsFile.readLines(StandardCharsets.UTF_8)
         .mapNotNull { line ->
           val json = JSONObject(line)
           if (json.optString("session_id") != sessionId) {
@@ -377,7 +382,7 @@ private class CrashMonitorRepository(private val context: Context) {
       ?: return
 
     val tail = runCatching {
-      latestLog.readLines().takeLast(200).joinToString(separator = "\n")
+      latestLog.readLines(StandardCharsets.UTF_8).takeLast(200).joinToString(separator = "\n")
     }.getOrNull() ?: return
 
     builder.appendLine()
@@ -395,7 +400,7 @@ private class CrashMonitorRepository(private val context: Context) {
       ?: return
 
     val tail = runCatching {
-      latestLog.readLines()
+      latestLog.readLines(StandardCharsets.UTF_8)
         .filter { line -> line.contains(" ERROR ") || line.contains(" WARN ") }
         .takeLast(100)
         .joinToString(separator = "\n")
@@ -412,7 +417,7 @@ private class CrashMonitorRepository(private val context: Context) {
   private fun writeCrashLog(prefix: String, timestampMs: Long, content: String) {
     val filename = "${prefix}-${formatter.format(Date(timestampMs))}.log"
     runCatching {
-      File(crashDir, filename).writeText(content)
+      File(crashDir, filename).writeText(content, StandardCharsets.UTF_8)
     }
     runCatching {
       writeExternalLog(filename, content)
@@ -422,7 +427,7 @@ private class CrashMonitorRepository(private val context: Context) {
   private fun readSelectedLogDir(): SelectedLogDir? {
     if (!exportConfigFile.exists()) return null
     return runCatching {
-      val root = JSONObject(exportConfigFile.readText())
+      val root = JSONObject(exportConfigFile.readText(StandardCharsets.UTF_8))
       val dirJson = JSONObject(root.getString("dir_path_json"))
       val termsJson = dirJson.optJSONArray("relativeTerms")
       val relativeTerms = buildList {
@@ -464,7 +469,7 @@ private class CrashMonitorRepository(private val context: Context) {
     ) ?: throw IllegalStateException("Failed to create external crash log document")
 
     context.contentResolver.openOutputStream(fileUri, "w")?.use { stream ->
-      stream.write(content.toByteArray())
+      stream.write(content.toByteArray(StandardCharsets.UTF_8))
       stream.flush()
     } ?: throw IllegalStateException("Failed to open external crash log output stream")
   }
@@ -485,7 +490,7 @@ private class CrashMonitorRepository(private val context: Context) {
     ) ?: throw IllegalStateException("Failed to create Downloads crash log document")
 
     context.contentResolver.openOutputStream(fileUri, "w")?.use { stream ->
-      stream.write(content.toByteArray())
+      stream.write(content.toByteArray(StandardCharsets.UTF_8))
       stream.flush()
     } ?: throw IllegalStateException("Failed to open Downloads crash log output stream")
   }
@@ -524,6 +529,54 @@ private class CrashMonitorRepository(private val context: Context) {
       android.app.ApplicationExitInfo.REASON_SIGNALED -> description ?: "Process terminated by signal"
       else -> description ?: "No explicit cause available"
     }
+  }
+
+  private fun formatTracePayload(bytes: ByteArray): String? {
+    if (bytes.isEmpty()) return null
+
+    val decoded = decodeUtf8Strict(bytes)
+    if (decoded != null && looksLikeReadableText(decoded)) {
+      return decoded.trimEnd()
+    }
+
+    val previewHex = bytes
+      .take(32)
+      .joinToString(separator = " ") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+
+    return buildString {
+      appendLine("[binary trace payload]")
+      appendLine("trace_encoding=base64")
+      appendLine("trace_size_bytes=${bytes.size}")
+      appendLine("trace_preview_hex=$previewHex")
+      append(base64)
+    }
+  }
+
+  private fun decodeUtf8Strict(bytes: ByteArray): String? {
+    val decoder = StandardCharsets.UTF_8
+      .newDecoder()
+      .onMalformedInput(CodingErrorAction.REPORT)
+      .onUnmappableCharacter(CodingErrorAction.REPORT)
+
+    return try {
+      decoder.decode(ByteBuffer.wrap(bytes)).toString()
+    } catch (_: CharacterCodingException) {
+      null
+    }
+  }
+
+  private fun looksLikeReadableText(value: String): Boolean {
+    if (value.isBlank()) return false
+
+    var suspicious = 0
+    for (char in value) {
+      if (char == '\uFFFD') return false
+      if (char == '\n' || char == '\r' || char == '\t') continue
+      if (Character.isISOControl(char)) suspicious++
+    }
+
+    return suspicious * 20 <= value.length
   }
 
   private fun shouldReportExitReason(reason: Int): Boolean {
