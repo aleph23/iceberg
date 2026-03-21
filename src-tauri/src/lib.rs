@@ -28,60 +28,257 @@ mod tts_manager;
 mod usage;
 mod utils;
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use tauri::Manager;
+use tauri_plugin_aptabase::EventTracker;
+
+#[derive(Clone)]
+struct AnalyticsState {
+    enabled: bool,
+}
+
+fn read_analytics_enabled(app: &tauri::AppHandle) -> bool {
+    match crate::storage_manager::settings::internal_read_settings(app) {
+        Ok(Some(settings_json)) => {
+            let parsed: serde_json::Value = match serde_json::from_str(&settings_json) {
+                Ok(value) => value,
+                Err(err) => {
+                    utils::log_error(
+                        app,
+                        "settings",
+                        format!("Failed to parse settings JSON: {}", err),
+                    );
+                    return true;
+                }
+            };
+            parsed
+                .get("appState")
+                .and_then(|v| v.get("analyticsEnabled"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+        }
+        Ok(None) => true,
+        Err(err) => {
+            utils::log_error(app, "settings", format!("Failed to read settings: {}", err));
+            true
+        }
+    }
+}
+
+fn read_pure_mode_level(app: &tauri::AppHandle) -> content_filter::PureModeLevel {
+    match crate::storage_manager::settings::internal_read_settings(app) {
+        Ok(Some(settings_json)) => {
+            let parsed: serde_json::Value = match serde_json::from_str(&settings_json) {
+                Ok(value) => value,
+                Err(_) => return content_filter::PureModeLevel::Standard,
+            };
+            content_filter::level_from_app_state(parsed.get("appState"))
+        }
+        Ok(None) => content_filter::PureModeLevel::Standard,
+        Err(_) => content_filter::PureModeLevel::Standard,
+    }
+}
+
+fn manage_core_state(app: &mut tauri::App) -> Arc<usage::app_activity::AppActiveUsageService> {
+    let abort_registry = abort_manager::AbortRegistry::new();
+    app.manage(abort_registry);
+
+    let dynamic_memory_run_manager = dynamic_memory_run_manager::DynamicMemoryRunManager::new();
+    app.manage(dynamic_memory_run_manager);
+
+    let app_usage_service = Arc::new(usage::app_activity::AppActiveUsageService::new());
+    app.manage(app_usage_service.clone());
+
+    app.manage(sync::manager::SyncManagerState::new());
+
+    app_usage_service
+}
+
+#[cfg(target_os = "android")]
+fn initialize_android_state(app: &mut tauri::App) {
+    let monitor_state = android_monitor::initialize(app.handle())
+        .expect("Failed to initialize Android crash monitor state");
+    app.manage(monitor_state);
+    android_monitor::start_heartbeat_loop(app.handle().clone());
+}
+
+#[cfg(not(target_os = "android"))]
+fn initialize_android_state(_app: &mut tauri::App) {}
+
+fn initialize_logging(app: &mut tauri::App) {
+    let log_manager =
+        logger::LogManager::new(app.handle()).expect("Failed to initialize log manager");
+    app.manage(log_manager);
+    logger::set_global_app_handle(app.handle().clone());
+    if let Err(err) = utils::init_tracing(app.handle().clone()) {
+        eprintln!("Failed to initialize tracing: {}", err);
+    }
+    std::panic::set_hook(Box::new(|info| {
+        let message = format!("{}", info);
+        utils::log_error_global("panic", message);
+    }));
+}
+
+fn initialize_database(app: &mut tauri::App) {
+    configure_onnxruntime_dylib(app.handle());
+
+    match storage_manager::db::init_pool(app.handle()) {
+        Ok(pool) => {
+            let swappable = storage_manager::db::SwappablePool::new(pool);
+            app.manage(swappable);
+        }
+        Err(err) => panic!("Failed to initialize database pool: {}", err),
+    }
+}
+
+fn start_usage_flush_task(
+    app: &tauri::AppHandle,
+    usage_service: Arc<usage::app_activity::AppActiveUsageService>,
+) {
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            usage_service.flush(&app_handle);
+        }
+    });
+}
+
+fn configure_runtime_state(app: &mut tauri::App, aptabase_plugin_enabled: bool) {
+    let analytics_enabled = aptabase_plugin_enabled && read_analytics_enabled(app.handle());
+    app.manage(AnalyticsState {
+        enabled: analytics_enabled,
+    });
+    if analytics_enabled {
+        if let Err(err) = app.track_event("app_started", None) {
+            utils::log_error(
+                app.handle(),
+                "aptabase",
+                format!("track_event(app_started) failed: {}", err),
+            );
+        }
+    }
+
+    let pure_mode_level = read_pure_mode_level(app.handle());
+    app.manage(content_filter::ContentFilter::new(pure_mode_level));
+}
+
+fn run_bootstrap_tasks(app: &tauri::AppHandle) {
+    if let Err(err) = storage_manager::importer::run_legacy_import(app) {
+        utils::log_error(app, "bootstrap", format!("Legacy import error: {}", err));
+    }
+
+    if let Err(err) = migrations::run_migrations(app) {
+        utils::log_error(app, "bootstrap", format!("Migration error: {}", err));
+    }
+
+    if let Err(err) = chat_manager::prompts::ensure_app_default_template(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!("Failed to ensure app default template: {}", err),
+        );
+    }
+
+    if let Err(err) = chat_manager::prompts::ensure_help_me_reply_template(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!("Failed to ensure help me reply template: {}", err),
+        );
+    }
+
+    if let Err(err) = chat_manager::prompts::ensure_avatar_image_templates(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!("Failed to ensure avatar image templates: {}", err),
+        );
+    }
+
+    if let Err(err) = chat_manager::prompts::ensure_scene_generation_template(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!("Failed to ensure scene generation template: {}", err),
+        );
+    }
+}
+
+fn setup_app(
+    app: &mut tauri::App,
+    aptabase_plugin_enabled: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let app_usage_service = manage_core_state(app);
+    initialize_android_state(app);
+    initialize_logging(app);
+    initialize_database(app);
+    start_usage_flush_task(app.handle(), app_usage_service);
+    configure_runtime_state(app, aptabase_plugin_enabled);
+    run_bootstrap_tasks(app.handle());
+    Ok(())
+}
+
+fn flush_usage_state(handler: &tauri::AppHandle) {
+    if let Some(state) = handler.try_state::<Arc<usage::app_activity::AppActiveUsageService>>() {
+        state.flush(handler);
+    }
+}
+
+fn abort_pending_work(handler: &tauri::AppHandle) {
+    if let Some(registry) = handler.try_state::<abort_manager::AbortRegistry>() {
+        registry.abort_all();
+    }
+}
+
+fn handle_run_event(handler: &tauri::AppHandle, event: tauri::RunEvent) {
+    match event {
+        tauri::RunEvent::Resumed => {
+            if let Some(state) =
+                handler.try_state::<Arc<usage::app_activity::AppActiveUsageService>>()
+            {
+                state.on_resumed();
+            }
+        }
+        tauri::RunEvent::WindowEvent {
+            event: tauri::WindowEvent::Focused(focused),
+            ..
+        } => {
+            if let Some(state) =
+                handler.try_state::<Arc<usage::app_activity::AppActiveUsageService>>()
+            {
+                state.on_window_focus_changed(focused);
+            }
+        }
+        tauri::RunEvent::ExitRequested { .. } => {
+            abort_pending_work(handler);
+            flush_usage_state(handler);
+        }
+        tauri::RunEvent::Exit => {
+            abort_pending_work(handler);
+            flush_usage_state(handler);
+            android_monitor::mark_clean_exit(handler);
+            let analytics_enabled = handler.state::<AnalyticsState>().enabled;
+            if analytics_enabled {
+                if let Err(err) = handler.track_event("app_exited", None) {
+                    utils::log_error(
+                        handler,
+                        "aptabase",
+                        format!("track_event(app_exited) failed: {}", err),
+                    );
+                }
+                handler.flush_events_blocking();
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    use std::sync::Arc;
-    use std::time::Duration;
-    use tauri::Manager;
-    use tauri_plugin_aptabase::EventTracker;
-
-    #[derive(Clone)]
-    struct AnalyticsState {
-        enabled: bool,
-    }
-
-    fn read_analytics_enabled(app: &tauri::AppHandle) -> bool {
-        match crate::storage_manager::settings::internal_read_settings(app) {
-            Ok(Some(settings_json)) => {
-                let parsed: serde_json::Value = match serde_json::from_str(&settings_json) {
-                    Ok(value) => value,
-                    Err(err) => {
-                        utils::log_error(
-                            app,
-                            "settings",
-                            format!("Failed to parse settings JSON: {}", err),
-                        );
-                        return true;
-                    }
-                };
-                parsed
-                    .get("appState")
-                    .and_then(|v| v.get("analyticsEnabled"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true)
-            }
-            Ok(None) => true,
-            Err(err) => {
-                utils::log_error(app, "settings", format!("Failed to read settings: {}", err));
-                true
-            }
-        }
-    }
-
-    fn read_pure_mode_level(app: &tauri::AppHandle) -> content_filter::PureModeLevel {
-        match crate::storage_manager::settings::internal_read_settings(app) {
-            Ok(Some(settings_json)) => {
-                let parsed: serde_json::Value = match serde_json::from_str(&settings_json) {
-                    Ok(value) => value,
-                    Err(_) => return content_filter::PureModeLevel::Standard,
-                };
-                content_filter::level_from_app_state(parsed.get("appState"))
-            }
-            Ok(None) => content_filter::PureModeLevel::Standard,
-            Err(_) => content_filter::PureModeLevel::Standard,
-        }
-    }
-
     let aptabase_key = std::env::var("APTABASE_KEY")
         .ok()
         .filter(|v| !v.trim().is_empty())
@@ -116,122 +313,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_android_fs::init());
 
     builder
-        .setup(move |app| {
-            let abort_registry = abort_manager::AbortRegistry::new();
-            app.manage(abort_registry);
-            let dynamic_memory_run_manager =
-                dynamic_memory_run_manager::DynamicMemoryRunManager::new();
-            app.manage(dynamic_memory_run_manager);
-            let app_usage_service = Arc::new(usage::app_activity::AppActiveUsageService::new());
-            app.manage(app_usage_service.clone());
-
-            #[cfg(target_os = "android")]
-            {
-                let monitor_state = android_monitor::initialize(app.handle())
-                    .expect("Failed to initialize Android crash monitor state");
-                app.manage(monitor_state);
-                android_monitor::start_heartbeat_loop(app.handle().clone());
-            }
-
-            let log_manager =
-                logger::LogManager::new(app.handle()).expect("Failed to initialize log manager");
-            app.manage(log_manager);
-            logger::set_global_app_handle(app.handle().clone());
-            if let Err(err) = utils::init_tracing(app.handle().clone()) {
-                eprintln!("Failed to initialize tracing: {}", err);
-            }
-            std::panic::set_hook(Box::new(|info| {
-                let message = format!("{}", info);
-                utils::log_error_global("panic", message);
-            }));
-
-            configure_onnxruntime_dylib(app.handle());
-
-            match storage_manager::db::init_pool(app.handle()) {
-                Ok(pool) => {
-                    let swappable = storage_manager::db::SwappablePool::new(pool);
-                    app.manage(swappable);
-                }
-                Err(e) => panic!("Failed to initialize database pool: {}", e),
-            }
-            {
-                let app_handle = app.handle().clone();
-                let usage_service = app_usage_service.clone();
-                tauri::async_runtime::spawn(async move {
-                    let mut interval = tokio::time::interval(Duration::from_secs(30));
-                    loop {
-                        interval.tick().await;
-                        usage_service.flush(&app_handle);
-                    }
-                });
-            }
-
-            let analytics_enabled = aptabase_plugin_enabled && read_analytics_enabled(app.handle());
-            app.manage(AnalyticsState {
-                enabled: analytics_enabled,
-            });
-            if analytics_enabled {
-                if let Err(e) = app.track_event("app_started", None) {
-                    utils::log_error(
-                        app.handle(),
-                        "aptabase",
-                        format!("track_event(app_started) failed: {}", e),
-                    );
-                }
-            }
-
-            let pure_mode_level = read_pure_mode_level(app.handle());
-            app.manage(content_filter::ContentFilter::new(pure_mode_level));
-
-            if let Err(e) = storage_manager::importer::run_legacy_import(app.handle()) {
-                utils::log_error(
-                    app.handle(),
-                    "bootstrap",
-                    format!("Legacy import error: {}", e),
-                );
-            }
-
-            if let Err(e) = migrations::run_migrations(app.handle()) {
-                utils::log_error(app.handle(), "bootstrap", format!("Migration error: {}", e));
-            }
-
-            if let Err(e) = chat_manager::prompts::ensure_app_default_template(app.handle()) {
-                utils::log_error(
-                    app.handle(),
-                    "bootstrap",
-                    format!("Failed to ensure app default template: {}", e),
-                );
-            }
-
-            if let Err(e) = chat_manager::prompts::ensure_help_me_reply_template(app.handle()) {
-                utils::log_error(
-                    app.handle(),
-                    "bootstrap",
-                    format!("Failed to ensure help me reply template: {}", e),
-                );
-            }
-
-            if let Err(e) = chat_manager::prompts::ensure_avatar_image_templates(app.handle()) {
-                utils::log_error(
-                    app.handle(),
-                    "bootstrap",
-                    format!("Failed to ensure avatar image templates: {}", e),
-                );
-            }
-
-            if let Err(e) = chat_manager::prompts::ensure_scene_generation_template(app.handle()) {
-                utils::log_error(
-                    app.handle(),
-                    "bootstrap",
-                    format!("Failed to ensure scene generation template: {}", e),
-                );
-            }
-
-            // Initialize Sync Manager
-            app.manage(sync::manager::SyncManagerState::new());
-
-            Ok(())
-        })
+        .setup(move |app| setup_app(app, aptabase_plugin_enabled))
         .invoke_handler(tauri::generate_handler![
             api::api_request,
             api::abort_request,
@@ -589,57 +671,7 @@ pub fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(move |handler, event| match event {
-            tauri::RunEvent::Resumed => {
-                if let Some(state) = handler
-                    .try_state::<std::sync::Arc<usage::app_activity::AppActiveUsageService>>()
-                {
-                    state.on_resumed();
-                }
-            }
-            tauri::RunEvent::WindowEvent { event, .. } => {
-                if let tauri::WindowEvent::Focused(focused) = event {
-                    if let Some(state) = handler
-                        .try_state::<std::sync::Arc<usage::app_activity::AppActiveUsageService>>()
-                    {
-                        state.on_window_focus_changed(focused);
-                    }
-                }
-            }
-            tauri::RunEvent::ExitRequested { .. } => {
-                if let Some(registry) = handler.try_state::<abort_manager::AbortRegistry>() {
-                    registry.abort_all();
-                }
-                if let Some(state) = handler
-                    .try_state::<std::sync::Arc<usage::app_activity::AppActiveUsageService>>()
-                {
-                    state.flush(&handler);
-                }
-            }
-            tauri::RunEvent::Exit { .. } => {
-                if let Some(registry) = handler.try_state::<abort_manager::AbortRegistry>() {
-                    registry.abort_all();
-                }
-                if let Some(state) = handler
-                    .try_state::<std::sync::Arc<usage::app_activity::AppActiveUsageService>>()
-                {
-                    state.flush(&handler);
-                }
-                android_monitor::mark_clean_exit(&handler);
-                let analytics_enabled = handler.state::<AnalyticsState>().enabled;
-                if analytics_enabled {
-                    if let Err(e) = handler.track_event("app_exited", None) {
-                        utils::log_error(
-                            &handler,
-                            "aptabase",
-                            format!("track_event(app_exited) failed: {}", e),
-                        );
-                    }
-                    handler.flush_events_blocking();
-                }
-            }
-            _ => {}
-        });
+        .run(handle_run_event);
 }
 
 fn configure_onnxruntime_dylib(app: &tauri::AppHandle) {
