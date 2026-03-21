@@ -136,7 +136,6 @@ export function DesignReferenceEditor({
             <div className="text-xs text-fg/40">{helperText}</div>
           </div>
           <div className="flex items-center gap-3">
-            <div className="text-[11px] text-fg/35">Front, 3/4, or full-body</div>
             {!showHeader ? (
               <button
                 type="button"

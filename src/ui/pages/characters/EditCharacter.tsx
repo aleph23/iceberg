@@ -839,33 +839,74 @@ export function EditCharacterPage() {
 
                   <div className="border-t border-fg/10 pt-5">
                     <div className="space-y-3">
-                      <div className="flex items-center gap-2">
-                        <div className="rounded-lg border border-secondary/30 bg-secondary/10 p-1.5">
-                          <MessageSquare className="h-4 w-4 text-secondary" />
-                        </div>
-                        <h3 className="text-sm font-semibold text-fg">Chat Templates</h3>
-                        {(chatTemplates?.length ?? 0) > 0 && (
-                          <span className="ml-auto rounded-full border border-fg/10 bg-fg/5 px-2 py-0.5 text-xs text-fg/70">
-                            {chatTemplates?.length ?? 0}
-                          </span>
-                        )}
-                      </div>
-
                       <button
                         type="button"
                         onClick={() => navigate(`/settings/characters/${characterId}/templates`)}
-                        className="flex w-full items-center gap-3 rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-left transition hover:border-fg/25 hover:bg-surface-el/30 active:bg-surface-el/40"
+                        className="group flex w-full items-center gap-3 rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-left transition hover:border-fg/25 hover:bg-surface-el/30 active:bg-surface-el/40"
                       >
+                        <div className="rounded-lg border border-secondary/30 bg-secondary/10 p-1.5">
+                          <MessageSquare className="h-4 w-4 text-secondary" />
+                        </div>
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-fg">Manage Templates</div>
+                          <div className="flex items-center gap-2">
+                            <div className="text-sm font-medium text-fg">Chat Templates</div>
+                            {(chatTemplates?.length ?? 0) > 0 && (
+                              <span className="rounded-full border border-fg/10 bg-fg/5 px-2 py-0.5 text-xs text-fg/70">
+                                {chatTemplates?.length ?? 0}
+                              </span>
+                            )}
+                          </div>
                           <p className="mt-0.5 text-xs text-fg/50">
                             {(chatTemplates?.length ?? 0) > 0
                               ? `${chatTemplates?.length} template${(chatTemplates?.length ?? 0) !== 1 ? "s" : ""} — multi-message conversation starters`
                               : "Create conversation starters with multiple messages"}
                           </p>
                         </div>
-                        <ChevronRight className="h-4 w-4 shrink-0 text-fg/30" />
+                        <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 group-hover:text-fg/50" />
                       </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          navigate(`/settings/accessibility/chat?characterId=${characterId}`)
+                        }
+                        className={cn(
+                          "group flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left",
+                          "border-fg/10 bg-surface-el/20",
+                          interactive.transition.fast,
+                          "hover:bg-surface-el/30",
+                        )}
+                      >
+                        <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
+                          <MessageSquare className="h-4 w-4 text-info" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-sm font-medium text-fg">Chat Appearance</div>
+                          <p className="mt-0.5 text-xs text-fg/50">
+                            Customize bubbles, fonts, and layout
+                          </p>
+                        </div>
+                        <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 group-hover:text-fg/50" />
+                      </button>
+
+                      <motion.button
+                        onClick={() => setExportMenuOpen(true)}
+                        disabled={exporting}
+                        whileTap={{ scale: exporting ? 1 : 0.98 }}
+                        className="flex w-full items-center justify-center gap-2 rounded-xl border border-info/40 bg-info/20 px-4 py-3.5 text-sm font-semibold text-info transition hover:bg-info/30 disabled:opacity-50"
+                      >
+                        {exporting ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Exporting...
+                          </>
+                        ) : (
+                          <>
+                            <Download className="h-4 w-4" />
+                            Export Character
+                          </>
+                        )}
+                      </motion.button>
                     </div>
                   </div>
                 </div>
@@ -1400,32 +1441,6 @@ export function EditCharacterPage() {
                 </div>
               </div>
 
-              {/* Chat Appearance */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
-                    <MessageSquare className="h-4 w-4 text-info" />
-                  </div>
-                  <h3 className="text-sm font-semibold text-fg">Chat Appearance</h3>
-                  <span className="ml-auto text-xs text-fg/40">(Optional)</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigate(`/settings/accessibility/chat?characterId=${characterId}`)
-                  }
-                  className={cn(
-                    "group flex w-full items-center justify-between rounded-xl border px-3.5 py-3",
-                    "border-fg/10 bg-surface-el/20",
-                    interactive.transition.fast,
-                    "hover:bg-surface-el/30",
-                  )}
-                >
-                  <span className="text-sm text-fg/70">Customize bubbles, fonts & layout</span>
-                  <ChevronRight className="h-4 w-4 text-fg/25 group-hover:text-fg/50" />
-                </button>
-              </div>
-
               {/* Memory Mode */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
@@ -1484,28 +1499,6 @@ export function EditCharacterPage() {
                 </p>
               </div>
             </>
-          )}
-
-          {/* Export Button - Character Tab */}
-          {activeTab === "character" && (
-            <motion.button
-              onClick={() => setExportMenuOpen(true)}
-              disabled={exporting}
-              whileTap={{ scale: exporting ? 1 : 0.98 }}
-              className="w-full rounded-xl border border-secondary/50 bg-secondary/20 px-4 py-3.5 text-sm font-semibold text-secondary transition hover:bg-secondary/30 disabled:opacity-50"
-            >
-              {exporting ? (
-                <span className="flex items-center justify-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Exporting...
-                </span>
-              ) : (
-                <span className="flex items-center justify-center gap-2">
-                  <Download className="h-4 w-4" />
-                  Export Character
-                </span>
-              )}
-            </motion.button>
           )}
         </motion.div>
       </main>
