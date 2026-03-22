@@ -356,10 +356,9 @@ where
     T: serde::Serialize,
     R: serde::de::DeserializeOwned,
 {
-    let data = serde_json::to_string(character)
+    let value = serde_json::to_value(character)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-    let result = character_upsert(app.clone(), data)?;
-    serde_json::from_str(&result)
+    serde_json::from_value(upsert_character_value(app, &value)?)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
@@ -416,9 +415,15 @@ pub fn characters_list(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub fn character_upsert(app: tauri::AppHandle, character_json: String) -> Result<String, String> {
-    let mut conn = open_db(&app)?;
-    let c: JsonValue = serde_json::from_str(&character_json)
+    let character = serde_json::from_str::<JsonValue>(&character_json)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let result = upsert_character_value(&app, &character)?;
+    serde_json::to_string(&result)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonValue, String> {
+    let mut conn = open_db(app)?;
     let id = c
         .get("id")
         .and_then(|v| v.as_str())
@@ -426,7 +431,7 @@ pub fn character_upsert(app: tauri::AppHandle, character_json: String) -> Result
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     log_info(
-        &app,
+        app,
         "character_upsert",
         format!("Upserting character {}", id),
     );
@@ -724,7 +729,7 @@ pub fn character_upsert(app: tauri::AppHandle, character_json: String) -> Result
     )
     .map_err(|e| {
         log_error(
-            &app,
+            app,
             "character_upsert",
             format!("Failed to update default scene: {}", e),
         );
@@ -790,7 +795,7 @@ pub fn character_upsert(app: tauri::AppHandle, character_json: String) -> Result
 
     tx.commit().map_err(|e| {
         log_error(
-            &app,
+            app,
             "character_upsert",
             format!("Failed to commit transaction: {}", e),
         );
@@ -798,16 +803,13 @@ pub fn character_upsert(app: tauri::AppHandle, character_json: String) -> Result
     })?;
 
     log_info(
-        &app,
+        app,
         "character_upsert",
         format!("Successfully upserted character {}", id),
     );
 
-    let conn2 = open_db(&app)?;
-    read_character(&conn2, &id).and_then(|v| {
-        serde_json::to_string(&v)
-            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
-    })
+    let conn2 = open_db(app)?;
+    read_character(&conn2, &id)
 }
 
 #[tauri::command]

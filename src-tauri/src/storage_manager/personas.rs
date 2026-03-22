@@ -86,9 +86,17 @@ pub fn persona_default_get_typed<T>(app: &tauri::AppHandle) -> Result<Option<T>,
 where
     T: serde::de::DeserializeOwned,
 {
-    persona_default_get(app.clone())?
-        .map(|data| {
-            serde_json::from_str(&data)
+    let personas: Vec<JsonValue> = personas_list_typed(app)?;
+    personas
+        .into_iter()
+        .find(|persona| {
+            persona
+                .get("isDefault")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+        })
+        .map(|persona| {
+            serde_json::from_value(persona)
                 .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
         })
         .transpose()
@@ -99,10 +107,9 @@ where
     T: serde::Serialize,
     R: serde::de::DeserializeOwned,
 {
-    let data = serde_json::to_string(persona)
+    let value = serde_json::to_value(persona)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-    let result = persona_upsert(app.clone(), data)?;
-    serde_json::from_str(&result)
+    serde_json::from_value(upsert_persona_value(app, &value)?)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
@@ -197,9 +204,15 @@ pub fn personas_list(app: tauri::AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub fn persona_upsert(app: tauri::AppHandle, persona_json: String) -> Result<String, String> {
-    let mut conn = open_db(&app)?;
-    let p: JsonValue = serde_json::from_str(&persona_json)
+    let persona = serde_json::from_str::<JsonValue>(&persona_json)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let result = upsert_persona_value(&app, &persona)?;
+    serde_json::to_string(&result)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+fn upsert_persona_value(app: &tauri::AppHandle, p: &JsonValue) -> Result<JsonValue, String> {
+    let mut conn = open_db(app)?;
     let id = p
         .get("id")
         .and_then(|v| v.as_str())
@@ -325,8 +338,7 @@ pub fn persona_upsert(app: tauri::AppHandle, persona_json: String) -> Result<Str
     obj.insert("isDefault".into(), JsonValue::Bool(is_default != 0));
     obj.insert("createdAt".into(), JsonValue::from(created_at));
     obj.insert("updatedAt".into(), JsonValue::from(now));
-    Ok(serde_json::to_string(&JsonValue::Object(obj))
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?)
+    Ok(JsonValue::Object(obj))
 }
 
 #[tauri::command]
