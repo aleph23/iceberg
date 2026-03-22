@@ -67,7 +67,10 @@ type DownloadedGgufModel = {
   path: string;
   size: number;
   quantization: string;
+  isMmproj?: boolean;
 };
+
+type LocalLibraryPickerMode = "model" | "mmproj";
 
 function formatBytes(bytes: number): string {
   if (bytes === 0) return "0 B";
@@ -311,6 +314,8 @@ export function EditModelPage() {
   const [llamaContextError, setLlamaContextError] = useState<string | null>(null);
   const [llamaContextLoading, setLlamaContextLoading] = useState(false);
   const [showLocalModelPicker, setShowLocalModelPicker] = useState(false);
+  const [localLibraryPickerMode, setLocalLibraryPickerMode] =
+    useState<LocalLibraryPickerMode>("model");
   const [downloadedModels, setDownloadedModels] = useState<DownloadedGgufModel[]>([]);
   const [loadingDownloaded, setLoadingDownloaded] = useState(false);
   const [ggufModelsDir, setGgufModelsDir] = useState<string | null>(null);
@@ -357,6 +362,7 @@ export function EditModelPage() {
     handleLlamaMinPChange,
     handleLlamaTypicalPChange,
     handleLlamaChatTemplateOverrideChange,
+    handleLlamaMmprojPathChange,
     handleLlamaChatTemplatePresetChange,
     handleLlamaRawCompletionFallbackChange,
     handleOllamaNumCtxChange,
@@ -393,8 +399,9 @@ export function EditModelPage() {
       .catch(() => setGgufModelsDir(null));
   }, []);
 
-  // Fetch downloaded models when the local picker is opened
-  const openLocalModelPicker = async () => {
+  // Fetch downloaded GGUF files when a local picker is opened
+  const openDownloadedLibraryPicker = async (mode: LocalLibraryPickerMode) => {
+    setLocalLibraryPickerMode(mode);
     setShowLocalModelPicker(true);
     setLoadingDownloaded(true);
     try {
@@ -408,11 +415,49 @@ export function EditModelPage() {
     }
   };
 
-  const handleSelectLocalModel = (model: DownloadedGgufModel) => {
-    handleModelNameChange(model.path);
-    if (!editorModel?.displayName?.trim()) {
-      const cleanName = deriveDisplayNameFromPath(model.filename);
-      handleDisplayNameChange(cleanName);
+  const openLocalModelPicker = async () => openDownloadedLibraryPicker("model");
+
+  const openLocalMmprojPicker = async () => openDownloadedLibraryPicker("mmproj");
+
+  const syncImageInputScope = (mmprojPath: string | null) => {
+    if (!editorModel) return;
+    const currentScopes = (editorModel.inputScopes ?? ["text"]) as Array<
+      "text" | "image" | "audio"
+    >;
+    const hasImageScope = currentScopes.includes("image");
+
+    if (mmprojPath?.trim()) {
+      if (!hasImageScope) {
+        const nextScopes = [...currentScopes, "image"].filter(
+          (scope, index, arr) => arr.indexOf(scope) === index,
+        ) as Array<"text" | "image" | "audio">;
+        updateEditorModel({
+          inputScopes: nextScopes,
+        });
+      }
+      return;
+    }
+
+    if (hasImageScope) {
+      const nextScopes = currentScopes.filter((scope) => scope !== "image") as Array<
+        "text" | "image" | "audio"
+      >;
+      updateEditorModel({
+        inputScopes: nextScopes.length > 0 ? nextScopes : ["text"],
+      });
+    }
+  };
+
+  const handleSelectLocalLibraryFile = (model: DownloadedGgufModel) => {
+    if (localLibraryPickerMode === "mmproj") {
+      handleLlamaMmprojPathChange(model.path);
+      syncImageInputScope(model.path);
+    } else {
+      handleModelNameChange(model.path);
+      if (!editorModel?.displayName?.trim()) {
+        const cleanName = deriveDisplayNameFromPath(model.filename);
+        handleDisplayNameChange(cleanName);
+      }
     }
     setShowLocalModelPicker(false);
   };
@@ -732,6 +777,25 @@ export function EditModelPage() {
   ]);
   const modelIdLabel = isLocalModel ? "Model Path (GGUF)" : "Model ID";
   const modelIdPlaceholder = isLocalModel ? "/path/to/model.gguf" : "e.g. gpt-4o";
+  const mmprojLibraryModels = useMemo(
+    () =>
+      downloadedModels.filter(
+        (model) => model.isMmproj ?? model.filename.toLowerCase().includes("mmproj"),
+      ),
+    [downloadedModels],
+  );
+  const localLibraryModels =
+    localLibraryPickerMode === "mmproj" ? mmprojLibraryModels : downloadedModels;
+  const localLibraryTitle =
+    localLibraryPickerMode === "mmproj" ? "Downloaded MMProj Files" : t("hfBrowser.libraryTitle");
+  const localLibraryEmptyLabel =
+    localLibraryPickerMode === "mmproj"
+      ? "No downloaded mmproj files yet"
+      : t("hfBrowser.libraryEmpty");
+  const localLibraryEmptyHint =
+    localLibraryPickerMode === "mmproj"
+      ? "Download a multimodal projector from the Model Browser, or enter a path manually."
+      : t("hfBrowser.libraryEmptyHint");
 
   // Get reasoning support for the current provider
   const reasoningSupport: ReasoningSupport = editorModel?.providerId
@@ -1064,9 +1128,7 @@ export function EditModelPage() {
             <div
               className={cn(
                 "w-full space-y-6 transition-transform duration-200 ease-in-out xl:max-w-190",
-                effectiveEditorViewMode === "advanced"
-                  ? "xl:translate-x-0"
-                  : "xl:translate-x-48",
+                effectiveEditorViewMode === "advanced" ? "xl:translate-x-0" : "xl:translate-x-48",
               )}
             >
               <EditorPanel
@@ -1156,13 +1218,23 @@ export function EditModelPage() {
                       <FieldBlock
                         label={modelIdLabel}
                         action={
-                          <button
-                            type="button"
-                            onClick={() => void handleBrowseLocalModel()}
-                            className="rounded-md border border-fg/10 px-2.5 py-1 text-[13px] text-fg/65 transition hover:border-fg/20 hover:bg-fg/5 hover:text-fg/90"
-                          >
-                            Browse files
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={openLocalModelPicker}
+                              className="inline-flex items-center gap-1.5 rounded-md border border-fg/10 bg-fg/5 px-2.5 py-1.5 text-[12px] font-medium text-fg/68 transition hover:border-fg/20 hover:bg-fg/10 hover:text-fg"
+                            >
+                              <FolderOpen className="h-3.5 w-3.5 text-accent/70" />
+                              {t("hfBrowser.selectFromLibrary")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleBrowseLocalModel()}
+                              className="rounded-md border border-fg/10 px-2.5 py-1.5 text-[12px] font-medium text-fg/65 transition hover:border-fg/20 hover:bg-fg/5 hover:text-fg/90"
+                            >
+                              Browse files
+                            </button>
+                          </div>
                         }
                       >
                         <div className="space-y-3">
@@ -1176,27 +1248,11 @@ export function EditModelPage() {
                           <p className="text-[13px] leading-relaxed text-fg/45">
                             Use the full file path to a local GGUF model.
                           </p>
-                          <button
-                            type="button"
-                            onClick={openLocalModelPicker}
-                            className="flex w-full items-center gap-3 rounded-lg border border-fg/10 bg-fg/5 px-4 py-3 text-left transition hover:bg-fg/10"
-                          >
-                            <FolderOpen className="h-4 w-4 shrink-0 text-accent/70" />
-                            <div className="min-w-0 flex-1">
-                              <span className="block text-[13px] font-medium text-fg/70">
-                                {t("hfBrowser.selectFromLibrary")}
-                              </span>
-                              <span className="block text-[13px] text-fg/40">
-                                {t("hfBrowser.browseOnHuggingFace")}
-                              </span>
-                            </div>
-                            <ChevronRight className="h-4 w-4 shrink-0 text-fg/20" />
-                          </button>
 
                           <BottomMenu
                             isOpen={showLocalModelPicker}
                             onClose={() => setShowLocalModelPicker(false)}
-                            title={t("hfBrowser.libraryTitle")}
+                            title={localLibraryTitle}
                           >
                             <MenuSection>
                               {loadingDownloaded ? (
@@ -1204,18 +1260,18 @@ export function EditModelPage() {
                                   <Loader size={18} className="animate-spin" />
                                   <span className="text-[13px]">{t("hfBrowser.searching")}</span>
                                 </div>
-                              ) : downloadedModels.length === 0 ? (
+                              ) : localLibraryModels.length === 0 ? (
                                 <div className="flex flex-col items-center gap-2 py-16 text-center">
                                   <HardDrive size={32} className="text-fg/20" />
                                   <p className="text-[13px] font-medium text-fg/60">
-                                    {t("hfBrowser.libraryEmpty")}
+                                    {localLibraryEmptyLabel}
                                   </p>
                                   <p className="px-6 text-[13px] text-fg/40">
-                                    {t("hfBrowser.libraryEmptyHint")}
+                                    {localLibraryEmptyHint}
                                   </p>
                                 </div>
                               ) : (
-                                downloadedModels.map((model) => (
+                                localLibraryModels.map((model) => (
                                   <MenuButton
                                     key={model.path}
                                     icon={<HardDrive className="h-5 w-5 text-accent/60" />}
@@ -1223,13 +1279,17 @@ export function EditModelPage() {
                                     description={`${model.quantization} · ${formatBytes(model.size)}`}
                                     color="from-accent/20 to-accent/10"
                                     rightElement={
-                                      editorModel.name === model.path ? (
+                                      (
+                                        localLibraryPickerMode === "mmproj"
+                                          ? modelAdvancedDraft.llamaMmprojPath === model.path
+                                          : editorModel.name === model.path
+                                      ) ? (
                                         <Check className="h-4 w-4 text-accent" />
                                       ) : (
                                         <ArrowRight className="h-4 w-4 text-fg/20" />
                                       )
                                     }
-                                    onClick={() => handleSelectLocalModel(model)}
+                                    onClick={() => handleSelectLocalLibraryFile(model)}
                                   />
                                 ))
                               )}
@@ -2622,6 +2682,40 @@ export function EditModelPage() {
                                     rows={2}
                                     placeholder="Prefer embedded GGUF template"
                                     className={selectInputClassName}
+                                  />
+                                </div>
+
+                                <div className="space-y-4">
+                                  <div className="flex items-start justify-between gap-3">
+                                    <div className="space-y-0.5">
+                                      <span className="block text-[13px] font-medium text-fg/70">
+                                        MMProj Path
+                                      </span>
+                                      <span className="block text-[13px] text-fg/40">
+                                        Multimodal projector GGUF required for vision models
+                                      </span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={openLocalMmprojPicker}
+                                      className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-fg/10 bg-fg/5 px-2.5 py-1.5 text-[12px] font-medium text-fg/68 transition hover:border-fg/20 hover:bg-fg/10 hover:text-fg"
+                                    >
+                                      <FolderOpen className="h-3.5 w-3.5 text-accent/70" />
+                                      {t("hfBrowser.selectFromLibrary")}
+                                    </button>
+                                  </div>
+                                  <input
+                                    type="text"
+                                    value={modelAdvancedDraft.llamaMmprojPath ?? ""}
+                                    onChange={(e) => {
+                                      const nextValue =
+                                        e.target.value === "" ? null : e.target.value;
+                                      handleLlamaMmprojPathChange(nextValue);
+                                      syncImageInputScope(nextValue);
+                                    }}
+                                    placeholder="/path/to/mmproj.gguf"
+                                    className={selectInputClassName}
+                                    spellCheck={false}
                                   />
                                 </div>
 

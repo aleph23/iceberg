@@ -110,6 +110,7 @@ pub struct HfModelFile {
     pub filename: String,
     pub size: u64,
     pub quantization: String,
+    pub is_mmproj: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -120,6 +121,7 @@ pub struct DownloadedGgufModel {
     pub path: String,
     pub size: u64,
     pub quantization: String,
+    pub is_mmproj: bool,
     pub architecture: Option<String>,
     pub context_length: Option<u64>,
 }
@@ -1390,15 +1392,17 @@ pub async fn hf_get_model_files(app: AppHandle, model_id: String) -> Result<HfMo
         .iter()
         .filter(|s| {
             let lower = s.rfilename.to_lowercase();
-            lower.ends_with(".gguf") && !lower.contains("mmproj") && !lower.contains("imatrix")
+            lower.ends_with(".gguf") && !lower.contains("imatrix")
         })
         .map(|s| {
+            let lower = s.rfilename.to_lowercase();
             let size = size_map.get(&s.rfilename).copied().unwrap_or(0);
             let quantization = extract_quantization(&s.rfilename);
             HfModelFile {
                 filename: s.rfilename.clone(),
                 size,
                 quantization,
+                is_mmproj: lower.contains("mmproj"),
             }
         })
         .collect();
@@ -1797,6 +1801,7 @@ pub async fn hf_list_downloaded_models(app: AppHandle) -> Result<Vec<DownloadedG
                     .to_string();
 
                 if fname.to_lowercase().ends_with(".gguf") && !fname.ends_with(".tmp") {
+                    let is_mmproj = fname.to_lowercase().contains("mmproj");
                     let size = file_entry.metadata().map(|m| m.len()).unwrap_or(0);
                     let meta = read_local_gguf_meta(&file_path);
                     results.push(DownloadedGgufModel {
@@ -1805,6 +1810,7 @@ pub async fn hf_list_downloaded_models(app: AppHandle) -> Result<Vec<DownloadedG
                         path: file_path.to_string_lossy().to_string(),
                         size,
                         quantization: extract_quantization(&file_path.to_string_lossy()),
+                        is_mmproj,
                         architecture: meta.as_ref().and_then(|value| value.architecture.clone()),
                         context_length: meta.as_ref().and_then(|value| value.context_length),
                     });

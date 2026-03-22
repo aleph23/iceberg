@@ -115,6 +115,41 @@ fn build_fallback_prompt(messages: &[Value]) -> String {
     prompt
 }
 
+pub(super) fn inject_media_markers(messages: &[Value]) -> Vec<Value> {
+    messages
+        .iter()
+        .map(|message| {
+            let Some(parts) = message.get("content").and_then(|v| v.as_array()) else {
+                return message.clone();
+            };
+
+            let mut text_parts = Vec::new();
+            for part in parts {
+                match part.get("type").and_then(|v| v.as_str()) {
+                    Some("text") => {
+                        if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                            let cleaned = sanitize_text(text);
+                            if !cleaned.is_empty() {
+                                text_parts.push(cleaned);
+                            }
+                        }
+                    }
+                    Some("image_url") => {
+                        text_parts.push(llama_cpp_2::mtmd::mtmd_default_marker().to_string())
+                    }
+                    _ => {}
+                }
+            }
+
+            let mut cloned = message.clone();
+            if let Some(object) = cloned.as_object_mut() {
+                object.insert("content".to_string(), Value::String(text_parts.join("\n")));
+            }
+            cloned
+        })
+        .collect()
+}
+
 fn message_requires_openai_compat(message: &Value) -> bool {
     if message
         .get("role")
@@ -436,13 +471,7 @@ pub(super) fn build_prompt(
         };
 
     if needs_openai_compat {
-        return build_oaicompat_prompt(
-            model,
-            messages,
-            &resolved_template,
-            tools,
-            tool_choice,
-        );
+        return build_oaicompat_prompt(model, messages, &resolved_template, tools, tool_choice);
     }
 
     match model.apply_chat_template(&resolved_template.template, &chat_messages, true) {

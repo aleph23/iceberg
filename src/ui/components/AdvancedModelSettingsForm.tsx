@@ -90,6 +90,7 @@ export function sanitizeAdvancedModelSettings(input: AdvancedModelSettings): Adv
     llamaKvType: input.llamaKvType ?? null,
     llamaFlashAttention: input.llamaFlashAttention ?? null,
     llamaChatTemplateOverride: input.llamaChatTemplateOverride?.trim() || null,
+    llamaMmprojPath: input.llamaMmprojPath?.trim() || null,
     llamaChatTemplatePreset: input.llamaChatTemplatePreset?.trim() || null,
     llamaRawCompletionFallback: input.llamaRawCompletionFallback ?? null,
     llamaSamplerProfile: input.llamaSamplerProfile ?? null,

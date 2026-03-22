@@ -475,6 +475,26 @@ pub(super) fn resolve_llama_chat_template_override(
         .filter(|v| !v.is_empty())
 }
 
+pub(super) fn resolve_llama_mmproj_path(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<String> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_mmproj_path.clone())
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_mmproj_path.clone())
+        })
+        .or_else(|| settings.advanced_model_settings.llama_mmproj_path.clone())
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 pub(super) fn resolve_llama_chat_template_preset(
     session: &Session,
     model: &Model,

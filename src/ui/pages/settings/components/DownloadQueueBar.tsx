@@ -26,6 +26,10 @@ function extractShortName(modelId: string): string {
   return parts[parts.length - 1] || modelId;
 }
 
+function isMmprojFilename(filename: string): boolean {
+  return filename.toLowerCase().includes("mmproj");
+}
+
 function pct(d: QueuedDownload): number {
   if (d.total === 0) return 0;
   return Math.min(100, Math.round((d.downloaded / d.total) * 100));
@@ -53,6 +57,7 @@ export function InlineDownloadCards({
 
   const createModel = useCallback(
     (item: QueuedDownload) => {
+      if (isMmprojFilename(item.filename)) return;
       if (!item.resultPath) return;
       const displayName = extractShortName(item.modelId).replace(/-GGUF$/i, "");
       const params = new URLSearchParams();
@@ -174,18 +179,20 @@ export function InlineDownloadCards({
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <button
-                    onClick={() => createModel(item)}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/15 text-[11px] font-semibold text-emerald-300",
-                      compact ? "px-2 py-1" : "px-3 py-1.5",
-                      interactive.transition.fast,
-                      "hover:bg-emerald-500/25 active:scale-95",
-                    )}
-                  >
-                    <Cpu size={compact ? 10 : 11} />
-                    Create
-                  </button>
+                  {!isMmprojFilename(item.filename) && (
+                    <button
+                      onClick={() => createModel(item)}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/15 text-[11px] font-semibold text-emerald-300",
+                        compact ? "px-2 py-1" : "px-3 py-1.5",
+                        interactive.transition.fast,
+                        "hover:bg-emerald-500/25 active:scale-95",
+                      )}
+                    >
+                      <Cpu size={compact ? 10 : 11} />
+                      Create
+                    </button>
+                  )}
                   <button
                     onClick={() => dismissItem(item.id)}
                     className={cn(

@@ -1,6 +1,8 @@
 use super::*;
 use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::model::params::LlamaModelParams;
+use llama_cpp_2::mtmd::{MtmdContext, MtmdContextParams};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 pub(super) struct LlamaState {
@@ -12,6 +14,8 @@ pub(super) struct LlamaState {
     pub(super) gpu_load_fallback_activated: bool,
     pub(super) compiled_gpu_backends: Vec<String>,
     pub(super) supports_gpu_offload: bool,
+    pub(super) mtmd_ctx: Option<MtmdContext>,
+    pub(super) mmproj_path: Option<String>,
 }
 
 fn compiled_gpu_backends() -> Vec<&'static str> {
@@ -41,6 +45,7 @@ pub(super) fn load_engine(
     app: Option<&AppHandle>,
     model_path: &str,
     requested_gpu_layers: Option<u32>,
+    mmproj_path: Option<&str>,
 ) -> Result<std::sync::MutexGuard<'static, LlamaState>, String> {
     let engine = ENGINE.get_or_init(|| {
         Mutex::new(LlamaState {
@@ -52,6 +57,8 @@ pub(super) fn load_engine(
             gpu_load_fallback_activated: false,
             compiled_gpu_backends: Vec::new(),
             supports_gpu_offload: false,
+            mtmd_ctx: None,
+            mmproj_path: None,
         })
     });
 
@@ -186,6 +193,57 @@ pub(super) fn load_engine(
         guard.gpu_load_fallback_activated = gpu_load_fallback_activated;
     }
 
+    let mmproj_changed = should_reload
+        || guard.mmproj_path.as_deref() != mmproj_path
+        || (mmproj_path.is_some() && guard.mtmd_ctx.is_none());
+    if mmproj_changed {
+        guard.mtmd_ctx = None;
+        guard.mmproj_path = None;
+
+        if let Some(mmproj_path) = mmproj_path {
+            if !Path::new(mmproj_path).exists() {
+                return Err(crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("mmproj file not found: {}", mmproj_path),
+                ));
+            }
+
+            let model = guard
+                .model
+                .as_ref()
+                .ok_or_else(|| "llama.cpp model unavailable for mtmd init".to_string())?;
+            let mtmd =
+                MtmdContext::init_from_file(mmproj_path, model, &MtmdContextParams::default())
+                    .map_err(|e| {
+                        crate::utils::err_msg(
+                            module_path!(),
+                            line!(),
+                            format!(
+                                "Failed to initialize llama.cpp mtmd context from {}: {}",
+                                mmproj_path, e
+                            ),
+                        )
+                    })?;
+
+            if let Some(app) = app {
+                log_info(
+                    app,
+                    "llama_cpp",
+                    format!(
+                        "mtmd loaded: mmproj_path={} vision={} audio={}",
+                        mmproj_path,
+                        mtmd.support_vision(),
+                        mtmd.support_audio()
+                    ),
+                );
+            }
+
+            guard.mtmd_ctx = Some(mtmd);
+            guard.mmproj_path = Some(mmproj_path.to_string());
+        }
+    }
+
     Ok(guard)
 }
 
@@ -200,6 +258,8 @@ pub(crate) fn unload_engine(app: &AppHandle) -> Result<(), String> {
             gpu_load_fallback_activated: false,
             compiled_gpu_backends: Vec::new(),
             supports_gpu_offload: false,
+            mtmd_ctx: None,
+            mmproj_path: None,
         })
     });
 
@@ -213,6 +273,8 @@ pub(crate) fn unload_engine(app: &AppHandle) -> Result<(), String> {
         guard.model_params_key = None;
         guard.backend_path_used = None;
         guard.gpu_load_fallback_activated = false;
+        guard.mtmd_ctx = None;
+        guard.mmproj_path = None;
         log_info(app, "llama_cpp", "unloaded llama.cpp model");
     }
 

@@ -50,6 +50,7 @@ interface HfModelFile {
   filename: string;
   size: number;
   quantization: string;
+  isMmproj: boolean;
 }
 
 interface RunabilityScore {
@@ -254,6 +255,7 @@ type CompareSelection = {
   kvType: string;
 };
 type TrackedDownloadSource = "recommended" | "files";
+type TrackedDownloadRole = "model" | "mmproj";
 type TrackedHfDownload = {
   source: TrackedDownloadSource;
   modelId: string;
@@ -261,6 +263,18 @@ type TrackedHfDownload = {
   displayName: string;
   contextLength: number | null;
   kvType: string | null;
+  installId?: string | null;
+  role?: TrackedDownloadRole;
+};
+
+type PendingRecommendedInstall = {
+  displayName: string;
+  contextLength: number | null;
+  kvType: string | null;
+  modelQueueId: string | null;
+  mmprojQueueId: string | null;
+  modelPath: string | null;
+  mmprojPath: string | null;
 };
 
 type ViewState = { kind: "search" } | { kind: "model"; modelId: string };
@@ -838,6 +852,8 @@ export function HuggingFaceBrowserPage() {
   const [recFile, setRecFile] = useState(""); // selected file in dropdown
   const [recContext, setRecContext] = useState(4096);
   const [recKvType, setRecKvType] = useState("f16");
+  const [recImageSupport, setRecImageSupport] = useState(false);
+  const [recMmprojFile, setRecMmprojFile] = useState("");
   const [detailSheetOpen, setDetailSheetOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [compareSelections, setCompareSelections] = useState<CompareSelection[]>([]);
@@ -852,6 +868,7 @@ export function HuggingFaceBrowserPage() {
   const compareSyncSourceIdRef = useRef<number | null>(null);
   const compareSyncRatioRef = useRef(0);
   const trackedDownloadsRef = useRef<Map<string, TrackedHfDownload>>(new Map());
+  const pendingRecommendedInstallsRef = useRef<Map<string, PendingRecommendedInstall>>(new Map());
   const prevQueueRef = useRef<QueuedDownload[]>([]);
 
   useEffect(() => {
@@ -1016,15 +1033,18 @@ export function HuggingFaceBrowserPage() {
       setFilesPanelTab("recommended");
       setCompareOpen(false);
       setCompareSelections([]);
+      setRecImageSupport(false);
+      setRecMmprojFile("");
 
       const filesPromise = invoke<HfModelInfo>("hf_get_model_files", { modelId })
         .then((info) => {
           setModelInfo(info);
           // Fetch runability scores in background
-          if (info.files.length > 0) {
+          const runnableFiles = info.files.filter((f) => f.size > 0 && !f.isMmproj);
+          if (runnableFiles.length > 0) {
             invoke<RunabilityScore[]>("hf_compute_runability", {
               modelId: info.modelId,
-              files: info.files.map((f) => ({
+              files: runnableFiles.map((f) => ({
                 filename: f.filename,
                 size: f.size,
                 quantization: f.quantization,
@@ -1063,7 +1083,7 @@ export function HuggingFaceBrowserPage() {
 
   useEffect(() => {
     if (view.kind !== "model" || !modelInfo) return;
-    const files = modelInfo.files.filter((f) => f.size > 0);
+    const files = modelInfo.files.filter((f) => f.size > 0 && !f.isMmproj);
     if (files.length === 0) {
       setRecLoading(false);
       return;
@@ -1101,10 +1121,32 @@ export function HuggingFaceBrowserPage() {
   }, [view.kind, modelInfo]);
 
   const filesWithSize = modelInfo?.files.filter((f) => f.size > 0) ?? [];
-  const sortedFilesWithSize = useMemo(() => {
-    if (Object.keys(runabilityScores).length === 0) return filesWithSize;
+  const runnableFilesWithSize = useMemo(
+    () => filesWithSize.filter((f) => !f.isMmproj),
+    [filesWithSize],
+  );
+  const mmprojFilesWithSize = useMemo(
+    () => filesWithSize.filter((f) => f.isMmproj),
+    [filesWithSize],
+  );
 
-    return [...filesWithSize].sort((a, b) => {
+  useEffect(() => {
+    if (!mmprojFilesWithSize.length) {
+      setRecImageSupport(false);
+      setRecMmprojFile("");
+      return;
+    }
+
+    setRecMmprojFile((current) => {
+      if (current && mmprojFilesWithSize.some((file) => file.filename === current)) {
+        return current;
+      }
+      return mmprojFilesWithSize[0]?.filename ?? "";
+    });
+  }, [mmprojFilesWithSize]);
+
+  const sortedFilesWithSize = useMemo(() => {
+    const sortedRunnable = [...runnableFilesWithSize].sort((a, b) => {
       const aScore = runabilityScores[a.filename]?.score;
       const bScore = runabilityScores[b.filename]?.score;
 
@@ -1116,7 +1158,13 @@ export function HuggingFaceBrowserPage() {
       if (bScore != null) return 1;
       return a.filename.localeCompare(b.filename);
     });
-  }, [filesWithSize, runabilityScores]);
+
+    const sortedMmproj = [...mmprojFilesWithSize].sort((a, b) =>
+      a.filename.localeCompare(b.filename),
+    );
+
+    return [...sortedRunnable, ...sortedMmproj];
+  }, [mmprojFilesWithSize, runabilityScores, runnableFilesWithSize]);
 
   const openCompareModal = useCallback(() => {
     if (!recData || recData.files.length === 0) return;
@@ -1186,18 +1234,88 @@ export function HuggingFaceBrowserPage() {
         filename: tracked.filename,
       });
       trackedDownloadsRef.current.set(queueId, tracked);
+      return queueId;
     } catch (err: any) {
       toast.error(
         "Download failed",
         typeof err === "string" ? err : err?.message || "Unknown error",
       );
+      return null;
     }
   }, []);
+
+  const autoCreateModelFromRecommendedInstall = useCallback(
+    async (installId: string, install: PendingRecommendedInstall) => {
+      if (!install.modelPath) {
+        return;
+      }
+
+      if (install.mmprojQueueId && !install.mmprojPath) {
+        return;
+      }
+
+      const contextLength =
+        install.contextLength != null && install.contextLength > 0
+          ? Math.floor(install.contextLength)
+          : 8192;
+      const kvType = install.kvType || "q8_0";
+      const hasImageSupport = !!install.mmprojPath;
+
+      try {
+        const defaultAdvanced = createDefaultAdvancedModelSettings();
+        await addOrUpdateModel({
+          name: install.modelPath,
+          providerId: "llamacpp",
+          providerLabel: "llama.cpp (Local)",
+          displayName: install.displayName,
+          inputScopes: hasImageSupport ? ["text", "image"] : ["text"],
+          outputScopes: ["text"],
+          advancedModelSettings: {
+            ...defaultAdvanced,
+            contextLength,
+            llamaKvType: kvType as NonNullable<typeof defaultAdvanced.llamaKvType>,
+            llamaMmprojPath: install.mmprojPath,
+          },
+        });
+
+        toast.success(
+          "Model installed",
+          hasImageSupport
+            ? `${install.displayName} added with image support, ${contextLength.toLocaleString()} ctx, and ${kvType.toUpperCase()} KV cache.`
+            : `${install.displayName} added with ${contextLength.toLocaleString()} ctx and ${kvType.toUpperCase()} KV cache.`,
+        );
+
+        pendingRecommendedInstallsRef.current.delete(installId);
+        if (install.modelQueueId) {
+          trackedDownloadsRef.current.delete(install.modelQueueId);
+          await dismissItem(install.modelQueueId);
+        }
+        if (install.mmprojQueueId) {
+          trackedDownloadsRef.current.delete(install.mmprojQueueId);
+          await dismissItem(install.mmprojQueueId);
+        }
+      } catch (err: any) {
+        toast.error(
+          "Model setup failed",
+          `Downloaded ${install.displayName}, but auto-add failed: ${err?.message || String(err)}`,
+        );
+      }
+    },
+    [dismissItem],
+  );
 
   const queueRecommendedDownload = useCallback(async () => {
     if (!modelInfo || !recData) return;
     const selectedFile = recData.files.find((f) => f.filename === recFile) ?? recData.files[0];
     if (!selectedFile) return;
+    const selectedMmproj =
+      recImageSupport && recMmprojFile
+        ? (mmprojFilesWithSize.find((f) => f.filename === recMmprojFile) ?? null)
+        : null;
+    if (recImageSupport && !selectedMmproj) {
+      toast.error("Image support unavailable", "Select a multimodal projector file first.");
+      return;
+    }
 
     const bpv = KV_BPV[recKvType] || 2;
     const maxGpuContext = maxContextForBpv(
@@ -1208,16 +1326,65 @@ export function HuggingFaceBrowserPage() {
       recData.modelMaxContext,
     );
 
-    await queueTrackedDownload({
-      source: "recommended",
-      modelId: modelInfo.modelId,
-      filename: selectedFile.filename,
+    const installId = crypto.randomUUID();
+    const install: PendingRecommendedInstall = {
       displayName:
         extractFileDisplayName(selectedFile.filename) || extractModelShortName(modelInfo.modelId),
       contextLength: maxGpuContext > 0 ? maxGpuContext : 8192,
       kvType: recKvType,
+      modelQueueId: null,
+      mmprojQueueId: null,
+      modelPath: null,
+      mmprojPath: null,
+    };
+
+    if (selectedMmproj) {
+      install.mmprojQueueId = await queueTrackedDownload({
+        source: "recommended",
+        modelId: modelInfo.modelId,
+        filename: selectedMmproj.filename,
+        displayName: install.displayName,
+        contextLength: null,
+        kvType: null,
+        installId,
+        role: "mmproj",
+      });
+      if (!install.mmprojQueueId) {
+        return;
+      }
+    }
+
+    install.modelQueueId = await queueTrackedDownload({
+      source: "recommended",
+      modelId: modelInfo.modelId,
+      filename: selectedFile.filename,
+      displayName: install.displayName,
+      contextLength: install.contextLength,
+      kvType: recKvType,
+      installId,
+      role: "model",
     });
-  }, [modelInfo, recData, recFile, recKvType, queueTrackedDownload]);
+    if (!install.modelQueueId) {
+      if (install.mmprojQueueId) {
+        toast.error(
+          "Download partially queued",
+          "The mmproj file was queued, but the main model file could not be queued.",
+        );
+      }
+      return;
+    }
+
+    pendingRecommendedInstallsRef.current.set(installId, install);
+  }, [
+    mmprojFilesWithSize,
+    modelInfo,
+    queueTrackedDownload,
+    recData,
+    recFile,
+    recImageSupport,
+    recKvType,
+    recMmprojFile,
+  ]);
 
   const queueFilesDownload = useCallback(
     async (filename: string) => {
@@ -1234,51 +1401,6 @@ export function HuggingFaceBrowserPage() {
     [modelInfo, queueTrackedDownload],
   );
 
-  const autoCreateModelFromRecommendedDownload = useCallback(
-    async (item: QueuedDownload, tracked: TrackedHfDownload) => {
-      if (!item.resultPath) {
-        toast.error("Model setup failed", `Downloaded ${item.filename}, but file path is missing.`);
-        return;
-      }
-
-      const contextLength =
-        tracked.contextLength != null && tracked.contextLength > 0
-          ? Math.floor(tracked.contextLength)
-          : 8192;
-      const kvType = tracked.kvType || "q8_0";
-      const displayName = tracked.displayName || extractModelShortName(item.modelId);
-
-      try {
-        const defaultAdvanced = createDefaultAdvancedModelSettings();
-        await addOrUpdateModel({
-          name: item.resultPath,
-          providerId: "llamacpp",
-          providerLabel: "llama.cpp (Local)",
-          displayName,
-          inputScopes: ["text"],
-          outputScopes: ["text"],
-          advancedModelSettings: {
-            ...defaultAdvanced,
-            contextLength,
-            llamaKvType: kvType as NonNullable<typeof defaultAdvanced.llamaKvType>,
-          },
-        });
-
-        toast.success(
-          "Model installed",
-          `${displayName} added with ${contextLength.toLocaleString()} ctx and ${kvType.toUpperCase()} KV cache.`,
-        );
-        await dismissItem(item.id);
-      } catch (err: any) {
-        toast.error(
-          "Model setup failed",
-          `Downloaded ${item.filename}, but auto-add failed: ${err?.message || String(err)}`,
-        );
-      }
-    },
-    [dismissItem],
-  );
-
   useEffect(() => {
     const prev = prevQueueRef.current;
 
@@ -1290,22 +1412,64 @@ export function HuggingFaceBrowserPage() {
       if (!tracked) continue;
 
       if (prevItem.status !== "complete" && item.status === "complete") {
-        trackedDownloadsRef.current.delete(item.id);
+        if (tracked.source === "recommended" && tracked.installId) {
+          const install = pendingRecommendedInstallsRef.current.get(tracked.installId);
+          if (!install) {
+            trackedDownloadsRef.current.delete(item.id);
+            toast.success("Download complete", `${item.filename} downloaded.`);
+            void dismissItem(item.id);
+            continue;
+          }
 
-        if (tracked.source === "recommended") {
-          void autoCreateModelFromRecommendedDownload(item, tracked);
+          if (!item.resultPath) {
+            toast.error(
+              "Model setup failed",
+              `Downloaded ${item.filename}, but file path is missing.`,
+            );
+            continue;
+          }
+
+          if (tracked.role === "mmproj") {
+            install.mmprojPath = item.resultPath;
+          } else {
+            install.modelPath = item.resultPath;
+          }
+          pendingRecommendedInstallsRef.current.set(tracked.installId, install);
+          void autoCreateModelFromRecommendedInstall(tracked.installId, install);
+        } else if (tracked.source === "recommended") {
+          trackedDownloadsRef.current.delete(item.id);
+          const displayName = tracked.displayName || extractModelShortName(item.modelId);
+          const installId = item.id;
+          const install: PendingRecommendedInstall = {
+            displayName,
+            contextLength: tracked.contextLength,
+            kvType: tracked.kvType,
+            modelQueueId: item.id,
+            mmprojQueueId: null,
+            modelPath: item.resultPath,
+            mmprojPath: null,
+          };
+          pendingRecommendedInstallsRef.current.set(installId, install);
+          void autoCreateModelFromRecommendedInstall(installId, install);
         } else {
+          trackedDownloadsRef.current.delete(item.id);
           toast.success("Download complete", `${item.filename} downloaded.`);
           void dismissItem(item.id);
         }
       }
 
       if (prevItem.status !== "error" && item.status === "error") {
+        if (tracked.installId) {
+          pendingRecommendedInstallsRef.current.delete(tracked.installId);
+        }
         trackedDownloadsRef.current.delete(item.id);
         toast.error("Download failed", `${item.filename}: ${item.error || "Unknown error"}`);
       }
 
       if (prevItem.status !== "cancelled" && item.status === "cancelled") {
+        if (tracked.installId) {
+          pendingRecommendedInstallsRef.current.delete(tracked.installId);
+        }
         trackedDownloadsRef.current.delete(item.id);
       }
     }
@@ -1318,7 +1482,7 @@ export function HuggingFaceBrowserPage() {
     }
 
     prevQueueRef.current = queue;
-  }, [queue, autoCreateModelFromRecommendedDownload, dismissItem]);
+  }, [queue, autoCreateModelFromRecommendedInstall, dismissItem]);
 
   return (
     <div className="flex h-full flex-col text-fg">
@@ -1958,6 +2122,72 @@ export function HuggingFaceBrowserPage() {
                                         </select>
                                       </div>
 
+                                      {mmprojFilesWithSize.length > 0 && (
+                                        <>
+                                          <div className="flex items-center justify-between gap-3 rounded-lg border border-fg/10 bg-fg/5 px-2.5 py-2">
+                                            <div className="min-w-0">
+                                              <span className="block text-[11px] font-medium text-fg/85">
+                                                Image support
+                                              </span>
+                                              <span className="block whitespace-nowrap text-[11px] text-fg/40">
+                                                Download matching mmproj sidecar
+                                              </span>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-fg/35">
+                                                {recImageSupport ? "On" : "Off"}
+                                              </span>
+                                              <input
+                                                id="hf-image-support-toggle"
+                                                type="checkbox"
+                                                checked={recImageSupport}
+                                                onChange={(e) =>
+                                                  setRecImageSupport(e.target.checked)
+                                                }
+                                                className="peer sr-only"
+                                              />
+                                              <label
+                                                htmlFor="hf-image-support-toggle"
+                                                className={cn(
+                                                  "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-all duration-200 ease-in-out",
+                                                  recImageSupport
+                                                    ? "bg-emerald-500 shadow-sm shadow-emerald-500/20"
+                                                    : "bg-fg/20",
+                                                )}
+                                              >
+                                                <span
+                                                  className={cn(
+                                                    "inline-block h-4 w-4 rounded-full bg-fg shadow-sm transition duration-200 ease-in-out",
+                                                    recImageSupport
+                                                      ? "translate-x-4"
+                                                      : "translate-x-0",
+                                                  )}
+                                                />
+                                              </label>
+                                            </div>
+                                          </div>
+
+                                          {recImageSupport && (
+                                            <div>
+                                              <label className="text-[9px] font-semibold uppercase tracking-wider text-fg/40">
+                                                MMProj
+                                              </label>
+                                              <select
+                                                value={recMmprojFile}
+                                                onChange={(e) => setRecMmprojFile(e.target.value)}
+                                                className="mt-1 w-full rounded-md border border-fg/10 bg-fg/5 px-2 py-1.5 text-[11px] text-fg focus:border-fg/25 focus:outline-none"
+                                              >
+                                                {mmprojFilesWithSize.map((file) => (
+                                                  <option key={file.filename} value={file.filename}>
+                                                    {file.quantization} — {formatBytes(file.size)}
+                                                  </option>
+                                                ))}
+                                              </select>
+                                            </div>
+                                          )}
+                                        </>
+                                      )}
+
                                       {/* Context length */}
                                       {(() => {
                                         const modelMax = recData.modelMaxContext;
@@ -2229,6 +2459,11 @@ export function HuggingFaceBrowserPage() {
                                     <span className="rounded-md border border-accent/20 bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold text-accent/80">
                                       {file.quantization}
                                     </span>
+                                    {file.isMmproj && (
+                                      <span className="rounded-md border border-blue-400/20 bg-blue-400/10 px-1.5 py-0.5 text-[9px] font-semibold text-blue-300">
+                                        MMPROJ
+                                      </span>
+                                    )}
                                     {rs && (
                                       <span
                                         className={cn(

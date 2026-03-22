@@ -59,6 +59,7 @@ type ControllerReturn = {
   handleLlamaMinPChange: (value: number | null) => void;
   handleLlamaTypicalPChange: (value: number | null) => void;
   handleLlamaChatTemplateOverrideChange: (value: string | null) => void;
+  handleLlamaMmprojPathChange: (value: string | null) => void;
   handleLlamaChatTemplatePresetChange: (value: string | null) => void;
   handleLlamaRawCompletionFallbackChange: (value: boolean | null) => void;
   handleOllamaNumCtxChange: (value: number | null) => void;
@@ -160,6 +161,7 @@ export function useModelEditorController(): ControllerReturn {
           const hfModelPath = searchParams.get("hfModelPath");
           const hfModelName = searchParams.get("hfModelName");
           const hfDisplayName = searchParams.get("hfDisplayName");
+          const hfMmprojPath = searchParams.get("hfMmprojPath");
 
           const isFromHfBrowser = !!hfModelPath;
 
@@ -179,9 +181,15 @@ export function useModelEditorController(): ControllerReturn {
             providerId: selectedProvider?.providerId || firstCap?.id || "",
             providerLabel: selectedProvider?.label || firstCap?.name || "",
             createdAt: Date.now(),
-            inputScopes: ["text"],
+            inputScopes: hfMmprojPath ? ["text", "image"] : ["text"],
             outputScopes: ["text"],
           } as Model;
+          if (hfMmprojPath) {
+            nextDraft = sanitizeAdvancedModelSettings({
+              ...defaultAdvanced,
+              llamaMmprojPath: hfMmprojPath,
+            });
+          }
         } else {
           const existing = settings.models.find((m) => m.id === modelId) || null;
           if (!existing) {
@@ -611,6 +619,19 @@ export function useModelEditorController(): ControllerReturn {
         payload: {
           ...state.modelAdvancedDraft,
           llamaChatTemplateOverride: value?.trim() ? value.trim() : null,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaMmprojPathChange = useCallback(
+    (value: string | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaMmprojPath: value?.trim() ? value.trim() : null,
         },
       });
     },
@@ -1142,6 +1163,7 @@ export function useModelEditorController(): ControllerReturn {
     handleLlamaMinPChange,
     handleLlamaTypicalPChange,
     handleLlamaChatTemplateOverrideChange,
+    handleLlamaMmprojPathChange,
     handleLlamaChatTemplatePresetChange,
     handleLlamaRawCompletionFallbackChange,
     handleOllamaNumCtxChange,

@@ -1,11 +1,4 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -41,16 +34,12 @@ interface DownloadQueueContextValue {
   hasItems: boolean;
 }
 
-const DownloadQueueContext = createContext<DownloadQueueContextValue | null>(
-  null,
-);
+const DownloadQueueContext = createContext<DownloadQueueContextValue | null>(null);
 
 export function useDownloadQueue(): DownloadQueueContextValue {
   const ctx = useContext(DownloadQueueContext);
   if (!ctx) {
-    throw new Error(
-      "useDownloadQueue must be used within a DownloadQueueProvider",
-    );
+    throw new Error("useDownloadQueue must be used within a DownloadQueueProvider");
   }
   return ctx;
 }
@@ -66,6 +55,10 @@ export function useDownloadQueueOptional(): DownloadQueueContextValue | null {
 function extractShortName(modelId: string): string {
   const parts = modelId.split("/");
   return parts[parts.length - 1] || modelId;
+}
+
+function isMmprojFilename(filename: string): boolean {
+  return filename.toLowerCase().includes("mmproj");
 }
 
 export function DownloadQueueProvider({ children }: { children: ReactNode }) {
@@ -107,9 +100,7 @@ export function DownloadQueueProvider({ children }: { children: ReactNode }) {
   // Detect state transitions and fire toasts when not on HF browser page
   useEffect(() => {
     const prev = prevQueueRef.current;
-    const isOnHfPage = locationRef.current.startsWith(
-      Routes.settingsModelsBrowse,
-    );
+    const isOnHfPage = locationRef.current.startsWith(Routes.settingsModelsBrowse);
 
     for (const item of queue) {
       const prevItem = prev.find((p) => p.id === item.id);
@@ -118,30 +109,22 @@ export function DownloadQueueProvider({ children }: { children: ReactNode }) {
       // Download just completed
       if (prevItem.status !== "complete" && item.status === "complete") {
         if (!isOnHfPage) {
-          const displayName = extractShortName(item.modelId).replace(
-            /-GGUF$/i,
-            "",
-          );
+          const displayName = extractShortName(item.modelId).replace(/-GGUF$/i, "");
           toast.success("Download complete", `${displayName} — ${item.filename}`, {
-            actionLabel: "Create Model",
-            onAction: () => {
-              if (!item.resultPath) return;
-              const cleanName = extractShortName(item.modelId).replace(
-                /-GGUF$/i,
-                "",
-              );
-              const params = new URLSearchParams();
-              params.set("hfModelPath", item.resultPath);
-              params.set("hfModelName", item.filename);
-              params.set("hfDisplayName", cleanName);
-              navigate(
-                `${Routes.settingsModelsNew}?${params.toString()}`,
-              );
-              // Dismiss the item after navigating
-              invoke("hf_dismiss_queue_item", { queueId: item.id }).catch(
-                () => {},
-              );
-            },
+            actionLabel: isMmprojFilename(item.filename) ? undefined : "Create Model",
+            onAction: isMmprojFilename(item.filename)
+              ? undefined
+              : () => {
+                  if (!item.resultPath) return;
+                  const cleanName = extractShortName(item.modelId).replace(/-GGUF$/i, "");
+                  const params = new URLSearchParams();
+                  params.set("hfModelPath", item.resultPath);
+                  params.set("hfModelName", item.filename);
+                  params.set("hfDisplayName", cleanName);
+                  navigate(`${Routes.settingsModelsNew}?${params.toString()}`);
+                  // Dismiss the item after navigating
+                  invoke("hf_dismiss_queue_item", { queueId: item.id }).catch(() => {});
+                },
             id: `dl-complete-${item.id}`,
             duration: 10000,
           });
@@ -149,38 +132,27 @@ export function DownloadQueueProvider({ children }: { children: ReactNode }) {
       }
 
       // Download just failed
-      if (
-        prevItem.status !== "error" &&
-        item.status === "error" &&
-        !isOnHfPage
-      ) {
-        toast.error(
-          "Download failed",
-          `${item.filename}: ${item.error || "Unknown error"}`,
-          {
-            id: `dl-error-${item.id}`,
-            duration: 8000,
-          },
-        );
+      if (prevItem.status !== "error" && item.status === "error" && !isOnHfPage) {
+        toast.error("Download failed", `${item.filename}: ${item.error || "Unknown error"}`, {
+          id: `dl-error-${item.id}`,
+          duration: 8000,
+        });
       }
     }
 
     prevQueueRef.current = queue;
   }, [queue, navigate]);
 
-  const queueDownload = useCallback(
-    async (modelId: string, filename: string) => {
-      try {
-        await invoke<string>("hf_queue_download", { modelId, filename });
-      } catch (err: any) {
-        toast.error(
-          "Download failed",
-          typeof err === "string" ? err : err?.message || "Unknown error",
-        );
-      }
-    },
-    [],
-  );
+  const queueDownload = useCallback(async (modelId: string, filename: string) => {
+    try {
+      await invoke<string>("hf_queue_download", { modelId, filename });
+    } catch (err: any) {
+      toast.error(
+        "Download failed",
+        typeof err === "string" ? err : err?.message || "Unknown error",
+      );
+    }
+  }, []);
 
   const cancelItem = useCallback(async (id: string) => {
     try {

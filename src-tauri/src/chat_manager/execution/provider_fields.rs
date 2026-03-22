@@ -7,10 +7,11 @@ use super::{
     is_llama_cpp_model, llama_sampler_profile_defaults, resolve_context_length,
     resolve_frequency_penalty, resolve_llama_batch_size, resolve_llama_chat_template_override,
     resolve_llama_chat_template_preset, resolve_llama_flash_attention, resolve_llama_gpu_layers,
-    resolve_llama_kv_type, resolve_llama_offload_kqv, resolve_llama_profile_min_p,
-    resolve_llama_profile_typical_p, resolve_llama_raw_completion_fallback,
-    resolve_llama_rope_freq_base, resolve_llama_rope_freq_scale, resolve_llama_sampler_profile,
-    resolve_llama_seed, resolve_llama_threads, resolve_llama_threads_batch, resolve_max_tokens,
+    resolve_llama_kv_type, resolve_llama_mmproj_path, resolve_llama_offload_kqv,
+    resolve_llama_profile_min_p, resolve_llama_profile_typical_p,
+    resolve_llama_raw_completion_fallback, resolve_llama_rope_freq_base,
+    resolve_llama_rope_freq_scale, resolve_llama_sampler_profile, resolve_llama_seed,
+    resolve_llama_threads, resolve_llama_threads_batch, resolve_max_tokens,
     resolve_presence_penalty, resolve_temperature, resolve_top_k, resolve_top_p,
 };
 
@@ -63,6 +64,9 @@ fn build_llama_extra_fields(
     }
     if let Some(v) = resolve_llama_chat_template_override(session, model, settings) {
         extra.insert("llamaChatTemplateOverride".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_mmproj_path(session, model, settings) {
+        extra.insert("llamaMmprojPath".to_string(), json!(v));
     }
     if let Some(v) = resolve_llama_chat_template_preset(session, model, settings) {
         extra.insert("llamaChatTemplatePreset".to_string(), json!(v));

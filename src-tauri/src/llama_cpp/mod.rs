@@ -1,12 +1,16 @@
 use std::collections::HashMap;
+use std::io::Cursor;
 
+use base64::Engine as _;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 #[cfg(not(mobile))]
 use tauri::Emitter;
 
 use crate::api::{ApiRequest, ApiResponse};
-use crate::chat_manager::provider_adapter::extract_text_content;
+use crate::chat_manager::provider_adapter::{
+    extract_image_data_urls, extract_text_content, parse_data_url,
+};
 use crate::chat_manager::tooling::{parse_tool_calls, ToolCall};
 use crate::chat_manager::types::{ErrorEnvelope, NormalizedEvent, UsageSummary};
 use crate::transport;
@@ -28,6 +32,7 @@ mod desktop {
     use llama_cpp_2::context::params::{KvCacheType, LlamaContextParams};
     use llama_cpp_2::llama_batch::LlamaBatch;
     use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaChatTemplate, LlamaModel};
+    use llama_cpp_2::mtmd::{MtmdBitmap, MtmdInputChunks, MtmdInputText};
     use llama_cpp_2::sampling::LlamaSampler;
     use llama_cpp_2::TokenToStringError;
     use llama_cpp_sys_2::{
@@ -45,8 +50,9 @@ mod desktop {
     };
     use engine::{load_engine, using_rocm_backend};
     use prompt::{
-        add_bos_label, build_prompt, model_tokenizer_add_bos_label, model_tokenizer_adds_bos,
-        prompt_add_bos_reason, prompt_mode_label, resolve_prompt_add_bos, token_piece_bytes,
+        add_bos_label, build_prompt, inject_media_markers, model_tokenizer_add_bos_label,
+        model_tokenizer_adds_bos, prompt_add_bos_reason, prompt_mode_label, resolve_prompt_add_bos,
+        token_piece_bytes,
     };
     use sampler::{
         build_sampler, flash_attention_policy_label, kv_type_label, normalize_sampler_profile,
@@ -166,11 +172,125 @@ mod desktop {
         Ok(())
     }
 
+    enum PreparedPrompt {
+        Text(Vec<llama_cpp_2::token::LlamaToken>),
+        Vision(MtmdInputChunks),
+    }
+
+    fn extract_inline_image_bytes(messages: &[Value]) -> Result<Vec<Vec<u8>>, String> {
+        let mut images = Vec::new();
+
+        for (message_index, message) in messages.iter().enumerate() {
+            let image_urls = extract_image_data_urls(message.get("content"));
+            for (image_index, image_url) in image_urls.iter().enumerate() {
+                if image_url.starts_with("http://") || image_url.starts_with("https://") {
+                    return Err(crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        format!(
+                            "llama.cpp local vision only supports inline data URLs; message {} image {} used remote URL",
+                            message_index, image_index
+                        ),
+                    ));
+                }
+
+                let Some((mime_type, data)) = parse_data_url(image_url) else {
+                    return Err(crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        format!(
+                            "Invalid inline image data URL in message {} image {}",
+                            message_index, image_index
+                        ),
+                    ));
+                };
+
+                if !mime_type.starts_with("image/") {
+                    return Err(crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        format!(
+                            "llama.cpp local vision only supports image data URLs; got '{}' in message {} image {}",
+                            mime_type, message_index, image_index
+                        ),
+                    ));
+                }
+
+                let decoded = base64::engine::general_purpose::STANDARD
+                    .decode(data)
+                    .map_err(|e| {
+                        crate::utils::err_msg(
+                            module_path!(),
+                            line!(),
+                            format!(
+                                "Failed to decode inline image in message {} image {}: {}",
+                                message_index, image_index, e
+                            ),
+                        )
+                    })?;
+                let normalized = if mime_type.eq_ignore_ascii_case("image/png") {
+                    decoded
+                } else {
+                    let image = image::load_from_memory(&decoded).map_err(|e| {
+                        crate::utils::err_msg(
+                            module_path!(),
+                            line!(),
+                            format!(
+                                "Failed to decode non-PNG inline image in message {} image {}: {}",
+                                message_index, image_index, e
+                            ),
+                        )
+                    })?;
+                    let mut png_bytes = Cursor::new(Vec::new());
+                    image
+                        .write_to(&mut png_bytes, image::ImageFormat::Png)
+                        .map_err(|e| {
+                            crate::utils::err_msg(
+                                module_path!(),
+                                line!(),
+                                format!(
+                                    "Failed to normalize inline image to PNG in message {} image {}: {}",
+                                    message_index, image_index, e
+                                ),
+                            )
+                        })?;
+                    png_bytes.into_inner()
+                };
+                images.push(normalized);
+            }
+        }
+
+        Ok(images)
+    }
+
     fn ensure_assistant_role(message: &mut Value) {
         if let Some(object) = message.as_object_mut() {
             object
                 .entry("role".to_string())
                 .or_insert_with(|| Value::String("assistant".to_string()));
+        }
+    }
+
+    fn decode_mtmd_bitmap(
+        mtmd_ctx: &llama_cpp_2::mtmd::MtmdContext,
+        bytes: &[u8],
+    ) -> Result<MtmdBitmap, String> {
+        match MtmdBitmap::from_buffer(mtmd_ctx, bytes) {
+            Ok(bitmap) => Ok(bitmap),
+            Err(original_error) => {
+                let image = image::load_from_memory(bytes).map_err(|decode_error| {
+                    format!("{original_error} (normalization decode failed: {decode_error})")
+                })?;
+                let mut normalized = Cursor::new(Vec::new());
+                image
+                    .write_to(&mut normalized, image::ImageFormat::Png)
+                    .map_err(|encode_error| {
+                        format!("{original_error} (PNG normalization failed: {encode_error})")
+                    })?;
+                MtmdBitmap::from_buffer(mtmd_ctx, normalized.get_ref()).map_err(|retry_error| {
+                    format!("{original_error} (after PNG normalization: {retry_error})")
+                })
+            }
         }
     }
 
@@ -199,10 +319,34 @@ mod desktop {
             .get("messages")
             .and_then(|v| v.as_array())
             .ok_or_else(|| "llama.cpp request missing messages".to_string())?;
-        let tools = body
-            .get("tools")
-            .filter(|value| value.as_array().map(|items| !items.is_empty()).unwrap_or(false));
+        let tools = body.get("tools").filter(|value| {
+            value
+                .as_array()
+                .map(|items| !items.is_empty())
+                .unwrap_or(false)
+        });
         let tool_choice = body.get("tool_choice");
+        let llama_mmproj_path = body
+            .get("llamaMmprojPath")
+            .or_else(|| body.get("llama_mmproj_path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let image_bytes = extract_inline_image_bytes(messages)?;
+        let vision_requested = !image_bytes.is_empty();
+        if vision_requested && llama_mmproj_path.is_none() {
+            return Err(crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                "llama.cpp vision requests require `llamaMmprojPath` (or `llama_mmproj_path`) to load the multimodal projector",
+            ));
+        }
+        let prompt_messages_owned = if vision_requested {
+            Some(inject_media_markers(messages))
+        } else {
+            None
+        };
+        let prompt_messages = prompt_messages_owned.as_deref().unwrap_or(messages);
 
         let sampler_profile = body
             .get("llamaSamplerProfile")
@@ -378,7 +522,12 @@ mod desktop {
 
         let result = (|| -> Result<(), String> {
             log_info(&app, "llama_cpp", "loading llama.cpp engine/model");
-            let engine = load_engine(Some(&app), model_path, llama_gpu_layers)?;
+            let engine = load_engine(
+                Some(&app),
+                model_path,
+                llama_gpu_layers,
+                llama_mmproj_path.as_deref(),
+            )?;
             let model = engine
                 .model
                 .as_ref()
@@ -387,6 +536,24 @@ mod desktop {
                 .backend
                 .as_ref()
                 .ok_or_else(|| "llama.cpp backend unavailable".to_string())?;
+            let mtmd_ctx = engine.mtmd_ctx.as_ref();
+            if vision_requested && mtmd_ctx.is_none() {
+                return Err(crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    "llama.cpp vision request could not initialize the multimodal projector context",
+                ));
+            }
+            if let Some(mtmd_ctx) = mtmd_ctx {
+                if vision_requested && !mtmd_ctx.support_vision() {
+                    return Err(crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        "The loaded llama.cpp mmproj/model pair does not support vision input",
+                    ));
+                }
+            }
+            let use_vision = vision_requested && mtmd_ctx.is_some();
             let max_ctx = model.n_ctx_train().max(1);
             let available_memory_bytes = get_available_memory_bytes();
             let available_vram_bytes = get_available_vram_bytes();
@@ -412,7 +579,7 @@ mod desktop {
             };
             let built_prompt = build_prompt(
                 model,
-                messages,
+                prompt_messages,
                 llama_chat_template_override.as_deref(),
                 llama_chat_template_preset.as_deref(),
                 llama_raw_completion_fallback,
@@ -478,19 +645,75 @@ mod desktop {
                 ),
             );
             let prompt = built_prompt.prompt;
-            let tokens = model.str_to_token(&prompt, prompt_add_bos).map_err(|e| {
-                crate::utils::err_msg(
-                    module_path!(),
-                    line!(),
-                    format!("Failed to tokenize prompt: {e}"),
-                )
-            })?;
-            prompt_tokens = tokens.len() as u64;
+            let prepared_prompt = if use_vision {
+                let mtmd_ctx = mtmd_ctx.ok_or_else(|| {
+                    crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        "llama.cpp multimodal context unavailable",
+                    )
+                })?;
+                let mut bitmaps = Vec::with_capacity(image_bytes.len());
+                for (index, bytes) in image_bytes.iter().enumerate() {
+                    let bitmap = decode_mtmd_bitmap(mtmd_ctx, bytes).map_err(|e| {
+                        crate::utils::err_msg(
+                            module_path!(),
+                            line!(),
+                            format!(
+                                "Failed to decode image {} for llama.cpp vision: {}",
+                                index, e
+                            ),
+                        )
+                    })?;
+                    bitmaps.push(bitmap);
+                }
+                let bitmap_refs: Vec<&MtmdBitmap> = bitmaps.iter().collect();
+                let chunks = mtmd_ctx
+                    .tokenize(
+                        MtmdInputText {
+                            text: prompt.clone(),
+                            add_special: matches!(prompt_add_bos, AddBos::Always),
+                            parse_special: true,
+                        },
+                        &bitmap_refs,
+                    )
+                    .map_err(|e| {
+                        crate::utils::err_msg(
+                            module_path!(),
+                            line!(),
+                            format!("Failed to tokenize llama.cpp multimodal prompt: {}", e),
+                        )
+                    })?;
+                prompt_tokens = chunks.total_tokens() as u64;
+                PreparedPrompt::Vision(chunks)
+            } else {
+                let tokens = model.str_to_token(&prompt, prompt_add_bos).map_err(|e| {
+                    crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        format!("Failed to tokenize prompt: {e}"),
+                    )
+                })?;
+                prompt_tokens = tokens.len() as u64;
+                PreparedPrompt::Text(tokens)
+            };
 
-            if tokens.len() as u32 >= ctx_size {
+            let prompt_eval_span = match &prepared_prompt {
+                PreparedPrompt::Text(tokens) => tokens.len(),
+                PreparedPrompt::Vision(chunks) => usize::try_from(chunks.total_positions())
+                    .map_err(|_| {
+                        crate::utils::err_msg(
+                            module_path!(),
+                            line!(),
+                            "llama.cpp multimodal prompt position count overflowed usize",
+                        )
+                    })?,
+            };
+
+            if prompt_eval_span as u32 >= ctx_size {
                 return Err(format!(
                     "Prompt is too long for the context window (prompt tokens: {}, context: {}). Reduce messages or lower context length.",
-                    tokens.len(),
+                    prompt_tokens,
                     ctx_size
                 ));
             }
@@ -519,7 +742,7 @@ mod desktop {
             let mut context_failures = Vec::new();
             let context_attempts = context_attempt_candidates(
                 ctx_size,
-                tokens.len(),
+                prompt_eval_span,
                 requested_context,
                 llama_batch_size,
             );
@@ -672,6 +895,10 @@ mod desktop {
                     "supportsGpuOffload": supports_gpu_offload,
                     "gpuLoadFallbackActivated": gpu_load_fallback_activated,
                     "contextFallbackActivated": context_fallback_activated,
+                    "mmprojPath": llama_mmproj_path,
+                    "visionRequested": vision_requested,
+                    "visionActive": use_vision,
+                    "imageCount": image_bytes.len(),
                 }
             });
             log_info(
@@ -699,44 +926,68 @@ mod desktop {
 
             let batch_size = n_batch as usize;
             let mut batch = LlamaBatch::new(batch_size, 1);
-
-            // Feed prompt in chunks so large prompts work even when n_batch is capped.
-            let tokens_len = tokens.len();
             let mut global_pos: i32 = 0;
-            let mut chunk_start = 0usize;
-            while chunk_start < tokens_len {
-                let chunk_end = (chunk_start + batch_size).min(tokens_len);
-                batch.clear();
-                for (offset, token) in tokens[chunk_start..chunk_end].iter().copied().enumerate() {
-                    let pos = global_pos + offset as i32;
-                    let is_last = (chunk_start + offset + 1) == tokens_len;
-                    batch.add(token, pos, &[0], is_last).map_err(|e| {
+            let prompt_last_logits_index = match prepared_prompt {
+                PreparedPrompt::Text(tokens) => {
+                    let tokens_len = tokens.len();
+                    let mut chunk_start = 0usize;
+                    while chunk_start < tokens_len {
+                        let chunk_end = (chunk_start + batch_size).min(tokens_len);
+                        batch.clear();
+                        for (offset, token) in
+                            tokens[chunk_start..chunk_end].iter().copied().enumerate()
+                        {
+                            let pos = global_pos + offset as i32;
+                            let is_last = (chunk_start + offset + 1) == tokens_len;
+                            batch.add(token, pos, &[0], is_last).map_err(|e| {
+                                crate::utils::err_msg(
+                                    module_path!(),
+                                    line!(),
+                                    format!(
+                                        "Failed to build llama batch (chunk {}..{} size={} n_batch={}): {e}",
+                                        chunk_start, chunk_end, tokens_len, n_batch
+                                    ),
+                                )
+                            })?;
+                        }
+                        ctx.decode(&mut batch).map_err(|e| {
+                            crate::utils::err_msg(
+                                module_path!(),
+                                line!(),
+                                format!("llama_decode failed during prompt evaluation: {e}"),
+                            )
+                        })?;
+                        global_pos += (chunk_end - chunk_start) as i32;
+                        chunk_start = chunk_end;
+                    }
+                    batch.n_tokens().saturating_sub(1)
+                }
+                PreparedPrompt::Vision(chunks) => {
+                    let mtmd_ctx = mtmd_ctx.ok_or_else(|| {
                         crate::utils::err_msg(
                             module_path!(),
                             line!(),
-                            format!(
-                                "Failed to build llama batch (chunk {}..{} size={} n_batch={}): {e}",
-                                chunk_start, chunk_end, tokens_len, n_batch
-                            ),
+                            "llama.cpp multimodal context unavailable during prompt evaluation",
                         )
                     })?;
+                    global_pos = chunks
+                        .eval_chunks(mtmd_ctx, &ctx, 0, 0, n_batch as i32, true)
+                        .map_err(|e| {
+                            crate::utils::err_msg(
+                                module_path!(),
+                                line!(),
+                                format!("llama.cpp multimodal prompt evaluation failed: {}", e),
+                            )
+                        })?;
+                    -1
                 }
-                ctx.decode(&mut batch).map_err(|e| {
-                    crate::utils::err_msg(
-                        module_path!(),
-                        line!(),
-                        format!("llama_decode failed during prompt evaluation: {e}"),
-                    )
-                })?;
-                global_pos += (chunk_end - chunk_start) as i32;
-                chunk_start = chunk_end;
-            }
+            };
             log_info(
                 &app,
                 "llama_cpp",
                 format!(
-                    "prompt evaluation complete: prompt_tokens={} target_new_tokens={}",
-                    prompt_tokens, max_tokens
+                    "prompt evaluation complete: prompt_tokens={} prompt_positions={} target_new_tokens={} vision={}",
+                    prompt_tokens, global_pos, max_tokens, use_vision
                 ),
             );
 
@@ -755,8 +1006,11 @@ mod desktop {
                 presence_penalty,
                 seed: llama_seed,
             };
-            let built_sampler =
-                build_sampler(model, &sampler_config, built_prompt.chat_template_result.as_ref())?;
+            let built_sampler = build_sampler(
+                model,
+                &sampler_config,
+                built_prompt.chat_template_result.as_ref(),
+            )?;
             log_info(
                 &app,
                 "llama_cpp",
@@ -798,6 +1052,7 @@ mod desktop {
             let mut reached_eos = false;
             let mut reached_stop_sequence = false;
             let mut pending_utf8 = Vec::<u8>::new();
+            let mut sample_index = prompt_last_logits_index;
             while n_cur < target_len {
                 if let Some(rx) = abort_rx.as_mut() {
                     match rx.try_recv() {
@@ -812,7 +1067,7 @@ mod desktop {
                     }
                 }
 
-                let token = sampler.sample(&ctx, batch.n_tokens() - 1);
+                let token = sampler.sample(&ctx, sample_index);
                 sampler.accept(token);
 
                 if model.is_eog_token(token) {
@@ -913,9 +1168,7 @@ mod desktop {
                                     crate::utils::err_msg(
                                         module_path!(),
                                         line!(),
-                                        format!(
-                                            "Failed to parse llama.cpp structured stream: {e}"
-                                        ),
+                                        format!("Failed to parse llama.cpp structured stream: {e}"),
                                     )
                                 })?;
                                 emit_structured_deltas(
@@ -957,6 +1210,7 @@ mod desktop {
                         format!("llama_decode failed: {e}"),
                     )
                 })?;
+                sample_index = batch.n_tokens() - 1;
             }
 
             if !pending_utf8.is_empty() {

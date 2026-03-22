@@ -291,6 +291,8 @@ pub struct AdvancedModelSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_chat_template_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_mmproj_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_chat_template_preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_raw_completion_fallback: Option<bool>,
@@ -345,6 +347,7 @@ impl Default for AdvancedModelSettings {
             llama_kv_type: None,
             llama_flash_attention: None,
             llama_chat_template_override: None,
+            llama_mmproj_path: None,
             llama_chat_template_preset: None,
             llama_raw_completion_fallback: None,
             llama_sampler_profile: None,

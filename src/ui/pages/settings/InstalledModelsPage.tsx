@@ -12,6 +12,7 @@ type InstalledGgufModel = {
   path: string;
   size: number;
   quantization: string;
+  isMmproj: boolean;
   architecture?: string | null;
   contextLength?: number | null;
 };
@@ -58,6 +59,10 @@ function deriveDisplayName(filename: string): string {
 function formatContextLength(contextLength?: number | null): string {
   if (!contextLength || contextLength <= 0) return "—";
   return `${contextLength.toLocaleString()} ctx`;
+}
+
+function getModelTypeLabel(model: InstalledGgufModel): "MMPROJ" | "LLM" {
+  return model.isMmproj ? "MMPROJ" : "LLM";
 }
 
 export function InstalledModelsPage() {
@@ -331,8 +336,9 @@ export function InstalledModelsPage() {
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border border-fg/10 bg-fg/[0.03]">
-          <div className="hidden grid-cols-[minmax(0,1.5fr)_110px_110px_130px_120px_168px] items-center gap-3 border-b border-fg/10 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-fg/35 lg:grid">
+          <div className="hidden grid-cols-[minmax(0,1.45fr)_86px_110px_110px_130px_120px_168px] items-center gap-3 border-b border-fg/10 px-4 py-3 text-[11px] font-medium uppercase tracking-[0.16em] text-fg/35 lg:grid">
             <div>Name</div>
+            <div>Type</div>
             {renderSortHeader("params", "Params")}
             {renderSortHeader("arch", "Arch")}
             {renderSortHeader("context", "Context")}
@@ -349,13 +355,23 @@ export function InstalledModelsPage() {
                   index !== sortedModels.length - 1 && "border-b border-fg/8",
                 )}
               >
-                <div className="grid gap-3 lg:grid-cols-[minmax(0,1.5fr)_110px_110px_130px_120px_168px] lg:items-center">
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1.45fr)_86px_110px_110px_130px_120px_168px] lg:items-center">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold text-fg">
                       {deriveDisplayName(model.filename)}
                     </div>
                     <div className="truncate text-xs text-fg/45">{model.modelId}</div>
                     <div className="mt-2 flex flex-wrap items-center gap-1.5 lg:hidden">
+                      <span
+                        className={cn(
+                          "rounded-md border px-2 py-0.5 text-[11px] font-medium",
+                          model.isMmproj
+                            ? "border-blue-400/20 bg-blue-400/10 text-blue-300"
+                            : "border-emerald-400/20 bg-emerald-400/10 text-emerald-300",
+                        )}
+                      >
+                        {getModelTypeLabel(model)}
+                      </span>
                       <span className="rounded-md border border-fg/10 px-2 py-0.5 text-[11px] text-fg/60">
                         {model.quantization}
                       </span>
@@ -379,6 +395,18 @@ export function InstalledModelsPage() {
                     </div>
                   </div>
 
+                  <div className="hidden lg:block">
+                    <span
+                      className={cn(
+                        "inline-flex rounded-md border px-2 py-1 text-[11px] font-medium",
+                        model.isMmproj
+                          ? "border-blue-400/20 bg-blue-400/10 text-blue-300"
+                          : "border-emerald-400/20 bg-emerald-400/10 text-emerald-300",
+                      )}
+                    >
+                      {getModelTypeLabel(model)}
+                    </span>
+                  </div>
                   <div className="hidden lg:block text-sm text-fg/70">{paramSize || "—"}</div>
                   <div className="hidden lg:block text-sm text-fg/70">
                     {model.architecture?.toUpperCase() || "—"}
