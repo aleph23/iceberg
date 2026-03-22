@@ -7,13 +7,15 @@ use crate::chat_manager::attachments::{
     cleanup_attachments, load_attachment_data, persist_attachments,
 };
 use crate::chat_manager::commands::{
-    build_model_attempts, build_provider_extra_fields, emit_fallback_retry_toast,
-    process_dynamic_memory_cycle, select_relevant_memories, take_aborted_request, RequestSettings,
+    process_dynamic_memory_cycle, select_relevant_memories, take_aborted_request,
 };
 use crate::chat_manager::dynamic_memory::{
     context_enrichment_enabled, dynamic_min_similarity, dynamic_retrieval_limit,
     dynamic_retrieval_strategy, dynamic_window_size, ensure_pinned_hot, mark_memories_accessed,
     promote_cold_memories,
+};
+use crate::chat_manager::execution::{
+    build_model_attempts, build_provider_extra_fields, emit_fallback_retry_toast, RequestSettings,
 };
 use crate::chat_manager::messages::{
     push_prompt_entry_message, push_system_message, push_user_or_assistant_message_with_context,

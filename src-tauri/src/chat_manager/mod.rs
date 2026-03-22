@@ -1,6 +1,7 @@
 pub mod attachments;
 mod commands;
 pub mod dynamic_memory;
+pub mod execution;
 pub mod flows;
 pub mod lorebook_matcher;
 pub mod messages;
