@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import type { ComponentType } from "react";
 import { useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -102,6 +102,16 @@ export function GroupChatMemoriesPage() {
 
   const [showAddMemoryMenu, setShowAddMemoryMenu] = useState(false);
   const [showSummaryEditor, setShowSummaryEditor] = useState(false);
+
+  const handleSaveEdit = useCallback(
+    async (index: number) => {
+      const didSave = await saveEdit(index);
+      if (didSave) {
+        dispatch({ type: "CLOSE_MEMORY_ACTIONS" });
+      }
+    },
+    [dispatch, saveEdit],
+  );
 
   const tabs = [
     { id: "memories" as const, icon: Bot, label: t("common.nav.dynamicMemory") },
@@ -843,6 +853,13 @@ export function GroupChatMemoriesPage() {
                 <textarea
                   value={ui.editingValue}
                   onChange={(e) => dispatch({ type: "SET_EDIT_VALUE", value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void handleSaveEdit(selectedItem.index);
+                    }
+                  }}
                   rows={4}
                   className={cn(
                     "w-full p-3",
@@ -857,6 +874,7 @@ export function GroupChatMemoriesPage() {
                 />
                 <div className="flex gap-2">
                   <button
+                    type="button"
                     onClick={() => dispatch({ type: "SET_MEMORY_ACTION_MODE", mode: "actions" })}
                     className={cn(
                       "flex-1 px-4 py-2.5",
@@ -870,10 +888,8 @@ export function GroupChatMemoriesPage() {
                     Cancel
                   </button>
                   <button
-                    onClick={async () => {
-                      await saveEdit(selectedItem.index);
-                      dispatch({ type: "CLOSE_MEMORY_ACTIONS" });
-                    }}
+                    type="button"
+                    onClick={() => void handleSaveEdit(selectedItem.index)}
                     className={cn(
                       "flex-1 px-4 py-2.5 flex items-center justify-center gap-2",
                       radius.lg,

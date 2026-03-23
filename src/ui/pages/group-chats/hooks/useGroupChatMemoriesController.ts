@@ -387,18 +387,21 @@ export function useGroupChatMemoriesController(groupSessionId?: string) {
 
   const saveEdit = useCallback(
     async (index: number) => {
+      const currentItem = memoryItems.find((item) => item.index === index);
       const trimmed = ui.editingValue.trim();
-      if (!trimmed || trimmed === memoryItems.find((m) => m.index === index)?.text) {
+      if (!trimmed || trimmed === currentItem?.text) {
         dispatch({ type: "CANCEL_EDIT" });
-        return;
+        return true;
       }
       try {
         await handleUpdate(index, trimmed);
         dispatch({ type: "CANCEL_EDIT" });
         dispatch({ type: "SET_ACTION_ERROR", value: null });
+        return true;
       } catch (err: any) {
         console.error("Failed to update memory:", err);
         dispatch({ type: "SET_ACTION_ERROR", value: err?.message || "Failed to update memory" });
+        return false;
       }
     },
     [handleUpdate, memoryItems, ui.editingValue],

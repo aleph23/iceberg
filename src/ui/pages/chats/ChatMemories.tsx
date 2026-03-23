@@ -1026,27 +1026,37 @@ export function ChatMemoriesPage() {
 
   const saveEdit = useCallback(
     async (index: number) => {
+      const currentItem = memoryItems.find((item) => item.index === index);
       const trimmed = ui.editingValue.trim();
       const category = ui.editingCategory.trim();
       const normalizedCategory = isValidMemoryCategory(category) ? category : "";
-      const previousCategory = (memoryItems[index]?.category ?? "").trim();
-      if (
-        !trimmed ||
-        (trimmed === memoryItems[index]?.text && normalizedCategory === previousCategory)
-      ) {
+      const previousCategory = (currentItem?.category ?? "").trim();
+      if (!trimmed || (trimmed === currentItem?.text && normalizedCategory === previousCategory)) {
         dispatch({ type: "CANCEL_EDIT" });
-        return;
+        return true;
       }
       try {
         await handleUpdate(index, trimmed, normalizedCategory || undefined);
         dispatch({ type: "CANCEL_EDIT" });
         dispatch({ type: "SET_ACTION_ERROR", value: null });
+        return true;
       } catch (err: any) {
         console.error("Failed to update memory:", err);
         dispatch({ type: "SET_ACTION_ERROR", value: err?.message || "Failed to update memory" });
+        return false;
       }
     },
     [handleUpdate, memoryItems, ui.editingCategory, ui.editingValue],
+  );
+
+  const handleSaveEdit = useCallback(
+    async (index: number) => {
+      const didSave = await saveEdit(index);
+      if (didSave) {
+        dispatch({ type: "CLOSE_MEMORY_ACTIONS" });
+      }
+    },
+    [dispatch, saveEdit],
   );
 
   const handleSaveSummaryClick = useCallback(async () => {
@@ -2131,6 +2141,13 @@ export function ChatMemoriesPage() {
                 <textarea
                   value={ui.editingValue}
                   onChange={(e) => dispatch({ type: "SET_EDIT_VALUE", value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      void handleSaveEdit(selectedItem.index);
+                    }
+                  }}
                   rows={4}
                   className={cn(
                     "w-full p-3",
@@ -2176,6 +2193,7 @@ export function ChatMemoriesPage() {
                 )}
                 <div className="flex gap-2">
                   <button
+                    type="button"
                     onClick={() => dispatch({ type: "SET_MEMORY_ACTION_MODE", mode: "actions" })}
                     className={cn(
                       "flex-1 px-4 py-2.5",
@@ -2189,10 +2207,8 @@ export function ChatMemoriesPage() {
                     Cancel
                   </button>
                   <button
-                    onClick={async () => {
-                      await saveEdit(selectedItem.index);
-                      dispatch({ type: "CLOSE_MEMORY_ACTIONS" });
-                    }}
+                    type="button"
+                    onClick={() => void handleSaveEdit(selectedItem.index)}
                     className={cn(
                       "flex-1 px-4 py-2.5 flex items-center justify-center gap-2",
                       radius.lg,
