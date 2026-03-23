@@ -3,7 +3,9 @@ use tauri::AppHandle;
 
 use crate::api::{api_request, ApiRequest};
 use crate::chat_manager::attachments::{cleanup_attachments, persist_attachments};
-use crate::chat_manager::execution::{find_model_with_credential, prepare_sampling_request};
+use crate::chat_manager::execution::{
+    find_model_with_credential, prepare_default_sampling_request, prepare_sampling_request,
+};
 use crate::chat_manager::prompts;
 use crate::chat_manager::provider_adapter::adapter_for;
 use crate::chat_manager::request::extract_text;
@@ -1423,12 +1425,11 @@ pub async fn chat_generate_design_reference_description(
         updated_at: 0,
     };
 
-    let (request_settings, extra_body_fields) = prepare_sampling_request(
+    let (request_settings, extra_body_fields) = prepare_default_sampling_request(
         &credential.provider_id,
         &preview_session,
         model,
         settings,
-        768,
         0.4,
         1.0,
         None,
