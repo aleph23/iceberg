@@ -1,15 +1,13 @@
 import { useCallback, useEffect, useReducer } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
+  LLAMA_RUNTIME_REPORT_UPDATED_EVENT,
   readSettings,
   removeModel,
   setDefaultModel,
   SETTINGS_UPDATED_EVENT,
 } from "../../../../core/storage/repo";
-import {
-  initialModelsState,
-  modelsReducer,
-  type ModelsState,
-} from "./modelsReducer";
+import { initialModelsState, modelsReducer, type ModelsState } from "./modelsReducer";
 
 type ControllerReturn = {
   state: ModelsState;
@@ -67,6 +65,20 @@ export function useModelsController(): ControllerReturn {
     };
     window.addEventListener(SETTINGS_UPDATED_EVENT, handler);
     return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, handler);
+  }, [reload]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen(LLAMA_RUNTIME_REPORT_UPDATED_EVENT, () => {
+      void reload();
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
   }, [reload]);
 
   return {

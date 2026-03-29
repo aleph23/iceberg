@@ -10,6 +10,7 @@ import {
   Star,
   StarOff,
   Download,
+  AlertTriangle,
 } from "lucide-react";
 import { BottomMenu, MenuButton } from "../../components/BottomMenu";
 import { ModelExportMenu } from "../../components";
@@ -67,6 +68,26 @@ function buildBalancedColumns(groups: ModelGroup[], columnCount: number): ModelG
   }
 
   return columns;
+}
+
+function getLlamaRuntimeAlert(model: Model): { tone: string; title: string } | null {
+  if (model.providerId !== "llamacpp") {
+    return null;
+  }
+  const status = model.advancedModelSettings?.llamaLastRuntimeReport?.status;
+  if (status === "cpuFallbackSucceeded") {
+    return {
+      tone: "text-warning/75",
+      title: "This model fell back to CPU on its last run.",
+    };
+  }
+  if (status === "cpuFallbackFailed" || status === "failed") {
+    return {
+      tone: "text-danger/75",
+      title: "This model failed on its last run.",
+    };
+  }
+  return null;
 }
 
 export function ModelsPage() {
@@ -263,6 +284,7 @@ export function ModelsPage() {
   const renderModelCard = (model: Model, compact = false) => {
     const isDefault = model.id === defaultModelId;
     const providerLabel = getProviderLabel(model);
+    const runtimeAlert = getLlamaRuntimeAlert(model);
     return (
       <button
         key={model.id}
@@ -281,6 +303,14 @@ export function ModelsPage() {
               >
                 {model.displayName || model.name}
               </span>
+              {runtimeAlert && (
+                <span
+                  title={runtimeAlert.title}
+                  className={cn("inline-flex items-center", runtimeAlert.tone)}
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                </span>
+              )}
               {isDefault && (
                 <span className="inline-flex items-center gap-1 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent/80">
                   <Check className="h-2.5 w-2.5" />

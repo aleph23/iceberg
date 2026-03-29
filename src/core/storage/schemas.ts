@@ -149,6 +149,49 @@ export const UsageSummarySchema = z.object({
 });
 export type UsageSummary = z.infer<typeof UsageSummarySchema>;
 
+export const LlamaRuntimeSuggestedSettingsSchema = z.object({
+  contextLength: z.number().int().min(1).nullable().optional(),
+  llamaBatchSize: z.number().int().min(1).nullable().optional(),
+});
+export type LlamaRuntimeSuggestedSettings = z.infer<typeof LlamaRuntimeSuggestedSettingsSchema>;
+
+export const LlamaLastRuntimeReportSchema = z.object({
+  status: z.enum(["cpuFallbackSucceeded", "cpuFallbackFailed", "failed"]),
+  updatedAt: z.number().int().nullable().optional(),
+  modelPath: z.string().trim().min(1),
+  backendPathUsed: z.string().trim().min(1).nullable().optional(),
+  gpuLoadFallbackActivated: z.boolean().nullable().optional(),
+  gpuFallbackReason: z.string().trim().min(1).nullable().optional(),
+  failureStage: z.string().trim().min(1).nullable().optional(),
+  errorMessage: z.string().trim().min(1).nullable().optional(),
+  requestedContext: z.number().int().min(1).nullable().optional(),
+  recommendedContext: z.number().int().min(1).nullable().optional(),
+  initialContextCandidate: z.number().int().min(1).nullable().optional(),
+  actualContextUsed: z.number().int().min(1).nullable().optional(),
+  requestedBatchLimit: z.number().int().min(1).nullable().optional(),
+  initialBatchCandidate: z.number().int().min(1).nullable().optional(),
+  actualBatchUsed: z.number().int().min(1).nullable().optional(),
+  actualKvTypeUsed: z.string().trim().min(1).nullable().optional(),
+  actualOffloadKqvMode: z.string().trim().min(1).nullable().optional(),
+  flashAttentionPolicy: z.string().trim().min(1).nullable().optional(),
+  supportsGpuOffload: z.boolean().nullable().optional(),
+  compiledGpuBackends: z.array(z.string().trim().min(1)).nullable().optional(),
+  contextFallbackActivated: z.boolean().nullable().optional(),
+  availableMemoryBytes: z.number().int().nonnegative().nullable().optional(),
+  availableVramBytes: z.number().int().nonnegative().nullable().optional(),
+  modelSizeBytes: z.number().int().nonnegative().nullable().optional(),
+  promptTokens: z.number().int().nonnegative().nullable().optional(),
+  promptPositions: z.number().int().nonnegative().nullable().optional(),
+  targetNewTokens: z.number().int().nonnegative().nullable().optional(),
+  completionTokens: z.number().int().nonnegative().nullable().optional(),
+  finishReason: z.string().trim().min(1).nullable().optional(),
+  firstTokenMs: z.number().int().nonnegative().nullable().optional(),
+  tokensPerSecond: z.number().nonnegative().nullable().optional(),
+  promptTemplateSource: z.string().trim().min(1).nullable().optional(),
+  suggestedSettings: LlamaRuntimeSuggestedSettingsSchema.nullish().optional(),
+});
+export type LlamaLastRuntimeReport = z.infer<typeof LlamaLastRuntimeReportSchema>;
+
 export const AdvancedModelSettingsSchema = z.object({
   temperature: z.number().min(0).max(2).nullable().optional(),
   topP: z.number().min(0).max(1).nullable().optional(),
@@ -209,6 +252,7 @@ export const AdvancedModelSettingsSchema = z.object({
     .optional(),
   llamaMinP: z.number().min(0).max(1).nullable().optional(),
   llamaTypicalP: z.number().min(0).max(1).nullable().optional(),
+  llamaLastRuntimeReport: LlamaLastRuntimeReportSchema.nullish().optional(),
   // Ollama specific settings
   ollamaNumCtx: z.number().int().min(0).max(262_144).nullable().optional(),
   ollamaNumPredict: z.number().int().min(0).max(131_072).nullable().optional(),
@@ -2445,6 +2489,7 @@ export type Persona = z.infer<typeof PersonaSchema>;
 export function createDefaultAdvancedModelSettings(): AdvancedModelSettings {
   return {
     maxOutputTokens: 2048,
+    llamaLastRuntimeReport: null,
     sdSteps: null,
     sdCfgScale: null,
     sdSampler: null,

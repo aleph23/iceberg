@@ -12,6 +12,7 @@ pub(super) struct LlamaState {
     pub(super) model: Option<LlamaModel>,
     pub(super) backend_path_used: Option<String>,
     pub(super) gpu_load_fallback_activated: bool,
+    pub(super) gpu_load_fallback_reason: Option<String>,
     pub(super) compiled_gpu_backends: Vec<String>,
     pub(super) supports_gpu_offload: bool,
     pub(super) mtmd_ctx: Option<MtmdContext>,
@@ -55,6 +56,7 @@ pub(super) fn load_engine(
             model: None,
             backend_path_used: None,
             gpu_load_fallback_activated: false,
+            gpu_load_fallback_reason: None,
             compiled_gpu_backends: Vec::new(),
             supports_gpu_offload: false,
             mtmd_ctx: None,
@@ -126,6 +128,7 @@ pub(super) fn load_engine(
         let cpu_params = LlamaModelParams::default().with_n_gpu_layers(0);
         let mut backend_path_used = "cpu".to_string();
         let mut gpu_load_fallback_activated = false;
+        let mut gpu_load_fallback_reason = None;
 
         let model = if supports_gpu && requested_gpu_layers != Some(0) {
             let gpu_params = if let Some(explicit_layers) = requested_gpu_layers {
@@ -152,6 +155,7 @@ pub(super) fn load_engine(
                 }
                 Err(err) => {
                     gpu_load_fallback_activated = true;
+                    gpu_load_fallback_reason = Some(err.to_string());
                     if let Some(app) = app {
                         log_warn(
                             app,
@@ -191,6 +195,7 @@ pub(super) fn load_engine(
         guard.model_params_key = Some(model_params_key);
         guard.backend_path_used = Some(backend_path_used);
         guard.gpu_load_fallback_activated = gpu_load_fallback_activated;
+        guard.gpu_load_fallback_reason = gpu_load_fallback_reason;
     }
 
     let mmproj_changed = should_reload
@@ -256,6 +261,7 @@ pub(crate) fn unload_engine(app: &AppHandle) -> Result<(), String> {
             model: None,
             backend_path_used: None,
             gpu_load_fallback_activated: false,
+            gpu_load_fallback_reason: None,
             compiled_gpu_backends: Vec::new(),
             supports_gpu_offload: false,
             mtmd_ctx: None,
@@ -273,6 +279,7 @@ pub(crate) fn unload_engine(app: &AppHandle) -> Result<(), String> {
         guard.model_params_key = None;
         guard.backend_path_used = None;
         guard.gpu_load_fallback_activated = false;
+        guard.gpu_load_fallback_reason = None;
         guard.mtmd_ctx = None;
         guard.mmproj_path = None;
         log_info(app, "llama_cpp", "unloaded llama.cpp model");

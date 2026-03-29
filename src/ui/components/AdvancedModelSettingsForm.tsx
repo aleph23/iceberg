@@ -118,6 +118,7 @@ export function sanitizeAdvancedModelSettings(input: AdvancedModelSettings): Adv
     llamaSamplerProfile: input.llamaSamplerProfile ?? null,
     llamaMinP: sanitize(input.llamaMinP, ADVANCED_OLLAMA_MIN_P_RANGE, false),
     llamaTypicalP: sanitize(input.llamaTypicalP, ADVANCED_OLLAMA_TYPICAL_P_RANGE, false),
+    llamaLastRuntimeReport: input.llamaLastRuntimeReport ?? null,
     ollamaNumCtx: sanitize(input.ollamaNumCtx, ADVANCED_OLLAMA_NUM_CTX_RANGE, true),
     ollamaNumPredict: sanitize(input.ollamaNumPredict, ADVANCED_OLLAMA_NUM_PREDICT_RANGE, true),
     ollamaNumKeep: sanitize(input.ollamaNumKeep, ADVANCED_OLLAMA_NUM_KEEP_RANGE, true),

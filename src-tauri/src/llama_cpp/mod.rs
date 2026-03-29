@@ -49,7 +49,7 @@ mod desktop {
     };
     use std::num::NonZeroU32;
     use std::path::Path;
-    use std::time::Instant;
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
     use tokio::sync::oneshot::error::TryRecvError;
 
     use context::{
@@ -67,6 +67,45 @@ mod desktop {
         build_sampler, flash_attention_policy_label, kv_type_label, normalize_sampler_profile,
         offload_kqv_mode_label, sampler_profile_defaults, ResolvedSamplerConfig,
     };
+
+    const LLAMA_RUNTIME_REPORT_UPDATED_EVENT: &str = "llama-runtime-report-updated";
+
+    fn runtime_report_timestamp_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+            .unwrap_or(0)
+    }
+
+    fn update_runtime_report_field(report: &mut Value, key: &str, value: Value) {
+        if let Some(map) = report.as_object_mut() {
+            map.insert(key.to_string(), value);
+        }
+    }
+
+    fn persist_runtime_report(app: &AppHandle, model_path: &str, report: Option<&Value>) {
+        match crate::storage_manager::models::model_set_llama_runtime_report(
+            app, model_path, report,
+        ) {
+            Ok(true) => {
+                let _ = app.emit(
+                    LLAMA_RUNTIME_REPORT_UPDATED_EVENT,
+                    json!({
+                        "modelPath": model_path,
+                        "updatedAt": runtime_report_timestamp_ms(),
+                    }),
+                );
+            }
+            Ok(false) => {}
+            Err(err) => {
+                log_warn(
+                    app,
+                    "llama_cpp",
+                    format!("failed to persist llama runtime report: {}", err),
+                );
+            }
+        }
+    }
 
     fn parse_flash_attention_policy(body: &Value) -> Option<llama_flash_attn_type> {
         let from_string = body
@@ -500,6 +539,7 @@ mod desktop {
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok())
             .filter(|v| *v > 0);
+        let requested_batch_limit = llama_batch_size;
 
         let request_id = req.request_id.clone();
         let stream = req.stream.unwrap_or(false);
@@ -528,6 +568,14 @@ mod desktop {
         let mut finish_reason = "stop";
         let mut stream_emitted_len = 0usize;
         let mut final_message = json!({ "role": "assistant", "content": "" });
+        let mut failure_stage = "load_engine";
+        let mut runtime_report = json!({
+            "updatedAt": runtime_report_timestamp_ms(),
+            "modelPath": model_path,
+            "requestedContext": requested_context,
+            "requestedBatchLimit": requested_batch_limit,
+            "targetNewTokens": max_tokens,
+        });
 
         let result = (|| -> Result<(), String> {
             log_info(&app, "llama_cpp", "loading llama.cpp engine/model");
@@ -568,6 +616,7 @@ mod desktop {
             let available_vram_bytes = get_available_vram_bytes();
             let backend_path_used = engine.backend_path_used.as_deref().unwrap_or("unknown");
             let gpu_load_fallback_activated = engine.gpu_load_fallback_activated;
+            let gpu_load_fallback_reason = engine.gpu_load_fallback_reason.clone();
             let recommended_ctx = compute_recommended_context(
                 model,
                 available_memory_bytes,
@@ -588,6 +637,52 @@ mod desktop {
             } else {
                 max_ctx
             };
+            update_runtime_report_field(
+                &mut runtime_report,
+                "updatedAt",
+                json!(runtime_report_timestamp_ms()),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "backendPathUsed",
+                json!(backend_path_used),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "gpuLoadFallbackActivated",
+                json!(gpu_load_fallback_activated),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "gpuFallbackReason",
+                json!(gpu_load_fallback_reason),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "supportsGpuOffload",
+                json!(engine.supports_gpu_offload),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "compiledGpuBackends",
+                json!(engine.compiled_gpu_backends.clone()),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "availableMemoryBytes",
+                json!(available_memory_bytes),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "availableVramBytes",
+                json!(available_vram_bytes),
+            );
+            update_runtime_report_field(&mut runtime_report, "modelSizeBytes", json!(model.size()));
+            update_runtime_report_field(
+                &mut runtime_report,
+                "recommendedContext",
+                json!(recommended_ctx),
+            );
             if gpu_load_fallback_activated && backend_path_used == "cpu" {
                 if let Some((safe_ctx, safe_batch)) = compute_cpu_fallback_limits(
                     model,
@@ -621,6 +716,17 @@ mod desktop {
                     }
                 }
             }
+            update_runtime_report_field(
+                &mut runtime_report,
+                "initialContextCandidate",
+                json!(ctx_size),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "initialBatchCandidate",
+                json!(ctx_size.min(llama_batch_size).max(1)),
+            );
+            failure_stage = "build_prompt";
             let built_prompt = build_prompt(
                 model,
                 prompt_messages,
@@ -791,6 +897,7 @@ mod desktop {
                 llama_batch_size,
             );
             let mut ctx: Option<_> = None;
+            failure_stage = "create_context";
 
             for (attempt_ctx, attempt_batch) in context_attempts {
                 let mut ctx_params = LlamaContextParams::default()
@@ -943,6 +1050,38 @@ mod desktop {
                     "imageCount": image_bytes.len(),
                 }
             });
+            update_runtime_report_field(&mut runtime_report, "actualContextUsed", json!(ctx_size));
+            update_runtime_report_field(&mut runtime_report, "actualBatchUsed", json!(n_batch));
+            update_runtime_report_field(
+                &mut runtime_report,
+                "actualKvTypeUsed",
+                json!(kv_type_label(llama_kv_type_raw.as_deref())),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "actualOffloadKqvMode",
+                json!(offload_kqv_mode_label(resolved_offload_kqv)),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "flashAttentionPolicy",
+                json!(flash_attention_policy_label(
+                    resolved_flash_attention_policy
+                )),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "contextFallbackActivated",
+                json!(context_fallback_activated),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "promptTemplateSource",
+                json!(built_prompt
+                    .applied_template_source
+                    .clone()
+                    .or(built_prompt.attempted_template_source.clone())),
+            );
             log_info(
                 &app,
                 "llama_cpp",
@@ -966,6 +1105,7 @@ mod desktop {
             );
             crate::utils::emit_debug(&app, "llama_runtime", runtime_settings);
 
+            failure_stage = "prompt_evaluation";
             let batch_size = n_batch as usize;
             let mut batch = LlamaBatch::new(batch_size, 1);
             let mut global_pos: i32 = 0;
@@ -1032,6 +1172,12 @@ mod desktop {
                     prompt_tokens, global_pos, max_tokens, use_vision
                 ),
             );
+            update_runtime_report_field(&mut runtime_report, "promptTokens", json!(prompt_tokens));
+            update_runtime_report_field(
+                &mut runtime_report,
+                "promptPositions",
+                json!(u64::try_from(global_pos).ok()),
+            );
 
             let prompt_len = global_pos;
             let mut n_cur = prompt_len;
@@ -1095,6 +1241,7 @@ mod desktop {
             let mut reached_stop_sequence = false;
             let mut pending_utf8 = Vec::<u8>::new();
             let mut sample_index = prompt_last_logits_index;
+            failure_stage = "generation";
             while n_cur < target_len {
                 if let Some(rx) = abort_rx.as_mut() {
                     match rx.try_recv() {
@@ -1384,7 +1531,30 @@ mod desktop {
         }
 
         if let Err(err) = result {
+            let failure_status = if runtime_report
+                .get("gpuLoadFallbackActivated")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            {
+                "cpuFallbackFailed"
+            } else {
+                "failed"
+            };
+            update_runtime_report_field(
+                &mut runtime_report,
+                "updatedAt",
+                json!(runtime_report_timestamp_ms()),
+            );
+            update_runtime_report_field(&mut runtime_report, "status", json!(failure_status));
+            update_runtime_report_field(&mut runtime_report, "failureStage", json!(failure_stage));
+            update_runtime_report_field(&mut runtime_report, "errorMessage", json!(err.clone()));
+            update_runtime_report_field(
+                &mut runtime_report,
+                "completionTokens",
+                json!(completion_tokens),
+            );
             log_error(&app, "llama_cpp", format!("local inference error: {}", err));
+            persist_runtime_report(&app, model_path, Some(&runtime_report));
             if stream {
                 if let Some(ref id) = request_id {
                     let envelope = ErrorEnvelope {
@@ -1401,17 +1571,69 @@ mod desktop {
             return Err(err);
         }
 
+        let tokens_per_second = generation_elapsed_ms
+            .and_then(|elapsed_ms| {
+                if elapsed_ms == 0 || completion_tokens == 0 {
+                    None
+                } else {
+                    Some((completion_tokens as f64) / (elapsed_ms as f64 / 1000.0))
+                }
+            })
+            .filter(|v| v.is_finite() && *v >= 0.0);
+        update_runtime_report_field(
+            &mut runtime_report,
+            "updatedAt",
+            json!(runtime_report_timestamp_ms()),
+        );
+        update_runtime_report_field(
+            &mut runtime_report,
+            "completionTokens",
+            json!(completion_tokens),
+        );
+        update_runtime_report_field(&mut runtime_report, "finishReason", json!(finish_reason));
+        update_runtime_report_field(&mut runtime_report, "firstTokenMs", json!(first_token_ms));
+        update_runtime_report_field(
+            &mut runtime_report,
+            "tokensPerSecond",
+            json!(tokens_per_second),
+        );
+        let fallback_succeeded = runtime_report
+            .get("gpuLoadFallbackActivated")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+            && runtime_report
+                .get("backendPathUsed")
+                .and_then(|value| value.as_str())
+                == Some("cpu");
+        if fallback_succeeded {
+            let suggested_context = runtime_report
+                .get("actualContextUsed")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let suggested_batch = runtime_report
+                .get("actualBatchUsed")
+                .cloned()
+                .unwrap_or(Value::Null);
+            update_runtime_report_field(
+                &mut runtime_report,
+                "status",
+                json!("cpuFallbackSucceeded"),
+            );
+            update_runtime_report_field(
+                &mut runtime_report,
+                "suggestedSettings",
+                json!({
+                    "contextLength": suggested_context,
+                    "llamaBatchSize": suggested_batch,
+                }),
+            );
+            persist_runtime_report(&app, model_path, Some(&runtime_report));
+        } else {
+            persist_runtime_report(&app, model_path, None);
+        }
+
         if stream {
             if let Some(ref id) = request_id {
-                let tokens_per_second = generation_elapsed_ms
-                    .and_then(|elapsed_ms| {
-                        if elapsed_ms == 0 || completion_tokens == 0 {
-                            None
-                        } else {
-                            Some((completion_tokens as f64) / (elapsed_ms as f64 / 1000.0))
-                        }
-                    })
-                    .filter(|v| v.is_finite() && *v >= 0.0);
                 let usage = UsageSummary {
                     prompt_tokens: Some(prompt_tokens),
                     completion_tokens: Some(completion_tokens),
@@ -1431,16 +1653,6 @@ mod desktop {
                 transport::emit_normalized(&app, id, NormalizedEvent::Done);
             }
         }
-
-        let tokens_per_second = generation_elapsed_ms
-            .and_then(|elapsed_ms| {
-                if elapsed_ms == 0 || completion_tokens == 0 {
-                    None
-                } else {
-                    Some((completion_tokens as f64) / (elapsed_ms as f64 / 1000.0))
-                }
-            })
-            .filter(|v| v.is_finite() && *v >= 0.0);
 
         let usage_value = json!({
             "prompt_tokens": prompt_tokens,

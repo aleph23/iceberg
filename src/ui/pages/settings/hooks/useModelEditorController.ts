@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 import {
+  LLAMA_RUNTIME_REPORT_UPDATED_EVENT,
   readSettings,
   addOrUpdateModel,
   removeModel,
@@ -80,6 +82,7 @@ type ControllerReturn = {
   handleReasoningEnabledChange: (value: boolean) => void;
   handleReasoningEffortChange: (value: "low" | "medium" | "high" | null) => void;
   handleReasoningBudgetChange: (value: number | null) => void;
+  applyLlamaRuntimeSuggestion: () => Promise<boolean>;
   handleSave: () => Promise<void>;
   saveModel: () => Promise<boolean>;
   handleDelete: () => Promise<void>;
@@ -108,6 +111,10 @@ function getHardCappedScopes(
 
 function isImageOnlyProvider(providerId?: string | null): boolean {
   return providerId === "automatic1111" || providerId === "stability";
+}
+
+function cloneSnapshot<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value));
 }
 
 export function useModelEditorController(): ControllerReturn {
@@ -269,16 +276,16 @@ export function useModelEditorController(): ControllerReturn {
           if (isFromHfBrowser && nextEditorModel) {
             initialStateRef.current = {
               editorModel: {
-                ...JSON.parse(JSON.stringify(nextEditorModel)),
+                ...cloneSnapshot(nextEditorModel),
                 name: "",
                 displayName: "",
               },
-              modelAdvancedDraft: JSON.parse(JSON.stringify(nextDraft)),
+              modelAdvancedDraft: cloneSnapshot(nextDraft),
             };
           } else {
             initialStateRef.current = {
-              editorModel: nextEditorModel ? JSON.parse(JSON.stringify(nextEditorModel)) : null,
-              modelAdvancedDraft: JSON.parse(JSON.stringify(nextDraft)),
+              editorModel: nextEditorModel ? cloneSnapshot(nextEditorModel) : null,
+              modelAdvancedDraft: cloneSnapshot(nextDraft),
             };
           }
         }
@@ -298,7 +305,67 @@ export function useModelEditorController(): ControllerReturn {
     return () => {
       cancelled = true;
     };
-  }, [ensureLocalProvider, isNew, modelId, toModelsList]);
+  }, [capabilities, ensureLocalProvider, isNew, modelId, searchParams, toModelsList]);
+
+  const syncRuntimeReportFromStore = useCallback(async () => {
+    const currentModelId = state.editorModel?.id;
+    if (!currentModelId) {
+      return;
+    }
+    try {
+      const settings = await readSettings();
+      const nextModel = settings.models.find((model) => model.id === currentModelId);
+      if (!nextModel) {
+        return;
+      }
+      const nextReport = nextModel.advancedModelSettings?.llamaLastRuntimeReport ?? null;
+      dispatch({
+        type: "update_editor_model",
+        payload: {
+          advancedModelSettings: nextModel.advancedModelSettings,
+        },
+      });
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: sanitizeAdvancedModelSettings({
+          ...state.modelAdvancedDraft,
+          llamaLastRuntimeReport: nextReport,
+        }),
+      });
+
+      if (initialStateRef.current) {
+        initialStateRef.current = {
+          ...initialStateRef.current,
+          editorModel: initialStateRef.current.editorModel
+            ? {
+                ...initialStateRef.current.editorModel,
+                advancedModelSettings: nextModel.advancedModelSettings,
+              }
+            : null,
+          modelAdvancedDraft: sanitizeAdvancedModelSettings({
+            ...initialStateRef.current.modelAdvancedDraft,
+            llamaLastRuntimeReport: nextReport,
+          }),
+        };
+      }
+    } catch (error) {
+      console.error("Failed to sync llama runtime report", error);
+    }
+  }, [state.editorModel?.id, state.modelAdvancedDraft]);
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    void listen(LLAMA_RUNTIME_REPORT_UPDATED_EVENT, () => {
+      void syncRuntimeReportFromStore();
+    }).then((dispose) => {
+      unlisten = dispose;
+    });
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, [syncRuntimeReportFromStore]);
 
   const providerDisplay = useMemo(() => {
     return (prov: ProviderCredential) => {
@@ -1181,6 +1248,87 @@ export function useModelEditorController(): ControllerReturn {
     dispatch({ type: "set_error", payload: null });
   }, [dispatch, state.defaultModelId, state.providers]);
 
+  const applyLlamaRuntimeSuggestion = useCallback(async (): Promise<boolean> => {
+    const { editorModel, modelAdvancedDraft, providers } = state;
+    const report = modelAdvancedDraft.llamaLastRuntimeReport;
+    const suggestedSettings = report?.suggestedSettings;
+    if (
+      !editorModel ||
+      editorModel.providerId !== "llamacpp" ||
+      report?.status !== "cpuFallbackSucceeded" ||
+      !suggestedSettings
+    ) {
+      return false;
+    }
+
+    const providerCred =
+      providers.find(
+        (provider) =>
+          provider.providerId === editorModel.providerId &&
+          provider.label === editorModel.providerLabel,
+      ) || providers.find((provider) => provider.providerId === editorModel.providerId);
+    if (!providerCred) {
+      dispatch({
+        type: "set_error",
+        payload: "Select a provider with valid credentials before applying the runtime config",
+      });
+      return false;
+    }
+
+    const nextDraft = sanitizeAdvancedModelSettings({
+      ...modelAdvancedDraft,
+      contextLength: suggestedSettings.contextLength ?? modelAdvancedDraft.contextLength ?? null,
+      llamaBatchSize: suggestedSettings.llamaBatchSize ?? modelAdvancedDraft.llamaBatchSize ?? null,
+      llamaLastRuntimeReport: report,
+    });
+
+    dispatch({ type: "set_saving", payload: true });
+    dispatch({ type: "set_error", payload: null });
+    try {
+      const hardCappedScopes = getHardCappedScopes(providerCred.providerId);
+      await addOrUpdateModel({
+        ...editorModel,
+        providerId: providerCred.providerId,
+        providerCredentialId: providerCred.id,
+        providerLabel: providerCred.label,
+        ...hardCappedScopes,
+        advancedModelSettings: nextDraft,
+      });
+      dispatch({
+        type: "update_editor_model",
+        payload: {
+          providerId: providerCred.providerId,
+          providerCredentialId: providerCred.id,
+          providerLabel: providerCred.label,
+          ...hardCappedScopes,
+          advancedModelSettings: nextDraft,
+        },
+      });
+      dispatch({ type: "set_model_advanced_draft", payload: nextDraft });
+      initialStateRef.current = {
+        editorModel: cloneSnapshot({
+          ...editorModel,
+          providerId: providerCred.providerId,
+          providerCredentialId: providerCred.id,
+          providerLabel: providerCred.label,
+          ...hardCappedScopes,
+          advancedModelSettings: nextDraft,
+        }),
+        modelAdvancedDraft: cloneSnapshot(nextDraft),
+      };
+      return true;
+    } catch (error: any) {
+      console.error("Failed to apply llama runtime suggestion", error);
+      dispatch({
+        type: "set_error",
+        payload: error?.message || "Failed to apply runtime recommendation",
+      });
+      return false;
+    } finally {
+      dispatch({ type: "set_saving", payload: false });
+    }
+  }, [state]);
+
   return {
     state,
     isNew,
@@ -1234,6 +1382,7 @@ export function useModelEditorController(): ControllerReturn {
     handleReasoningEnabledChange,
     handleReasoningEffortChange,
     handleReasoningBudgetChange,
+    applyLlamaRuntimeSuggestion,
     handleSave,
     saveModel,
     handleDelete,

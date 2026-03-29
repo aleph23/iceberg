@@ -69,6 +69,7 @@ const BackgroundImageRefSchema = z.object({
 
 export const SETTINGS_UPDATED_EVENT = "lettuceai:settings-updated";
 export const SESSION_UPDATED_EVENT = "lettuceai:session-updated";
+export const LLAMA_RUNTIME_REPORT_UPDATED_EVENT = "llama-runtime-report-updated";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function normalizeProviderCredentialIds(input: unknown): { next: unknown; changed: boolean } {

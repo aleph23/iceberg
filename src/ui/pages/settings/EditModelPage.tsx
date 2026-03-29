@@ -54,10 +54,11 @@ import {
   ArrowRight,
 } from "lucide-react";
 import { ProviderParameterSupportInfo } from "../../components/ProviderParameterSupportInfo";
+import { toast } from "../../components/toast";
 import { useModelEditorController } from "./hooks/useModelEditorController";
 import { Routes, useNavigationManager } from "../../navigation";
 import { addOrUpdateModel } from "../../../core/storage/repo";
-import type { ReasoningSupport } from "../../../core/storage/schemas";
+import type { LlamaLastRuntimeReport, ReasoningSupport } from "../../../core/storage/schemas";
 import { getProviderReasoningSupport } from "../../../core/storage/schemas";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { cn } from "../../design-tokens";
@@ -100,6 +101,51 @@ type LlamaCppContextInfo = {
   availableVramBytes?: number | null;
   modelSizeBytes?: number | null;
 };
+
+function formatRuntimeNumber(value?: number | null): string | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return null;
+  }
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatRuntimeDate(value?: number | null): string | null {
+  if (!value || !Number.isFinite(value)) {
+    return null;
+  }
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return null;
+  }
+}
+
+function formatRuntimeRate(value?: number | null): string | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return null;
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} tok/s`;
+}
+
+function getLlamaRuntimeHeadline(report: LlamaLastRuntimeReport): string {
+  if (report.status === "cpuFallbackSucceeded") {
+    return "GPU load failed, then the model recovered on CPU.";
+  }
+  if (report.status === "cpuFallbackFailed") {
+    return "GPU load failed and the CPU fallback still did not complete.";
+  }
+  return "The last local run failed before llama.cpp could complete.";
+}
+
+function getLlamaRuntimeDetail(report: LlamaLastRuntimeReport): string {
+  if (report.status === "cpuFallbackSucceeded") {
+    return "We stored the CPU-safe context and batch that did run so you can reuse them.";
+  }
+  if (report.status === "cpuFallbackFailed") {
+    return "The model was retried on CPU, but the recovered configuration still failed.";
+  }
+  return "This report keeps the last known runtime state so you can inspect what happened.";
+}
 
 type EditorViewMode = "simple" | "advanced";
 type EditorSectionKey = "generation" | "runtime" | "reasoning";
@@ -327,6 +373,7 @@ export function EditModelPage() {
   const [movePromptSource, setMovePromptSource] = useState<"save" | "browse">("save");
   const [movingModel, setMovingModel] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
+  const [showLlamaRuntimeReport, setShowLlamaRuntimeReport] = useState(false);
 
   const {
     state: {
@@ -388,6 +435,7 @@ export function EditModelPage() {
     handleReasoningEnabledChange,
     handleReasoningEffortChange,
     handleReasoningBudgetChange,
+    applyLlamaRuntimeSuggestion,
     handleSave,
     saveModel,
     resetToInitial,
@@ -396,6 +444,73 @@ export function EditModelPage() {
   const { backOrReplace } = useNavigationManager();
   const isLocalModel = editorModel?.providerId === "llamacpp";
   const isOllamaModel = editorModel?.providerId === "ollama";
+  const llamaRuntimeReport = modelAdvancedDraft.llamaLastRuntimeReport ?? null;
+  const llamaRuntimeFacts = useMemo(() => {
+    if (!llamaRuntimeReport) {
+      return [];
+    }
+    const fields = [
+      ["Updated", formatRuntimeDate(llamaRuntimeReport.updatedAt)],
+      ["Model path", llamaRuntimeReport.modelPath],
+      ["Backend used", llamaRuntimeReport.backendPathUsed ?? null],
+      ["Failure stage", llamaRuntimeReport.failureStage ?? null],
+      ["Requested context", formatRuntimeNumber(llamaRuntimeReport.requestedContext)],
+      ["Recommended context", formatRuntimeNumber(llamaRuntimeReport.recommendedContext)],
+      ["Initial context", formatRuntimeNumber(llamaRuntimeReport.initialContextCandidate)],
+      ["Actual context", formatRuntimeNumber(llamaRuntimeReport.actualContextUsed)],
+      ["Requested batch", formatRuntimeNumber(llamaRuntimeReport.requestedBatchLimit)],
+      ["Initial batch", formatRuntimeNumber(llamaRuntimeReport.initialBatchCandidate)],
+      ["Actual batch", formatRuntimeNumber(llamaRuntimeReport.actualBatchUsed)],
+      ["KV cache", llamaRuntimeReport.actualKvTypeUsed ?? null],
+      ["KQV offload", llamaRuntimeReport.actualOffloadKqvMode ?? null],
+      ["Flash attention", llamaRuntimeReport.flashAttentionPolicy ?? null],
+      [
+        "GPU backends",
+        llamaRuntimeReport.compiledGpuBackends?.length
+          ? llamaRuntimeReport.compiledGpuBackends.join(", ")
+          : null,
+      ],
+      [
+        "Available RAM",
+        llamaRuntimeReport.availableMemoryBytes
+          ? formatBytes(llamaRuntimeReport.availableMemoryBytes)
+          : null,
+      ],
+      [
+        "Available VRAM",
+        llamaRuntimeReport.availableVramBytes
+          ? formatBytes(llamaRuntimeReport.availableVramBytes)
+          : null,
+      ],
+      [
+        "Model size",
+        llamaRuntimeReport.modelSizeBytes ? formatBytes(llamaRuntimeReport.modelSizeBytes) : null,
+      ],
+      ["Prompt tokens", formatRuntimeNumber(llamaRuntimeReport.promptTokens)],
+      ["Prompt positions", formatRuntimeNumber(llamaRuntimeReport.promptPositions)],
+      ["Target new tokens", formatRuntimeNumber(llamaRuntimeReport.targetNewTokens)],
+      ["Completion tokens", formatRuntimeNumber(llamaRuntimeReport.completionTokens)],
+      ["Finish reason", llamaRuntimeReport.finishReason ?? null],
+      [
+        "First token",
+        llamaRuntimeReport.firstTokenMs
+          ? `${formatRuntimeNumber(llamaRuntimeReport.firstTokenMs)} ms`
+          : null,
+      ],
+      ["Throughput", formatRuntimeRate(llamaRuntimeReport.tokensPerSecond)],
+      ["Prompt template", llamaRuntimeReport.promptTemplateSource ?? null],
+    ] as const;
+    return fields.filter(([, value]) => value).map(([label, value]) => ({ label, value: value! }));
+  }, [llamaRuntimeReport]);
+  const handleApplyLlamaRuntimeSuggestion = async () => {
+    const applied = await applyLlamaRuntimeSuggestion();
+    if (applied) {
+      toast.success(
+        "Runtime config applied",
+        "Future local runs will reuse the last CPU-safe context and batch.",
+      );
+    }
+  };
 
   // Fetch GGUF models directory path on mount
   useEffect(() => {
@@ -1163,6 +1278,148 @@ export function EditModelPage() {
                 description="Choose the platform, give this entry a readable name, and connect it to the model identifier or file you want to use."
               >
                 <div className="space-y-6">
+                  {isLocalModel && llamaRuntimeReport && (
+                    <div className="rounded-lg border border-fg/10 bg-fg/4">
+                      <button
+                        type="button"
+                        onClick={() => setShowLlamaRuntimeReport((value) => !value)}
+                        className="flex w-full items-start justify-between gap-4 px-4 py-3 text-left"
+                      >
+                        <div className="flex min-w-0 items-start gap-3">
+                          <div
+                            className={cn(
+                              "mt-0.5 flex h-7 w-7 items-center justify-center rounded-md border",
+                              llamaRuntimeReport.status === "cpuFallbackSucceeded"
+                                ? "border-warning/30 bg-warning/10 text-warning"
+                                : "border-danger/30 bg-danger/10 text-danger",
+                            )}
+                          >
+                            {llamaRuntimeReport.status === "cpuFallbackSucceeded" ? (
+                              <Check className="h-4 w-4" />
+                            ) : (
+                              <AlertTriangle className="h-4 w-4" />
+                            )}
+                          </div>
+                          <div className="min-w-0 space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[13px] font-medium text-fg">
+                                Last runtime report
+                              </span>
+                              <span
+                                className={cn(
+                                  "rounded-md px-2 py-0.5 text-[11px] font-medium",
+                                  llamaRuntimeReport.status === "cpuFallbackSucceeded"
+                                    ? "bg-warning/12 text-warning"
+                                    : "bg-danger/12 text-danger",
+                                )}
+                              >
+                                {llamaRuntimeReport.status === "cpuFallbackSucceeded"
+                                  ? "CPU fallback recovered"
+                                  : llamaRuntimeReport.status === "cpuFallbackFailed"
+                                    ? "CPU fallback failed"
+                                    : "Run failed"}
+                              </span>
+                            </div>
+                            <p className="text-[13px] leading-relaxed text-fg/72">
+                              {getLlamaRuntimeHeadline(llamaRuntimeReport)}
+                            </p>
+                            <p className="text-[12px] leading-relaxed text-fg/48">
+                              {getLlamaRuntimeDetail(llamaRuntimeReport)}
+                            </p>
+                          </div>
+                        </div>
+                        {showLlamaRuntimeReport ? (
+                          <ChevronDown className="mt-1 h-4 w-4 text-fg/45" />
+                        ) : (
+                          <ChevronRight className="mt-1 h-4 w-4 text-fg/45" />
+                        )}
+                      </button>
+
+                      <AnimatePresence initial={false}>
+                        {showLlamaRuntimeReport && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: "auto", opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            transition={{ duration: 0.16, ease: "easeOut" }}
+                            className="overflow-hidden border-t border-fg/8"
+                          >
+                            <div className="space-y-4 px-4 py-4">
+                              {(llamaRuntimeReport.gpuFallbackReason ||
+                                llamaRuntimeReport.errorMessage) && (
+                                <div className="grid gap-3 lg:grid-cols-2">
+                                  {llamaRuntimeReport.gpuFallbackReason && (
+                                    <div className="rounded-lg border border-warning/25 bg-warning/8 px-3 py-2.5">
+                                      <div className="text-[11px] font-medium uppercase tracking-wide text-warning/90">
+                                        GPU fallback reason
+                                      </div>
+                                      <p className="mt-1 text-[13px] leading-relaxed text-fg/78">
+                                        {llamaRuntimeReport.gpuFallbackReason}
+                                      </p>
+                                    </div>
+                                  )}
+                                  {llamaRuntimeReport.errorMessage && (
+                                    <div className="rounded-lg border border-danger/25 bg-danger/8 px-3 py-2.5">
+                                      <div className="text-[11px] font-medium uppercase tracking-wide text-danger/90">
+                                        Final error
+                                      </div>
+                                      <p className="mt-1 text-[13px] leading-relaxed text-fg/78">
+                                        {llamaRuntimeReport.errorMessage}
+                                      </p>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                                {llamaRuntimeFacts.map((item) => (
+                                  <div
+                                    key={item.label}
+                                    className="rounded-lg border border-fg/8 bg-surface-el/14 px-3 py-2.5"
+                                  >
+                                    <div className="text-[11px] text-fg/42">{item.label}</div>
+                                    <div className="mt-1 break-words text-[13px] text-fg/86">
+                                      {item.value}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+
+                              {llamaRuntimeReport.status === "cpuFallbackSucceeded" &&
+                                llamaRuntimeReport.suggestedSettings && (
+                                  <div className="flex flex-col gap-3 rounded-lg border border-fg/10 bg-surface-el/18 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <div className="space-y-1">
+                                      <div className="text-[13px] font-medium text-fg">
+                                        Working recovery config
+                                      </div>
+                                      <p className="text-[12px] text-fg/52">
+                                        Context{" "}
+                                        {formatRuntimeNumber(
+                                          llamaRuntimeReport.suggestedSettings.contextLength,
+                                        ) ?? "n/a"}
+                                        {" • "}Batch{" "}
+                                        {formatRuntimeNumber(
+                                          llamaRuntimeReport.suggestedSettings.llamaBatchSize,
+                                        ) ?? "n/a"}
+                                      </p>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleApplyLlamaRuntimeSuggestion()}
+                                      disabled={saving}
+                                      className="rounded-lg border border-warning/30 bg-warning/12 px-3 py-2 text-[13px] font-medium text-warning transition hover:bg-warning/18 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      Apply working config
+                                    </button>
+                                  </div>
+                                )}
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  )}
+
                   <FieldBlock label="Platform">
                     {providers.length === 0 ? (
                       <div className="rounded-lg border border-warning/40 bg-warning/10 px-3 py-2.5 text-[13px] text-warning">
