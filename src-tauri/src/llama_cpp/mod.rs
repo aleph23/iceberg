@@ -53,8 +53,9 @@ mod desktop {
     use tokio::sync::oneshot::error::TryRecvError;
 
     use context::{
-        compute_recommended_context, context_attempt_candidates, context_error_detail,
-        get_available_memory_bytes, get_available_vram_bytes, is_likely_context_oom_error,
+        compute_cpu_fallback_limits, compute_recommended_context, context_attempt_candidates,
+        context_error_detail, get_available_memory_bytes, get_available_vram_bytes,
+        is_likely_context_oom_error,
     };
     use engine::{load_engine, using_rocm_backend};
     use prompt::{
@@ -421,7 +422,7 @@ mod desktop {
             .and_then(|v| v.as_u64())
             .and_then(|v| u32::try_from(v).ok())
             .filter(|v| *v > 0);
-        let llama_batch_size = body
+        let mut llama_batch_size = body
             .get("llamaBatchSize")
             .or_else(|| body.get("llama_batch_size"))
             .and_then(|v| v.as_u64())
@@ -565,6 +566,8 @@ mod desktop {
             let max_ctx = model.n_ctx_train().max(1);
             let available_memory_bytes = get_available_memory_bytes();
             let available_vram_bytes = get_available_vram_bytes();
+            let backend_path_used = engine.backend_path_used.as_deref().unwrap_or("unknown");
+            let gpu_load_fallback_activated = engine.gpu_load_fallback_activated;
             let recommended_ctx = compute_recommended_context(
                 model,
                 available_memory_bytes,
@@ -585,6 +588,39 @@ mod desktop {
             } else {
                 max_ctx
             };
+            if gpu_load_fallback_activated && backend_path_used == "cpu" {
+                if let Some((safe_ctx, safe_batch)) = compute_cpu_fallback_limits(
+                    model,
+                    available_memory_bytes,
+                    max_ctx,
+                    llama_kv_type_raw.as_deref(),
+                    requested_context,
+                    llama_batch_size,
+                ) {
+                    if ctx_size > safe_ctx {
+                        log_warn(
+                            &app,
+                            "llama_cpp",
+                            format!(
+                                "GPU load fell back to CPU; clamping context from {} to {} using RAM-derived fallback limits (requested_context={:?}, recommended_context={:?})",
+                                ctx_size, safe_ctx, requested_context, recommended_ctx
+                            ),
+                        );
+                        ctx_size = safe_ctx;
+                    }
+                    if llama_batch_size > safe_batch {
+                        log_warn(
+                            &app,
+                            "llama_cpp",
+                            format!(
+                                "GPU load fell back to CPU; reducing llama batch size from {} to {} for CPU headroom",
+                                llama_batch_size, safe_batch
+                            ),
+                        );
+                        llama_batch_size = safe_batch;
+                    }
+                }
+            }
             let built_prompt = build_prompt(
                 model,
                 prompt_messages,
@@ -872,8 +908,6 @@ mod desktop {
                 .unwrap_or_else(|| "unknown".to_string());
             let compiled_gpu_backends = engine.compiled_gpu_backends.clone();
             let supports_gpu_offload = engine.supports_gpu_offload;
-            let gpu_load_fallback_activated = engine.gpu_load_fallback_activated;
-
             let runtime_settings = json!({
                 "requestId": request_id.clone(),
                 "modelPath": model_path,

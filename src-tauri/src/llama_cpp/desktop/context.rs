@@ -215,6 +215,15 @@ fn estimate_kv_bytes_per_token(model: &LlamaModel, llama_kv_type: Option<&str>) 
     Some(bytes.max(0.0) as u64)
 }
 
+fn default_memory_reserve_bytes(available_memory_bytes: u64) -> u64 {
+    (available_memory_bytes / 5).max(512 * 1024 * 1024)
+}
+
+fn ram_budget_for_context(model: &LlamaModel, available_memory_bytes: u64) -> u64 {
+    let reserve = default_memory_reserve_bytes(available_memory_bytes);
+    available_memory_bytes.saturating_sub(model.size().saturating_add(reserve))
+}
+
 pub(super) fn compute_recommended_context(
     model: &LlamaModel,
     available_memory_bytes: Option<u64>,
@@ -225,13 +234,11 @@ pub(super) fn compute_recommended_context(
 ) -> Option<u32> {
     let available_for_ctx = if llama_offload_kqv == Some(true) {
         let vram = available_vram_bytes?;
-        let reserve = (vram / 5).max(512 * 1024 * 1024);
+        let reserve = default_memory_reserve_bytes(vram);
         vram.saturating_sub(reserve)
     } else {
         let ram = available_memory_bytes?;
-        let model_size = model.size();
-        let reserve = (ram / 5).max(512 * 1024 * 1024);
-        ram.saturating_sub(model_size.saturating_add(reserve))
+        ram_budget_for_context(model, ram)
     };
     let kv_bytes_per_token = estimate_kv_bytes_per_token(model, llama_kv_type)?;
     if kv_bytes_per_token == 0 {
@@ -242,6 +249,46 @@ pub(super) fn compute_recommended_context(
         recommended = u64::from(max_context_length);
     }
     Some(recommended as u32)
+}
+
+pub(super) fn compute_cpu_fallback_limits(
+    model: &LlamaModel,
+    available_memory_bytes: Option<u64>,
+    max_context_length: u32,
+    llama_kv_type: Option<&str>,
+    requested_context: Option<u32>,
+    requested_batch_size: u32,
+) -> Option<(u32, u32)> {
+    let available_memory_bytes = available_memory_bytes?;
+    let kv_bytes_per_token = estimate_kv_bytes_per_token(model, llama_kv_type)?;
+    if kv_bytes_per_token == 0 {
+        return None;
+    }
+
+    let base_budget = ram_budget_for_context(model, available_memory_bytes);
+    let base_context = (base_budget / kv_bytes_per_token)
+        .min(u64::from(max_context_length)) as u32;
+    let requested_batch_size = requested_batch_size.max(1);
+    let requested_or_base_context = requested_context
+        .unwrap_or(base_context)
+        .min(max_context_length)
+        .max(1);
+
+    let normal_reserve = default_memory_reserve_bytes(available_memory_bytes);
+    let extra_cpu_headroom = model.size().max(normal_reserve);
+    let safe_budget = base_budget.saturating_sub(extra_cpu_headroom);
+    let safe_context = (safe_budget / kv_bytes_per_token)
+        .min(u64::from(requested_or_base_context))
+        .max(1) as u32;
+
+    let safe_batch = u64::from(requested_batch_size)
+        .saturating_mul(u64::from(safe_context))
+        .checked_div(u64::from(requested_or_base_context))
+        .unwrap_or(u64::from(requested_batch_size))
+        .max(1)
+        .min(u64::from(requested_batch_size)) as u32;
+
+    Some((safe_context, safe_batch.max(1)))
 }
 
 pub(crate) async fn llamacpp_context_info(
