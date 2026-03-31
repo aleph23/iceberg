@@ -267,6 +267,7 @@ macro_rules! invoke_handler {
             crate::hf_browser::hf_get_gguf_models_dir,
             crate::hf_browser::hf_move_model_to_gguf_dir,
             crate::hf_browser::hf_compute_runability,
+            crate::hf_browser::hf_compute_local_runability,
             crate::hf_browser::hf_get_recommendation_data,
             crate::content_filter::set_content_filter_level,
             crate::content_filter::debug_content_filter,

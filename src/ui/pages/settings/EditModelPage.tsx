@@ -374,6 +374,22 @@ export function EditModelPage() {
   const [movingModel, setMovingModel] = useState(false);
   const [moveError, setMoveError] = useState<string | null>(null);
   const [showLlamaRuntimeReport, setShowLlamaRuntimeReport] = useState(false);
+  const [runabilityScore, setRunabilityScore] = useState<{
+    score: number;
+    label: "excellent" | "good" | "marginal" | "poor" | "unrunnable";
+    fitsInRam: boolean;
+    fitsInVram: boolean;
+    memoryScore: number;
+    gpuScore: number;
+    kvScore: number;
+    quantScore: number;
+    gpuMode: string;
+    availableRam: number;
+    availableVram: number;
+    modelSize: number;
+    quantization: string;
+  } | null>(null);
+  const [runabilityLoading, setRunabilityLoading] = useState(false);
 
   const {
     state: {
@@ -1215,6 +1231,50 @@ export function EditModelPage() {
     modelAdvancedDraft.llamaOffloadKqv,
     modelAdvancedDraft.llamaKvType,
   ]);
+
+  // Fetch runability score for local models
+  useEffect(() => {
+    if (!isLocalModel) {
+      setRunabilityScore(null);
+      setRunabilityLoading(false);
+      return;
+    }
+
+    const modelPath = editorModel?.name?.trim();
+    if (!modelPath) {
+      setRunabilityScore(null);
+      setRunabilityLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setRunabilityLoading(true);
+
+    const timer = setTimeout(async () => {
+      try {
+        const result = await invoke<NonNullable<typeof runabilityScore>>(
+          "hf_compute_local_runability",
+          { filePath: modelPath },
+        );
+        if (!cancelled) {
+          setRunabilityScore(result);
+        }
+      } catch {
+        if (!cancelled) {
+          setRunabilityScore(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setRunabilityLoading(false);
+        }
+      }
+    }, 400);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [editorModel?.name, isLocalModel]);
 
   const scopeOrder = ["text", "image", "audio"] as const;
   const toggleScope = (
@@ -2550,126 +2610,289 @@ export function EditModelPage() {
                                         : "Auto"}
                                     </span>
                                   </div>
-                                  <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,420px)_minmax(260px,1fr)] xl:items-start">
-                                    <div className="space-y-3">
-                                      <input
-                                        type="number"
-                                        inputMode="numeric"
-                                        min={ADVANCED_CONTEXT_LENGTH_RANGE.min}
-                                        max={contextLimit}
-                                        step={1}
-                                        value={modelAdvancedDraft.contextLength || ""}
-                                        onChange={(e) => {
-                                          const raw = e.target.value;
-                                          const next = raw === "" ? null : Number(raw);
-                                          handleContextLengthChange(
-                                            next === null || !Number.isFinite(next) || next === 0
-                                              ? null
-                                              : Math.trunc(next),
-                                          );
-                                        }}
-                                        placeholder="Auto"
-                                        className={numberInputClassName}
-                                      />
-                                      <div className="mt-1 flex justify-between px-0.5 text-[13px] text-fg/30">
-                                        <span>Auto</span>
-                                        <span>{contextLimit.toLocaleString()}</span>
-                                      </div>
-                                      {llamaContextLoading && (
-                                        <p className="text-[13px] text-fg/40">
-                                          Calculating memory limits for this model...
-                                        </p>
-                                      )}
-                                      {llamaContextError && (
-                                        <p className="text-[13px] text-warning/80">
-                                          {llamaContextError}
-                                        </p>
-                                      )}
-                                      {showContextWarning && (
-                                        <div className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[13px] text-warning/80">
-                                          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                                          <span>
-                                            Are you sure? This may not run on your device. We
-                                            recommend {recommendedContextLength?.toLocaleString()}{" "}
-                                            tokens.
-                                          </span>
-                                        </div>
-                                      )}
-                                      {showContextCritical && (
-                                        <div className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger/80">
-                                          <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                                          <span>
-                                            This model likely won&apos;t fit in memory on your
-                                            device. Try a smaller model or a much shorter context.
-                                          </span>
-                                        </div>
-                                      )}
+                                  <div className="space-y-3">
+                                    <input
+                                      type="number"
+                                      inputMode="numeric"
+                                      min={ADVANCED_CONTEXT_LENGTH_RANGE.min}
+                                      max={contextLimit}
+                                      step={1}
+                                      value={modelAdvancedDraft.contextLength || ""}
+                                      onChange={(e) => {
+                                        const raw = e.target.value;
+                                        const next = raw === "" ? null : Number(raw);
+                                        handleContextLengthChange(
+                                          next === null || !Number.isFinite(next) || next === 0
+                                            ? null
+                                            : Math.trunc(next),
+                                        );
+                                      }}
+                                      placeholder="Auto"
+                                      className={numberInputClassName}
+                                    />
+                                    <div className="mt-1 flex justify-between px-0.5 text-[13px] text-fg/30">
+                                      <span>Auto</span>
+                                      <span>{contextLimit.toLocaleString()}</span>
                                     </div>
-
-                                    {(llamaContextInfo ||
-                                      availableRamGiB ||
-                                      availableVramGiB ||
-                                      modelSizeGiB) && (
-                                      <div className="rounded-lg border border-fg/8 bg-fg/4 px-4 py-3 text-[13px] leading-5 text-fg/52">
-                                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                          <div>
-                                            <div className="text-fg/38">Max supported</div>
-                                            <div className="font-mono text-fg/78">
-                                              {llamaContextInfo
-                                                ? llamaContextInfo.maxContextLength.toLocaleString()
-                                                : contextLimit.toLocaleString()}
-                                            </div>
-                                          </div>
-                                          {recommendedContextLength !== null && (
-                                            <div>
-                                              <div className="text-fg/38">Recommended</div>
-                                              <div className="font-mono text-fg/78">
-                                                {recommendedContextLength.toLocaleString()}
-                                              </div>
-                                            </div>
-                                          )}
-                                          {availableRamGiB && (
-                                            <div>
-                                              <div className="text-fg/38">Available RAM</div>
-                                              <div className="font-mono text-fg/78">
-                                                {availableRamGiB} GB
-                                              </div>
-                                            </div>
-                                          )}
-                                          {availableVramGiB && (
-                                            <div>
-                                              <div className="text-fg/38">Available VRAM</div>
-                                              <div className="font-mono text-fg/78">
-                                                {availableVramGiB} GB
-                                              </div>
-                                            </div>
-                                          )}
-                                          {modelSizeGiB && (
-                                            <div>
-                                              <div className="text-fg/38">Model size</div>
-                                              <div className="font-mono text-fg/78">
-                                                {modelSizeGiB} GB
-                                              </div>
-                                            </div>
-                                          )}
-                                          <div>
-                                            <div className="text-fg/38">Context cache</div>
-                                            <div className="font-mono text-fg/78">
-                                              {contextCacheLocationLabel}
-                                            </div>
-                                          </div>
-                                        </div>
-                                        {!selectedContextLength &&
-                                          recommendedContextLength &&
-                                          recommendedContextLength > 0 && (
-                                            <p className="mt-3 border-t border-fg/8 pt-3">
-                                              Auto will use the recommended context length.
-                                            </p>
-                                          )}
+                                    {llamaContextLoading && (
+                                      <p className="text-[13px] text-fg/40">
+                                        Calculating memory limits for this model...
+                                      </p>
+                                    )}
+                                    {llamaContextError && (
+                                      <p className="text-[13px] text-warning/80">
+                                        {llamaContextError}
+                                      </p>
+                                    )}
+                                    {showContextWarning && (
+                                      <div className="flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[13px] text-warning/80">
+                                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                                        <span>
+                                          Are you sure? This may not run on your device. We
+                                          recommend {recommendedContextLength?.toLocaleString()}{" "}
+                                          tokens.
+                                        </span>
+                                      </div>
+                                    )}
+                                    {showContextCritical && (
+                                      <div className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger/80">
+                                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                                        <span>
+                                          This model likely won&apos;t fit in memory on your
+                                          device. Try a smaller model or a much shorter context.
+                                        </span>
                                       </div>
                                     )}
                                   </div>
                                 </div>
+
+                                {/* Runability & System Info */}
+                                {editorModel?.name?.trim() && (
+                                  <div className="rounded-lg border border-fg/8 bg-fg/4 px-4 py-3 text-[13px]">
+                                    {runabilityLoading ? (
+                                      /* Skeleton */
+                                      <div className="space-y-3 animate-pulse">
+                                        <div className="flex items-center justify-between">
+                                          <div className="flex items-center gap-3">
+                                            <div className="h-4 w-20 rounded bg-fg/8" />
+                                            <div className="h-5 w-14 rounded-md bg-fg/8" />
+                                          </div>
+                                          <div className="flex gap-2">
+                                            <div className="h-5 w-18 rounded-md bg-fg/8" />
+                                            <div className="h-5 w-20 rounded-md bg-fg/8" />
+                                          </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3 lg:grid-cols-6">
+                                          {Array.from({ length: 6 }).map((_, i) => (
+                                            <div key={i} className="space-y-1">
+                                              <div className="h-3 w-16 rounded bg-fg/6" />
+                                              <div className="h-4 w-12 rounded bg-fg/8" />
+                                            </div>
+                                          ))}
+                                        </div>
+                                        <div className="space-y-2">
+                                          {Array.from({ length: 4 }).map((_, i) => (
+                                            <div key={i} className="space-y-1">
+                                              <div className="flex justify-between">
+                                                <div className="h-3 w-28 rounded bg-fg/6" />
+                                                <div className="h-3 w-8 rounded bg-fg/8" />
+                                              </div>
+                                              <div className="h-1.5 w-full rounded-full bg-fg/8" />
+                                            </div>
+                                          ))}
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="space-y-3">
+                                        {/* Header row */}
+                                        {runabilityScore && (
+                                          <div className="flex items-center justify-between">
+                                            <div className="flex items-center gap-3">
+                                              <span className="font-medium text-fg/70">
+                                                Runability
+                                              </span>
+                                              <span
+                                                className={cn(
+                                                  "rounded-md border px-2 py-0.5 text-[12px] font-semibold",
+                                                  runabilityScore.label === "excellent"
+                                                    ? "border-emerald-400/30 bg-emerald-400/15 text-emerald-400"
+                                                    : runabilityScore.label === "good"
+                                                      ? "border-blue-400/30 bg-blue-400/15 text-blue-400"
+                                                      : runabilityScore.label === "marginal"
+                                                        ? "border-amber-400/30 bg-amber-400/15 text-amber-400"
+                                                        : runabilityScore.label === "poor"
+                                                          ? "border-orange-400/30 bg-orange-400/15 text-orange-400"
+                                                          : "border-red-400/30 bg-red-400/15 text-red-400",
+                                                )}
+                                              >
+                                                {runabilityScore.score}/100
+                                              </span>
+                                            </div>
+                                            <div className="flex items-center gap-2 text-[11px]">
+                                              {runabilityScore.fitsInRam && (
+                                                <span className="rounded-md bg-emerald-400/10 px-1.5 py-0.5 text-emerald-400/80">
+                                                  Fits in RAM
+                                                </span>
+                                              )}
+                                              {runabilityScore.fitsInVram && (
+                                                <span className="rounded-md bg-emerald-400/10 px-1.5 py-0.5 text-emerald-400/80">
+                                                  Fits in VRAM
+                                                </span>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {/* System info stats row */}
+                                        {(llamaContextInfo ||
+                                          availableRamGiB ||
+                                          availableVramGiB ||
+                                          modelSizeGiB) && (
+                                          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-[13px] leading-5 text-fg/52 sm:grid-cols-3 lg:grid-cols-6">
+                                            <div>
+                                              <div className="text-fg/38">Max supported</div>
+                                              <div className="font-mono text-fg/78">
+                                                {llamaContextInfo
+                                                  ? llamaContextInfo.maxContextLength.toLocaleString()
+                                                  : contextLimit.toLocaleString()}
+                                              </div>
+                                            </div>
+                                            {recommendedContextLength !== null && (
+                                              <div>
+                                                <div className="text-fg/38">Recommended</div>
+                                                <div className="font-mono text-fg/78">
+                                                  {recommendedContextLength.toLocaleString()}
+                                                </div>
+                                              </div>
+                                            )}
+                                            {availableRamGiB && (
+                                              <div>
+                                                <div className="text-fg/38">Available RAM</div>
+                                                <div className="font-mono text-fg/78">
+                                                  {availableRamGiB} GB
+                                                </div>
+                                              </div>
+                                            )}
+                                            {availableVramGiB && (
+                                              <div>
+                                                <div className="text-fg/38">Available VRAM</div>
+                                                <div className="font-mono text-fg/78">
+                                                  {availableVramGiB} GB
+                                                </div>
+                                              </div>
+                                            )}
+                                            {modelSizeGiB && (
+                                              <div>
+                                                <div className="text-fg/38">Model size</div>
+                                                <div className="font-mono text-fg/78">
+                                                  {modelSizeGiB} GB
+                                                </div>
+                                              </div>
+                                            )}
+                                            <div>
+                                              <div className="text-fg/38">Context cache</div>
+                                              <div className="font-mono text-fg/78">
+                                                {contextCacheLocationLabel}
+                                              </div>
+                                            </div>
+                                          </div>
+                                        )}
+                                        {!selectedContextLength &&
+                                          recommendedContextLength &&
+                                          recommendedContextLength > 0 &&
+                                          !runabilityScore && (
+                                            <p className="text-fg/52">
+                                              Auto will use the recommended context length.
+                                            </p>
+                                          )}
+
+                                        {/* Score breakdown bars */}
+                                        {runabilityScore && (
+                                          <>
+                                            <div className="space-y-2">
+                                              {(
+                                                [
+                                                  {
+                                                    label: "Memory Fitness",
+                                                    value: runabilityScore.memoryScore,
+                                                    weight: 0.25,
+                                                  },
+                                                  {
+                                                    label: "GPU Acceleration",
+                                                    value: runabilityScore.gpuScore,
+                                                    weight: 0.35,
+                                                  },
+                                                  {
+                                                    label: "KV Headroom",
+                                                    value: runabilityScore.kvScore,
+                                                    weight: 0.15,
+                                                  },
+                                                  {
+                                                    label: "Quant Quality",
+                                                    value: runabilityScore.quantScore,
+                                                    weight: 0.25,
+                                                  },
+                                                ] as const
+                                              ).map((item) => (
+                                                <div key={item.label} className="space-y-1">
+                                                  <div className="flex items-center justify-between">
+                                                    <span className="text-[12px] text-fg/50">
+                                                      {item.label}{" "}
+                                                      <span className="text-fg/30">
+                                                        ({Math.round(item.weight * 100)}%)
+                                                      </span>
+                                                    </span>
+                                                    <span
+                                                      className={cn(
+                                                        "text-[12px] font-mono font-medium",
+                                                        item.value >= 70
+                                                          ? "text-emerald-400"
+                                                          : item.value >= 40
+                                                            ? "text-amber-400"
+                                                            : "text-red-400",
+                                                      )}
+                                                    >
+                                                      {item.value}
+                                                    </span>
+                                                  </div>
+                                                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-fg/8">
+                                                    <div
+                                                      className={cn(
+                                                        "h-full rounded-full transition-all duration-300",
+                                                        item.value >= 70
+                                                          ? "bg-emerald-400/60"
+                                                          : item.value >= 40
+                                                            ? "bg-amber-400/60"
+                                                            : "bg-red-400/60",
+                                                      )}
+                                                      style={{ width: `${item.value}%` }}
+                                                    />
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                            {runabilityScore.quantization && (
+                                              <div className="flex items-center gap-3 border-t border-fg/8 pt-2 text-[12px] text-fg/45">
+                                                <span>
+                                                  Quantization:{" "}
+                                                  <span className="font-mono text-fg/65">
+                                                    {runabilityScore.quantization}
+                                                  </span>
+                                                </span>
+                                                <span>
+                                                  Size:{" "}
+                                                  <span className="font-mono text-fg/65">
+                                                    {formatBytes(runabilityScore.modelSize)}
+                                                  </span>
+                                                </span>
+                                              </div>
+                                            )}
+                                          </>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
 
                                 <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                                   <div className="space-y-4">
