@@ -1332,6 +1332,7 @@ async fn send_dynamic_memory_request(
         false,
         None,
         None,
+        false,
         extra_body_fields.clone(),
     );
 
@@ -1385,6 +1386,7 @@ async fn send_dynamic_memory_request(
                     false,
                     None,
                     None,
+                    false,
                     extra_body_fields,
                 );
 

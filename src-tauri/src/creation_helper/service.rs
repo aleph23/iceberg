@@ -1392,6 +1392,7 @@ async fn send_creation_api_request(
             false,
             None,
             None,
+            false,
             None,
         );
 
@@ -2998,6 +2999,7 @@ async fn process_assistant_turn(
             false,
             None,
             None,
+            false,
             None,
         );
 

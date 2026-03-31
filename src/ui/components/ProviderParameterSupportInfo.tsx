@@ -61,6 +61,8 @@ const PARAMETER_LABELS: Record<keyof AdvancedModelSettings, string> = {
   reasoningEnabled: "Reasoning",
   reasoningEffort: "Reasoning Effort",
   reasoningBudgetTokens: "Reasoning Budget",
+  promptCachingEnabled: "Prompt Caching",
+  promptCachingTtl: "Prompt Caching TTL",
 };
 
 const PARAMETER_DESCRIPTIONS: Record<keyof AdvancedModelSettings, string> = {
@@ -92,8 +94,7 @@ const PARAMETER_DESCRIPTIONS: Record<keyof AdvancedModelSettings, string> = {
   llamaMmprojPath: "Filesystem path to the multimodal projector GGUF used for vision",
   llamaChatTemplatePreset: "Known preset name used when GGUF has no embedded template",
   llamaRawCompletionFallback: "Allow plain raw completion fallback if template resolution fails",
-  llamaSamplerProfile:
-    "Preset local sampler defaults for chat, creativity, stability, or reasoning",
+  llamaSamplerProfile: "Preset local sampler defaults for chat, creativity, stability, or reasoning",
   llamaMinP: "Min-p sampling threshold for llama.cpp (0-1)",
   llamaTypicalP: "Typical sampling threshold for llama.cpp (0-1)",
   llamaLastRuntimeReport: "Persisted diagnostics from the last local llama.cpp run",
@@ -115,6 +116,8 @@ const PARAMETER_DESCRIPTIONS: Record<keyof AdvancedModelSettings, string> = {
   reasoningEnabled: "Enable/disable thinking mode",
   reasoningEffort: "Thinking depth - OpenAI/DeepSeek style",
   reasoningBudgetTokens: "Max tokens for extended thinking",
+  promptCachingEnabled: "Enable prompt caching",
+  promptCachingTtl: "Time-to-live for cached prompts (seconds)",
 };
 
 /**

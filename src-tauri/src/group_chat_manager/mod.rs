@@ -1346,6 +1346,7 @@ async fn send_dynamic_memory_request(
         false,
         None,
         None,
+        false,
         extra_body_fields.clone(),
     );
 
@@ -1399,6 +1400,7 @@ async fn send_dynamic_memory_request(
                     false,
                     None,
                     None,
+                    false,
                     extra_body_fields,
                 );
 
@@ -4386,6 +4388,7 @@ async fn select_speaker_via_llm_with_tracking(
         false, // reasoning_enabled
         None,  // reasoning_effort
         None,  // reasoning_budget
+        false,  // prompt_caching_enabled
         extra_body_fields,
     );
 
@@ -4690,6 +4693,7 @@ async fn generate_character_response(
         .as_ref()
         .and_then(|a| a.top_k)
         .or_else(|| sampler_defaults.and_then(|defaults| defaults.top_k));
+    let prompt_caching_enabled = model.advanced_model_settings.as_ref().and_then(|s| s.prompt_caching_enabled).unwrap_or(false);
     let extra_body_fields = if credential.provider_id == "llamacpp" {
         build_llama_extra_fields(model, &settings)
     } else if credential.provider_id == "ollama" {
@@ -4727,6 +4731,7 @@ async fn generate_character_response(
         reasoning_enabled, // reasoning_enabled
         reasoning_effort,  // reasoning_effort
         reasoning_budget,  // reasoning_budget
+        prompt_caching_enabled, // prompt_caching_enabled
         extra_body_fields,
     );
 
@@ -5912,6 +5917,7 @@ pub async fn group_chat_generate_user_reply(
         false,              // reasoning_enabled
         None,               // reasoning_effort
         None,               // reasoning_budget
+        false,              // prompt_caching_enabled  
         extra_body_fields,
     );
 
