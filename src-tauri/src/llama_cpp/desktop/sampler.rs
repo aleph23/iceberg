@@ -125,6 +125,22 @@ fn regex_escape(value: &str) -> String {
     out
 }
 
+fn anchor_pattern(value: &str) -> String {
+    if value.is_empty() {
+        return "^$".to_string();
+    }
+
+    let mut anchored = String::new();
+    if !value.starts_with('^') {
+        anchored.push('^');
+    }
+    anchored.push_str(value);
+    if !value.ends_with('$') {
+        anchored.push('$');
+    }
+    anchored
+}
+
 pub(super) fn build_sampler(
     model: &LlamaModel,
     config: &ResolvedSamplerConfig,
@@ -153,6 +169,108 @@ pub(super) fn build_sampler(
         active_params.insert("presence_penalty".to_string(), json!(penalty_present));
     }
 
+    if let Some(template_result) = chat_template_result {
+        if let Some(grammar) = template_result.grammar.as_deref() {
+            let grammar_sampler = if template_result.grammar_lazy {
+                let mut preserved = std::collections::HashSet::new();
+                for token_str in &template_result.preserved_tokens {
+                    let tokens = model.str_to_token(token_str, AddBos::Never).map_err(|e| {
+                        crate::utils::err_msg(
+                            module_path!(),
+                            line!(),
+                            format!(
+                                "Failed to tokenize preserved grammar token '{}': {e}",
+                                token_str
+                            ),
+                        )
+                    })?;
+                    if tokens.len() == 1 {
+                        preserved.insert(tokens[0]);
+                    }
+                }
+
+                let mut trigger_patterns = Vec::new();
+                let mut trigger_tokens = Vec::new();
+
+                for trigger in &template_result.grammar_triggers {
+                    match trigger.trigger_type {
+                        llama_cpp_2::model::GrammarTriggerType::Token => {
+                            if let Some(token) = trigger.token {
+                                trigger_tokens.push(token);
+                            }
+                        }
+                        llama_cpp_2::model::GrammarTriggerType::Word => {
+                            let tokens =
+                                model.str_to_token(&trigger.value, AddBos::Never).map_err(|e| {
+                                    crate::utils::err_msg(
+                                        module_path!(),
+                                        line!(),
+                                        format!(
+                                            "Failed to tokenize grammar trigger word '{}': {e}",
+                                            trigger.value
+                                        ),
+                                    )
+                                })?;
+                            if tokens.len() == 1 {
+                                if !preserved.contains(&tokens[0]) {
+                                    return Err(crate::utils::err_msg(
+                                        module_path!(),
+                                        line!(),
+                                        format!(
+                                            "Grammar trigger word '{}' was not preserved as a single token",
+                                            trigger.value
+                                        ),
+                                    ));
+                                }
+                                trigger_tokens.push(tokens[0]);
+                            } else {
+                                trigger_patterns.push(regex_escape(&trigger.value));
+                            }
+                        }
+                        llama_cpp_2::model::GrammarTriggerType::Pattern => {
+                            trigger_patterns.push(trigger.value.clone());
+                        }
+                        llama_cpp_2::model::GrammarTriggerType::PatternFull => {
+                            trigger_patterns.push(anchor_pattern(&trigger.value));
+                        }
+                    }
+                }
+
+                LlamaSampler::grammar_lazy_patterns(
+                    model,
+                    grammar,
+                    "root",
+                    &trigger_patterns,
+                    &trigger_tokens,
+                )
+            } else {
+                LlamaSampler::grammar(model, grammar, "root")
+            }
+            .map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to initialize llama.cpp grammar sampler: {e}"),
+                )
+            })?;
+
+            order.push(if template_result.grammar_lazy {
+                "grammar_lazy"
+            } else {
+                "grammar"
+            });
+            samplers.push(grammar_sampler);
+            active_params.insert(
+                "grammar".to_string(),
+                json!({
+                    "lazy": template_result.grammar_lazy,
+                    "trigger_count": template_result.grammar_triggers.len(),
+                    "preserved_token_count": template_result.preserved_tokens.len(),
+                }),
+            );
+        }
+    }
+
     let k = config.top_k.unwrap_or(40) as i32;
     order.push("top_k");
     samplers.push(LlamaSampler::top_k(k));
@@ -177,84 +295,6 @@ pub(super) fn build_sampler(
             order.push("typical");
             samplers.push(LlamaSampler::typical(tp as f32, 1));
             active_params.insert("typical_p".to_string(), json!(tp));
-        }
-    }
-
-    if let Some(template_result) = chat_template_result {
-        if let Some(grammar) = template_result.grammar.as_deref() {
-            let grammar_sampler = if template_result.grammar_lazy {
-                let mut trigger_patterns = Vec::new();
-                let mut trigger_words = Vec::new();
-                let mut trigger_tokens = Vec::new();
-
-                for trigger in &template_result.grammar_triggers {
-                    match trigger.trigger_type {
-                        llama_cpp_2::model::GrammarTriggerType::Token => {
-                            if let Some(token) = trigger.token {
-                                trigger_tokens.push(token);
-                            }
-                        }
-                        llama_cpp_2::model::GrammarTriggerType::Word => {
-                            trigger_words.push(trigger.value.clone());
-                            trigger_patterns.push(regex_escape(&trigger.value));
-                        }
-                        llama_cpp_2::model::GrammarTriggerType::Pattern => {
-                            trigger_patterns.push(trigger.value.clone());
-                        }
-                        llama_cpp_2::model::GrammarTriggerType::PatternFull => {
-                            let mut pattern = trigger.value.clone();
-                            if !pattern.starts_with('^') {
-                                pattern.insert(0, '^');
-                            }
-                            if !pattern.ends_with('$') {
-                                pattern.push('$');
-                            }
-                            trigger_patterns.push(pattern);
-                        }
-                    }
-                }
-
-                if !trigger_patterns.is_empty() {
-                    LlamaSampler::grammar_lazy_patterns(
-                        model,
-                        grammar,
-                        "root",
-                        &trigger_patterns,
-                        &trigger_tokens,
-                    )
-                } else {
-                    LlamaSampler::grammar_lazy(
-                        model,
-                        grammar,
-                        "root",
-                        &trigger_words,
-                        &trigger_tokens,
-                    )
-                }
-            } else {
-                LlamaSampler::grammar(model, grammar, "root")
-            }
-            .map_err(|e| {
-                crate::utils::err_msg(
-                    module_path!(),
-                    line!(),
-                    format!("Failed to initialize llama.cpp grammar sampler: {e}"),
-                )
-            })?;
-
-            order.push(if template_result.grammar_lazy {
-                "grammar_lazy"
-            } else {
-                "grammar"
-            });
-            samplers.push(grammar_sampler);
-            active_params.insert(
-                "grammar".to_string(),
-                json!({
-                    "lazy": template_result.grammar_lazy,
-                    "trigger_count": template_result.grammar_triggers.len(),
-                }),
-            );
         }
     }
 

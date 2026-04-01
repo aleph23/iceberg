@@ -61,7 +61,7 @@ mod desktop {
     use prompt::{
         add_bos_label, build_prompt, inject_media_markers, model_tokenizer_add_bos_label,
         model_tokenizer_adds_bos, prompt_add_bos_reason, prompt_mode_label, resolve_prompt_add_bos,
-        token_piece_bytes,
+        token_piece_bytes, OpenAICompatPromptOptions,
     };
     use sampler::{
         build_sampler, flash_attention_policy_label, kv_type_label, normalize_sampler_profile,
@@ -136,6 +136,38 @@ mod desktop {
                     LLAMA_FLASH_ATTN_TYPE_DISABLED
                 }
             })
+    }
+
+    fn parse_local_reasoning_format(body: &Value) -> Option<String> {
+        if let Some(value) = body.get("reasoning_format").and_then(|v| v.as_str()) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+
+        let has_reasoning_config = body.get("reasoning").is_some()
+            || body
+                .get("reasoning_effort")
+                .and_then(|v| v.as_str())
+                .is_some_and(|v| !v.trim().is_empty());
+        if has_reasoning_config {
+            Some("auto".to_string())
+        } else {
+            None
+        }
+    }
+
+    fn parse_local_enable_thinking(body: &Value, reasoning_format: Option<&str>) -> bool {
+        body.get("enable_thinking")
+            .and_then(|v| v.as_bool())
+            .unwrap_or_else(|| reasoning_format.is_some())
+    }
+
+    fn parse_local_parallel_tool_calls(body: &Value) -> bool {
+        body.get("parallel_tool_calls")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     fn parse_stop_sequences(body: &Value) -> Vec<String> {
@@ -374,6 +406,12 @@ mod desktop {
                 .unwrap_or(false)
         });
         let tool_choice = body.get("tool_choice");
+        let reasoning_format = parse_local_reasoning_format(body);
+        let openai_compat_options = OpenAICompatPromptOptions {
+            enable_thinking: parse_local_enable_thinking(body, reasoning_format.as_deref()),
+            parallel_tool_calls: parse_local_parallel_tool_calls(body),
+            reasoning_format,
+        };
         let llama_mmproj_path = body
             .get("llamaMmprojPath")
             .or_else(|| body.get("llama_mmproj_path"))
@@ -730,6 +768,7 @@ mod desktop {
                 llama_raw_completion_fallback,
                 tools,
                 tool_choice,
+                &openai_compat_options,
             )?;
             let mut stop_sequences = parse_stop_sequences(body);
             for stop in &built_prompt.additional_stop_sequences {
@@ -1252,7 +1291,6 @@ mod desktop {
                 }
 
                 let token = sampler.sample(&ctx, sample_index);
-                sampler.accept(token);
 
                 if model.is_eog_token(token) {
                     reached_eos = true;

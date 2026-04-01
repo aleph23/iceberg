@@ -26,6 +26,13 @@ pub(super) struct BuiltPrompt {
     pub(super) additional_stop_sequences: Vec<String>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub(super) struct OpenAICompatPromptOptions {
+    pub(super) reasoning_format: Option<String>,
+    pub(super) parallel_tool_calls: bool,
+    pub(super) enable_thinking: bool,
+}
+
 fn normalize_role(role: &str) -> &'static str {
     match role {
         "system" | "developer" => "system",
@@ -254,6 +261,7 @@ fn build_oaicompat_prompt(
     resolved_template: &ResolvedChatTemplate,
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
+    options: &OpenAICompatPromptOptions,
 ) -> Result<BuiltPrompt, String> {
     if !template_appears_tool_aware(&resolved_template.template_text) {
         return Err(crate::utils::err_msg(
@@ -281,6 +289,7 @@ fn build_oaicompat_prompt(
     } else {
         Some("none".to_string())
     };
+    let parse_tool_calls = has_tools && normalized_tool_choice.as_deref() != Some("none");
     let tools_json = if has_tools {
         Some(serde_json::to_string(&tools_vec).map_err(|e| {
             crate::utils::err_msg(
@@ -299,15 +308,15 @@ fn build_oaicompat_prompt(
         tool_choice: normalized_tool_choice.as_deref(),
         json_schema: None,
         grammar: None,
-        reasoning_format: None,
+        reasoning_format: options.reasoning_format.as_deref(),
         chat_template_kwargs: None,
         add_generation_prompt: true,
         use_jinja: true,
-        parallel_tool_calls: has_tools,
-        enable_thinking: false,
+        parallel_tool_calls: has_tools && options.parallel_tool_calls,
+        enable_thinking: options.enable_thinking,
         add_bos: false,
         add_eos: false,
-        parse_tool_calls: has_tools,
+        parse_tool_calls,
     };
 
     let chat_template_result = model
@@ -399,6 +408,7 @@ pub(super) fn build_prompt(
     allow_raw_completion_fallback: bool,
     tools: Option<&Value>,
     tool_choice: Option<&Value>,
+    options: &OpenAICompatPromptOptions,
 ) -> Result<BuiltPrompt, String> {
     let needs_openai_compat = tools
         .and_then(|value| value.as_array())
@@ -471,7 +481,14 @@ pub(super) fn build_prompt(
         };
 
     if needs_openai_compat {
-        return build_oaicompat_prompt(model, messages, &resolved_template, tools, tool_choice);
+        return build_oaicompat_prompt(
+            model,
+            messages,
+            &resolved_template,
+            tools,
+            tool_choice,
+            options,
+        );
     }
 
     match model.apply_chat_template(&resolved_template.template, &chat_messages, true) {
