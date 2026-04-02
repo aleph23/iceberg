@@ -20,6 +20,7 @@ interface ChatHeaderProps {
   hasBackgroundImage?: boolean;
   headerOverlayClassName?: string;
   onSessionUpdate?: () => void;
+  onSettingsOpen?: () => void;
 }
 
 function isImageLike(value?: string) {
@@ -35,6 +36,7 @@ export function ChatHeader({
   hasBackgroundImage,
   headerOverlayClassName,
   onSessionUpdate,
+  onSettingsOpen,
 }: ChatHeaderProps) {
   const navigate = useNavigate();
   const { characterId } = useParams<{ characterId: string }>();
@@ -177,6 +179,10 @@ export function ChatHeader({
 
             <button
               onClick={() => {
+                if (onSettingsOpen) {
+                  onSettingsOpen();
+                  return;
+                }
                 if (!characterId) return;
                 navigate(Routes.chatSettingsSession(characterId, sessionId));
               }}
@@ -259,6 +265,10 @@ export function ChatHeader({
             {/* Avatar (Settings) Button */}
             <button
               onClick={() => {
+                if (onSettingsOpen) {
+                  onSettingsOpen();
+                  return;
+                }
                 if (!characterId) return;
                 navigate(Routes.chatSettingsSession(characterId, sessionId));
               }}

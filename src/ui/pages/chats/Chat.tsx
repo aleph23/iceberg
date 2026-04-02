@@ -61,6 +61,7 @@ import {
   MessageActionsBottomSheet,
   LoadingSpinner,
   EmptyState,
+  ChatSettingsDrawer,
 } from "./components";
 import { BottomMenu, MenuButton } from "../../components";
 import { AvatarImage } from "../../components/AvatarImage";
@@ -173,6 +174,7 @@ export function ChatConversationPage() {
   const [shouldTriggerFileInput, setShouldTriggerFileInput] = useState(false);
   const [personas, setPersonas] = useState<Persona[]>([]);
   const isMobile = useMemo(() => getPlatform().type === "mobile", []);
+  const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
   const helpMeReplyRequestIdRef = useRef<string | null>(null);
   const helpMeReplyUnlistenRef = useRef<UnlistenFn | null>(null);
   const helpMeReplyLoadingTimeoutRef = useRef<number | null>(null);
@@ -1731,6 +1733,7 @@ export function ChatConversationPage() {
           hasBackgroundImage={!!backgroundImageData}
           headerOverlayClassName={theme.headerOverlay}
           onSessionUpdate={handleSessionUpdate}
+          onSettingsOpen={!isMobile ? () => setSettingsDrawerOpen(true) : undefined}
         />
       </div>
 
@@ -2534,6 +2537,15 @@ export function ChatConversationPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Desktop Settings Drawer */}
+      {!isMobile && character && (
+        <ChatSettingsDrawer
+          isOpen={settingsDrawerOpen}
+          onClose={() => setSettingsDrawerOpen(false)}
+          character={character}
+        />
+      )}
     </div>
   );
 }
