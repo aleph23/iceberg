@@ -17,6 +17,8 @@ use crate::chat_manager::provider_adapter::{
     extract_image_data_urls, extract_text_content, parse_data_url,
 };
 #[cfg(not(mobile))]
+use crate::chat_manager::thinking::{normalize_thinking_content, ThinkingTagStreamParser};
+#[cfg(not(mobile))]
 use crate::chat_manager::tooling::{parse_tool_calls, ToolCall};
 #[cfg(not(mobile))]
 use crate::chat_manager::types::{ErrorEnvelope, NormalizedEvent, UsageSummary};
@@ -321,6 +323,7 @@ mod desktop {
         app: &AppHandle,
         request_id: Option<&String>,
         deltas: Vec<String>,
+        thinking_parser: &mut ThinkingTagStreamParser,
         streamed_text: &mut String,
     ) -> Result<(), String> {
         for delta_json in deltas {
@@ -334,16 +337,49 @@ mod desktop {
 
             if let Some(text) = delta_value.get("content").and_then(|v| v.as_str()) {
                 if !text.is_empty() {
-                    streamed_text.push_str(text);
-                    if let Some(id) = request_id {
-                        transport::emit_normalized(
-                            app,
-                            id,
-                            NormalizedEvent::Delta {
-                                text: text.to_string(),
-                            },
-                        );
+                    let split = thinking_parser.feed(text);
+                    if !split.content.is_empty() {
+                        streamed_text.push_str(&split.content);
+                        if let Some(id) = request_id {
+                            transport::emit_normalized(
+                                app,
+                                id,
+                                NormalizedEvent::Delta {
+                                    text: split.content,
+                                },
+                            );
+                        }
                     }
+                    if !split.reasoning.is_empty() {
+                        if let Some(id) = request_id {
+                            transport::emit_normalized(
+                                app,
+                                id,
+                                NormalizedEvent::Reasoning {
+                                    text: split.reasoning,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+
+            let explicit_reasoning = delta_value
+                .get("reasoning")
+                .or_else(|| delta_value.get("reasoning_content"))
+                .or_else(|| delta_value.get("thinking"))
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.is_empty());
+
+            if let Some(reasoning) = explicit_reasoning {
+                if let Some(id) = request_id {
+                    transport::emit_normalized(
+                        app,
+                        id,
+                        NormalizedEvent::Reasoning {
+                            text: reasoning.to_string(),
+                        },
+                    );
                 }
             }
         }
@@ -1379,6 +1415,7 @@ mod desktop {
                 }),
             );
             let mut sampler = built_sampler.sampler;
+            let mut streamed_thinking_parser = ThinkingTagStreamParser::default();
             let mut structured_parser = built_prompt
                 .chat_template_result
                 .as_ref()
@@ -1487,14 +1524,26 @@ mod desktop {
                             };
                             if safe_emit_end > stream_emitted_len {
                                 if let Some(ref id) = request_id {
-                                    transport::emit_normalized(
-                                        &app,
-                                        id,
-                                        NormalizedEvent::Delta {
-                                            text: output[stream_emitted_len..safe_emit_end]
-                                                .to_string(),
-                                        },
-                                    );
+                                    let split = streamed_thinking_parser
+                                        .feed(&output[stream_emitted_len..safe_emit_end]);
+                                    if !split.content.is_empty() {
+                                        transport::emit_normalized(
+                                            &app,
+                                            id,
+                                            NormalizedEvent::Delta {
+                                                text: split.content,
+                                            },
+                                        );
+                                    }
+                                    if !split.reasoning.is_empty() {
+                                        transport::emit_normalized(
+                                            &app,
+                                            id,
+                                            NormalizedEvent::Reasoning {
+                                                text: split.reasoning,
+                                            },
+                                        );
+                                    }
                                 }
                                 stream_emitted_len = safe_emit_end;
                             }
@@ -1531,6 +1580,7 @@ mod desktop {
                                     &app,
                                     request_id.as_ref(),
                                     deltas,
+                                    &mut streamed_thinking_parser,
                                     &mut streamed_structured_text,
                                 )?;
                                 structured_parsed_len = safe_parse_end;
@@ -1584,13 +1634,25 @@ mod desktop {
                 && stream_emitted_len < output.len()
             {
                 if let Some(ref id) = request_id {
-                    transport::emit_normalized(
-                        &app,
-                        id,
-                        NormalizedEvent::Delta {
-                            text: output[stream_emitted_len..].to_string(),
-                        },
-                    );
+                    let split = streamed_thinking_parser.feed(&output[stream_emitted_len..]);
+                    if !split.content.is_empty() {
+                        transport::emit_normalized(
+                            &app,
+                            id,
+                            NormalizedEvent::Delta {
+                                text: split.content,
+                            },
+                        );
+                    }
+                    if !split.reasoning.is_empty() {
+                        transport::emit_normalized(
+                            &app,
+                            id,
+                            NormalizedEvent::Reasoning {
+                                text: split.reasoning,
+                            },
+                        );
+                    }
                 }
                 stream_emitted_len = output.len();
             }
@@ -1615,6 +1677,7 @@ mod desktop {
                     &app,
                     request_id.as_ref(),
                     deltas,
+                    &mut streamed_thinking_parser,
                     &mut streamed_structured_text,
                 )?;
             }
@@ -1691,7 +1754,51 @@ mod desktop {
             }
 
             final_message = parsed_final_message;
-            output = extract_text_content(final_message.get("content")).unwrap_or_default();
+            let explicit_reasoning = final_message
+                .get("reasoning")
+                .or_else(|| final_message.get("reasoning_content"))
+                .or_else(|| final_message.get("thinking"))
+                .and_then(|value| value.as_str());
+            let raw_content = extract_text_content(final_message.get("content"));
+            let normalized = normalize_thinking_content(
+                raw_content.as_deref().filter(|value| !value.is_empty()),
+                explicit_reasoning,
+            );
+            if let Some(message) = final_message.as_object_mut() {
+                message.insert("content".to_string(), json!(normalized.content));
+                if normalized.reasoning.is_empty() {
+                    message.remove("reasoning");
+                    message.remove("reasoning_content");
+                    message.remove("thinking");
+                } else {
+                    message.insert("reasoning".to_string(), json!(normalized.reasoning));
+                    message.remove("reasoning_content");
+                    message.remove("thinking");
+                }
+            }
+            output = normalized.content;
+
+            if stream {
+                if let Some(ref id) = request_id {
+                    let tail = streamed_thinking_parser.finish();
+                    if !tail.content.is_empty() {
+                        transport::emit_normalized(
+                            &app,
+                            id,
+                            NormalizedEvent::Delta { text: tail.content },
+                        );
+                    }
+                    if !tail.reasoning.is_empty() {
+                        transport::emit_normalized(
+                            &app,
+                            id,
+                            NormalizedEvent::Reasoning {
+                                text: tail.reasoning,
+                            },
+                        );
+                    }
+                }
+            }
 
             Ok(())
         })();
