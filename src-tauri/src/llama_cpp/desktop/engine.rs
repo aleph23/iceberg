@@ -39,10 +39,13 @@ const LLAMA_MODEL_LOAD_PROGRESS_EVENT: &str = "llama-model-load-progress";
 const MODEL_LOAD_STAGE_GPU_OFFLOAD: u8 = 0;
 const MODEL_LOAD_STAGE_CPU: u8 = 1;
 const MODEL_LOAD_STAGE_CPU_FALLBACK: u8 = 2;
+const MODEL_LOAD_STAGE_FINALIZING: u8 = 3;
 const MODEL_LOAD_STATUS_LOADING: u8 = 0;
 const MODEL_LOAD_STATUS_RETRYING: u8 = 1;
 const MODEL_LOAD_STATUS_LOADED: u8 = 2;
 const MODEL_LOAD_STATUS_FAILED: u8 = 3;
+const MODEL_LOAD_PROGRESS_CAP: f32 = 0.9;
+const MODEL_LOAD_FINALIZING_PROGRESS: f32 = 0.95;
 
 struct ModelLoadProgressContext {
     app: AppHandle,
@@ -87,13 +90,17 @@ fn emit_model_load_progress(
     );
 }
 
+fn stage_progress(progress: f32) -> f32 {
+    progress.clamp(0.0, 1.0) * MODEL_LOAD_PROGRESS_CAP
+}
+
 unsafe extern "C" fn model_load_progress_callback(progress: f32, user_data: *mut c_void) -> bool {
     if user_data.is_null() {
         return true;
     }
 
     let ctx = unsafe { &*(user_data as *const ModelLoadProgressContext) };
-    let clamped = progress.clamp(0.0, 1.0);
+    let clamped = stage_progress(progress);
     let percent = (clamped * 100.0).round().clamp(0.0, 100.0) as u8;
     let last = ctx.last_percent.load(Ordering::Relaxed);
     if percent <= last && percent < 100 {
@@ -111,6 +118,72 @@ unsafe extern "C" fn model_load_progress_callback(progress: f32, user_data: *mut
         clamped,
     );
     true
+}
+
+fn model_load_stage_for_backend(
+    backend_path: Option<&str>,
+    gpu_load_fallback_activated: bool,
+) -> u8 {
+    match backend_path {
+        Some("gpu_offload") => MODEL_LOAD_STAGE_GPU_OFFLOAD,
+        Some("cpu") if gpu_load_fallback_activated => MODEL_LOAD_STAGE_CPU_FALLBACK,
+        Some("cpu") => MODEL_LOAD_STAGE_CPU,
+        _ => MODEL_LOAD_STAGE_FINALIZING,
+    }
+}
+
+pub(super) fn emit_model_load_finalizing(
+    app: &AppHandle,
+    request_id: Option<&str>,
+    model_path: &str,
+    backend_path: Option<&str>,
+    _gpu_load_fallback_activated: bool,
+) {
+    emit_model_load_progress(
+        app,
+        request_id,
+        model_path,
+        backend_path.unwrap_or("unknown"),
+        MODEL_LOAD_STAGE_FINALIZING,
+        MODEL_LOAD_STATUS_LOADING,
+        MODEL_LOAD_FINALIZING_PROGRESS,
+    );
+}
+
+pub(super) fn emit_model_load_complete(
+    app: &AppHandle,
+    request_id: Option<&str>,
+    model_path: &str,
+    backend_path: Option<&str>,
+    gpu_load_fallback_activated: bool,
+) {
+    emit_model_load_progress(
+        app,
+        request_id,
+        model_path,
+        backend_path.unwrap_or("unknown"),
+        model_load_stage_for_backend(backend_path, gpu_load_fallback_activated),
+        MODEL_LOAD_STATUS_LOADED,
+        1.0,
+    );
+}
+
+pub(super) fn emit_model_load_failed(
+    app: &AppHandle,
+    request_id: Option<&str>,
+    model_path: &str,
+    backend_path: Option<&str>,
+    gpu_load_fallback_activated: bool,
+) {
+    emit_model_load_progress(
+        app,
+        request_id,
+        model_path,
+        backend_path.unwrap_or("unknown"),
+        model_load_stage_for_backend(backend_path, gpu_load_fallback_activated),
+        MODEL_LOAD_STATUS_FAILED,
+        0.0,
+    );
 }
 
 fn load_model_with_progress(
@@ -167,18 +240,6 @@ fn load_model_with_progress(
             "Failed to load llama model: null reference from llama.cpp",
         )
     })?;
-
-    if let Some(ctx) = progress_ctx.as_ref() {
-        emit_model_load_progress(
-            &ctx.app,
-            ctx.request_id.as_deref(),
-            &ctx.model_path,
-            &ctx.backend_path,
-            ctx.stage,
-            MODEL_LOAD_STATUS_LOADED,
-            1.0,
-        );
-    }
 
     // SAFETY: `LlamaModel` is a transparent wrapper around `NonNull<llama_model>`.
     let model = unsafe {

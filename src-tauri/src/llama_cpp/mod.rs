@@ -59,7 +59,10 @@ mod desktop {
         context_error_detail, get_available_memory_bytes, get_available_vram_bytes,
         is_likely_context_oom_error,
     };
-    use engine::{load_engine, using_rocm_backend};
+    use engine::{
+        emit_model_load_complete, emit_model_load_failed, emit_model_load_finalizing, load_engine,
+        using_rocm_backend,
+    };
     use prompt::{
         add_bos_label, build_prompt, inject_media_markers, model_tokenizer_add_bos_label,
         model_tokenizer_adds_bos, prompt_add_bos_reason, prompt_mode_label, resolve_prompt_add_bos,
@@ -851,6 +854,13 @@ mod desktop {
                 "recommendedContext",
                 json!(recommended_ctx),
             );
+            emit_model_load_finalizing(
+                &app,
+                request_id.as_deref(),
+                model_path,
+                Some(backend_path_used),
+                gpu_load_fallback_activated,
+            );
             if gpu_load_fallback_activated && backend_path_used == "cpu" {
                 if let Some((safe_ctx, safe_batch)) = compute_cpu_fallback_limits(
                     model,
@@ -1286,6 +1296,13 @@ mod desktop {
                 ),
             );
             crate::utils::emit_debug(&app, "llama_runtime", runtime_settings);
+            emit_model_load_complete(
+                &app,
+                request_id.as_deref(),
+                model_path,
+                Some(backend_path_used.as_str()),
+                gpu_load_fallback_activated,
+            );
 
             failure_stage = "prompt_evaluation";
             let batch_size = n_batch as usize;
@@ -1834,6 +1851,18 @@ mod desktop {
             );
             log_error(&app, "llama_cpp", format!("local inference error: {}", err));
             persist_runtime_report(&app, model_path, Some(&runtime_report));
+            emit_model_load_failed(
+                &app,
+                request_id.as_deref(),
+                model_path,
+                runtime_report
+                    .get("backendPathUsed")
+                    .and_then(|value| value.as_str()),
+                runtime_report
+                    .get("gpuLoadFallbackActivated")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false),
+            );
             if stream {
                 if let Some(ref id) = request_id {
                     let envelope = ErrorEnvelope {

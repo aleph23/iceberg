@@ -146,6 +146,11 @@ function resolveLlamaModelLoadCopy(stage?: number | null) {
         title: "Local model startup",
         subtitle: "Switching to CPU fallback",
       };
+    case 3:
+      return {
+        title: "Local model startup",
+        subtitle: "Finalizing runtime",
+      };
     default:
       return {
         title: "Local model startup",
@@ -167,7 +172,7 @@ function App() {
 
   useEffect(() => {
     if (typeof document === "undefined" || platform.os !== "linux") return;
- 
+
     const styleId = "linux-color-scheme-dark";
     let style = document.getElementById(styleId) as HTMLStyleElement | null;
 
