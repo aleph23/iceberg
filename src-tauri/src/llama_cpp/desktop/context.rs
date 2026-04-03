@@ -10,6 +10,8 @@ use llama_cpp_sys_2::{
 #[cfg(target_os = "windows")]
 use windows::core::Interface;
 #[cfg(target_os = "windows")]
+use windows::core::Interface;
+#[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Dxgi::{
     CreateDXGIFactory1, IDXGIAdapter1, IDXGIAdapter3, IDXGIFactory6, DXGI_ADAPTER_FLAG_SOFTWARE,
     DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
@@ -216,8 +218,8 @@ fn windows_local_vram_cap_bytes() -> Option<u64> {
                         .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
                         .ok()?;
                     Some(
-                        info.Budget
-                            .saturating_sub(info.CurrentUsage)
+                        (info.Budget as u64)
+                            .saturating_sub(info.CurrentUsage as u64)
                             .min(dedicated_bytes),
                     )
                 })

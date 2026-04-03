@@ -132,7 +132,9 @@ pub async fn generate_image(
         );
 
         let client = reqwest::Client::new();
-        let mut req_builder = client.post(&url);
+        let method_str = adapter.method();
+        let method = reqwest::Method::from_bytes(method_str.as_bytes()).unwrap_or(reqwest::Method::POST);
+        let mut req_builder = client.request(method, &url);
 
         let is_multipart = matches!(payload, ImageRequestPayload::Multipart(_));
         for (key, value) in headers {
@@ -142,7 +144,13 @@ pub async fn generate_image(
             req_builder = req_builder.header(key, value);
         }
         req_builder = match payload {
-            ImageRequestPayload::Json(body) => req_builder.json(&body),
+            ImageRequestPayload::Json(body) => {
+                if body == serde_json::Value::Null || body.as_object().map_or(false, |m| m.is_empty()) {
+                    req_builder
+                } else {
+                    req_builder.json(&body)
+                }
+            },
             ImageRequestPayload::Multipart(form) => req_builder.multipart(form),
         };
 
@@ -163,21 +171,44 @@ pub async fn generate_image(
             ));
         }
 
-        let response_json: serde_json::Value = response.json().await.map_err(|e| {
-            crate::utils::err_msg(
-                module_path!(),
-                line!(),
-                format!("Failed to parse response: {}", e),
-            )
-        })?;
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
 
-        log_info(
-            &app,
-            "image_generator",
-            format!("Received response: {}", response_json),
-        );
+        let image_data: Vec<ImageResponseData>;
+        if content_type.starts_with("image/") {
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| crate::utils::err_msg(module_path!(), line!(), format!("Failed to read image bytes: {}", e)))?;
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let b64_url = format!("data:{};base64,{}", content_type, b64);
+            image_data = vec![ImageResponseData {
+                url: None,
+                b64_json: Some(b64_url),
+                text: None,
+            }];
+        } else {
+            let response_json: serde_json::Value = response.json().await.map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to parse response: {}", e),
+                )
+            })?;
 
-        let image_data: Vec<ImageResponseData> = adapter.parse_response(response_json)?;
+            log_info(
+                &app,
+                "image_generator",
+                format!("Received response: {}", response_json),
+            );
+
+            image_data = adapter.parse_response(response_json)?;
+        }
 
         let mut generated_images = Vec::new();
         for img_data in image_data {

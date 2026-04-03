@@ -221,6 +221,7 @@ mod nanogpt;
 mod nvidia;
 mod ollama;
 mod openai;
+mod pollinations;
 mod qwen;
 mod stability;
 mod xai;
@@ -256,6 +257,8 @@ pub fn adapter_for(credential: &ProviderCredential) -> Box<dyn ProviderAdapter +
         "stability" => Box::new(stability::StabilityAdapter),
         "openrouter" => Box::new(openai::OpenRouterAdapter),
         "lettuce-engine" => Box::new(lettuce_engine::LettuceEngineAdapter),
+        "pollinations" => Box::new(pollinations::PollinationsTextAdapter),
+        "pollinations-image" => Box::new(pollinations::PollinationsImageAdapter),
         _ => Box::new(openai::OpenAIAdapter),
     }
 }

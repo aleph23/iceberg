@@ -9,6 +9,7 @@ pub mod google_gemini;
 pub mod nanogpt;
 pub mod openai;
 pub mod openrouter;
+pub mod pollinations;
 pub mod stability;
 pub mod xai;
 
@@ -18,6 +19,10 @@ pub enum ImageRequestPayload {
 }
 
 pub trait ImageProviderAdapter: Send + Sync {
+    fn method(&self) -> String {
+        "POST".into()
+    }
+
     fn endpoint(&self, base_url: &str, request: &ImageGenerationRequest) -> String;
     #[allow(dead_code)]
     fn required_auth_headers(&self) -> &'static [&'static str];
@@ -72,6 +77,7 @@ pub fn get_adapter(provider_id: &str) -> Result<Box<dyn ImageProviderAdapter>, S
         "openrouter" => Ok(Box::new(openrouter::OpenRouterAdapter)),
         "gemini" => Ok(Box::new(google_gemini::GoogleGeminiAdapter)),
         "stability" => Ok(Box::new(stability::StabilityAdapter)),
+        "pollinations-image" => Ok(Box::new(pollinations::PollinationsAdapter)),
         "xai" => Ok(Box::new(xai::XAIAdapter)),
         "nanogpt" => Ok(Box::new(nanogpt::NanoGPTAdapter)),
         _ => Err(format!(

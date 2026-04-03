@@ -168,7 +168,7 @@ export function useProvidersPageController(): ControllerReturn {
       const requiresVerification =
         !isLocalProvider &&
         !isEngineProvider &&
-        ["openai", "anthropic", "openrouter", "groq", "mistral"].includes(
+        ["openai", "anthropic", "openrouter", "groq", "mistral", "pollinations", "pollinations-image"].includes(
           editorProvider.providerId,
         );
       const trimmedKey = apiKey.trim();
