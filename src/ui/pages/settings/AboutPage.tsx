@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ExternalLink, Globe, Github, RefreshCw } from "lucide-react";
+import { ExternalLink, Globe, RefreshCw } from "lucide-react";
 
+import githubSvg from "../../../assets/github.svg";
 import logoSvg from "../../../assets/logo.svg";
 import { checkForAppUpdate, type AppUpdateInfo } from "../../../core/app-updates/checkForAppUpdate";
 import { presentAppUpdateToast } from "../../../core/app-updates/presentAppUpdateToast";
@@ -304,7 +305,7 @@ export function AboutPage() {
               },
               {
                 key: "github",
-                icon: <Github className="h-4 w-4" />,
+                icon: <img src={githubSvg} alt="" className="h-4 w-4" />,
                 title: t("about.links.github"),
                 subtitle: t("about.links.githubDescription"),
                 url: GITHUB_REPO_LINK,
