@@ -3074,6 +3074,7 @@ dependencies = [
  "r2d2",
  "r2d2_sqlite",
  "rand 0.8.5",
+ "regex",
  "reqwest 0.11.27",
  "rusqlite",
  "serde",
@@ -3221,7 +3222,7 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 [[package]]
 name = "llama-cpp-2"
 version = "0.1.142"
-source = "git+https://github.com/MegalithOfficial/llama-cpp-rs?rev=114aec448e586dff4e74ffb7d83699c45a4c180c#114aec448e586dff4e74ffb7d83699c45a4c180c"
+source = "git+https://github.com/MegalithOfficial/llama-cpp-rs#114aec448e586dff4e74ffb7d83699c45a4c180c"
 dependencies = [
  "encoding_rs",
  "enumflags2",
@@ -3234,7 +3235,7 @@ dependencies = [
 [[package]]
 name = "llama-cpp-sys-2"
 version = "0.1.142"
-source = "git+https://github.com/MegalithOfficial/llama-cpp-rs?rev=114aec448e586dff4e74ffb7d83699c45a4c180c#114aec448e586dff4e74ffb7d83699c45a4c180c"
+source = "git+https://github.com/MegalithOfficial/llama-cpp-rs#114aec448e586dff4e74ffb7d83699c45a4c180c"
 dependencies = [
  "bindgen",
  "cc",

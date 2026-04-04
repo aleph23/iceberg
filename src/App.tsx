@@ -608,6 +608,8 @@ function AppContent() {
     [location.pathname],
   );
 
+  const isLogsRoute = location.pathname === "/settings/logs";
+
   const isLorebookEditorRoute = useMemo(
     () =>
       location.pathname.startsWith("/library/lorebooks/") ||
@@ -937,9 +939,11 @@ function AppContent() {
                   ? "overflow-hidden px-0 pt-0 pb-0"
                   : isSearchRoute
                     ? "overflow-hidden px-0 pt-0 pb-0"
-                    : isLorebookEditorRoute
+                    : isLogsRoute
                       ? "overflow-hidden px-0 pt-0 pb-0"
-                      : isPersonaEditRoute
+                      : isLorebookEditorRoute
+                        ? "overflow-hidden px-0 pt-0 pb-0"
+                        : isPersonaEditRoute
                         ? "overflow-hidden px-0 pt-0 pb-0"
                         : isTemplateEditorRoute
                           ? "overflow-hidden px-0 pt-0 pb-0"
