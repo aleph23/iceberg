@@ -3,7 +3,6 @@ import { getName } from "@tauri-apps/api/app";
 import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
-  FileText,
   RefreshCw,
   Trash2,
   Download,
@@ -12,13 +11,13 @@ import {
   FileCode,
   Clipboard,
   Sparkles,
-  ChevronRight,
   ArrowDownToLine,
   ArrowUpToLine,
   Search,
   ChevronUp,
   ChevronDown,
   X,
+  MoreVertical,
 } from "lucide-react";
 import { logManager } from "../../../core/utils/logger";
 import { getPlatform } from "../../../core/utils/platform";
@@ -30,7 +29,8 @@ import {
 import { sanitizeAdvancedModelSettings } from "../../components/AdvancedModelSettingsForm";
 import { interactive, typography, cn } from "../../design-tokens";
 import { confirmBottomMenu } from "../../components/ConfirmBottomMenu";
-import { useI18n } from "../../../core/i18n/context";
+import { BottomMenu, MenuButton } from "../../components/BottomMenu";
+// import { useI18n } from "../../../core/i18n/context";
 
 const logger = logManager({ component: "LogsPage" });
 
@@ -39,30 +39,6 @@ const FONT_SIZE_BASE = 11;
 const FONT_SIZES = [8, 9, 10, 11, 12, 13, 14, 16, 18, 20];
 const DEFAULT_FONT_IDX = FONT_SIZES.indexOf(FONT_SIZE_BASE);
 
-function SectionHeader({
-  title,
-  right,
-}: {
-  title: string;
-  right?: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between mb-2 px-1">
-      <h2
-        className={cn(
-          typography.overline.size,
-          typography.overline.weight,
-          typography.overline.tracking,
-          typography.overline.transform,
-          "text-fg/35",
-        )}
-      >
-        {title}
-      </h2>
-      {right}
-    </div>
-  );
-}
 
 const PAGE_SIZE = 2000;
 
@@ -438,6 +414,24 @@ function VirtualizedLogViewer({
 
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
+  // Clamp context menu to viewport after render
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!contextMenu || !contextMenuRef.current) return;
+    const el = contextMenuRef.current;
+    const rect = el.getBoundingClientRect();
+    const pad = 8;
+    let x = contextMenu.x;
+    let y = contextMenu.y;
+    if (x + rect.width > window.innerWidth - pad) x = window.innerWidth - rect.width - pad;
+    if (y + rect.height > window.innerHeight - pad) y = window.innerHeight - rect.height - pad;
+    if (x < pad) x = pad;
+    if (y < pad) y = pad;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+  }, [contextMenu]);
+
+  // Close on left-click outside
   useEffect(() => {
     if (!contextMenu) return;
     const handleDown = (e: MouseEvent) => {
@@ -552,9 +546,9 @@ function VirtualizedLogViewer({
 
   return (
     <div ref={containerRef} className="flex flex-1 flex-col min-h-0">
-      {/* Toolbar */}
-      <div className="flex items-center gap-2 px-4 py-2.5 border-b border-fg/10 shrink-0 flex-wrap">
-        <span className={cn(typography.caption.size, "text-fg/40 mr-1")}>
+      {/* Toolbar row 1: info + action buttons */}
+      <div className="flex items-center gap-2 px-4 py-1.5 border-b border-fg/10 shrink-0">
+        <span className={cn(typography.caption.size, "text-fg/40 shrink-0")}>
           {filteredIndices ? `${displayCount.toLocaleString()} / ` : ""}
           {lines.length.toLocaleString()}{hasMore ? ` of ${total.toLocaleString()}` : ""} lines
         </span>
@@ -564,7 +558,7 @@ function VirtualizedLogViewer({
             disabled={loadingMore}
             className={cn(
               typography.caption.size,
-              "text-info/70 hover:text-info",
+              "shrink-0 text-info/70 hover:text-info",
               interactive.transition.default,
               "disabled:opacity-50",
             )}
@@ -572,10 +566,9 @@ function VirtualizedLogViewer({
             {loadingMore ? "Loading..." : "Load more"}
           </button>
         )}
-        {/* Isolation indicator */}
         {isolatedLines && (
           <>
-            <span className={cn(typography.caption.size, "text-accent/70")}>
+            <span className={cn(typography.caption.size, "shrink-0 text-accent/70")}>
               {isolatedLines.size} isolated
             </span>
             <button
@@ -590,68 +583,57 @@ function VirtualizedLogViewer({
                 a.click();
                 URL.revokeObjectURL(url);
               }}
-              className={cn(
-                "text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-                interactive.transition.default,
-              )}
+              className={cn("shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1", interactive.transition.default)}
               title="Download isolated lines"
             >
               <Download className="h-3 w-3" />
             </button>
             <button
               onClick={clearIsolation}
-              className={cn(
-                "text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-                interactive.transition.default,
-              )}
+              className={cn("shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1", interactive.transition.default)}
               title="Clear isolation"
             >
               <X className="h-3 w-3" />
             </button>
           </>
         )}
-        {loadingRelevant && (
-          <Loader2 className="h-3 w-3 animate-spin text-fg/30" />
-        )}
+        {loadingRelevant && <Loader2 className="h-3 w-3 animate-spin text-fg/30 shrink-0" />}
         <div className="flex-1" />
-        {/* Time range filter */}
-        <div className="flex items-center gap-1">
-          <input
-            type="time"
-            step="1"
-            value={timeFrom}
-            onChange={(e) => setTimeFrom(e.target.value)}
-            className={cn(
-              "bg-transparent border border-fg/10 rounded px-1.5 py-0.5 text-[10px] font-mono text-fg/60 w-22",
-              "focus:outline-none focus:border-fg/25",
-              !timeFrom && "text-fg/25",
-            )}
-            title="From time"
-          />
-          <span className="text-fg/20 text-[10px]">-</span>
-          <input
-            type="time"
-            step="1"
-            value={timeTo}
-            onChange={(e) => setTimeTo(e.target.value)}
-            className={cn(
-              "bg-transparent border border-fg/10 rounded px-1.5 py-0.5 text-[10px] font-mono text-fg/60 w-22",
-              "focus:outline-none focus:border-fg/25",
-              !timeTo && "text-fg/25",
-            )}
-            title="To time"
-          />
-          {(timeFrom || timeTo) && (
-            <button
-              onClick={() => { setTimeFrom(""); setTimeTo(""); }}
-              className="text-fg/30 hover:text-fg/60"
-              title="Clear time filter"
-            >
-              <X className="h-3 w-3" />
-            </button>
-          )}
-        </div>
-        <div className="w-px h-4 bg-fg/10 mx-1" />
+        {fontSize !== FONT_SIZE_BASE && (
+          <button
+            onClick={() => setFontIdx(DEFAULT_FONT_IDX)}
+            className={cn("shrink-0 text-[10px] text-fg/30 hover:text-fg/50 tabular-nums", interactive.transition.default)}
+            title="Reset zoom (Ctrl+0)"
+          >
+            {fontSize}px
+          </button>
+        )}
+        <button
+          onClick={() => { setSearchOpen(true); requestAnimationFrame(() => searchInputRef.current?.focus()); }}
+          className={cn("shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1", interactive.transition.default, searchOpen && "text-info")}
+          title="Search"
+        >
+          <Search className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => virtualizer.scrollToIndex(0, { align: "start" })}
+          className={cn("shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1", interactive.transition.default)}
+          title="Jump to top"
+        >
+          <ArrowUpToLine className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={scrollToBottom}
+          disabled={loadingMore}
+          className={cn("shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1", interactive.transition.default, "disabled:opacity-50")}
+          title="Jump to bottom"
+        >
+          <ArrowDownToLine className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* Toolbar row 2: filters */}
+      <div className="flex items-center gap-1.5 px-4 py-1.5 border-b border-fg/10 shrink-0 flex-wrap lg:flex-nowrap">
         {/* Level filters */}
         {(["ERROR", "WARN", "INFO", "DEBUG"] as const).map((level) => {
           const active = !hiddenLevels.has(level);
@@ -665,18 +647,14 @@ function VirtualizedLogViewer({
             <button
               key={level}
               onClick={() => toggleLevel(level)}
-              className={cn(
-                "rounded px-1.5 py-0.5 border text-[10px] font-semibold",
-                interactive.transition.default,
-                color,
-              )}
+              className={cn("shrink-0 rounded px-1.5 py-0.5 border text-[10px] font-semibold", interactive.transition.default, color)}
             >
               {level}
             </button>
           );
         })}
         {/* Component filter */}
-        <div className="relative">
+        <div className="relative shrink-0">
           <button
             onClick={() => setShowComponentFilter((p) => !p)}
             className={cn(
@@ -695,9 +673,9 @@ function VirtualizedLogViewer({
           </button>
           {showComponentFilter && (
             <>
-              <div className="fixed inset-0 z-30" onClick={() => setShowComponentFilter(false)} />
-              <div className="absolute right-0 top-full mt-1 z-40 rounded-lg border border-fg/15 bg-surface shadow-xl py-1 min-w-52 max-h-72 overflow-y-auto scrollbar-thin">
-                <div className="flex items-center justify-between px-3 py-1.5 border-b border-fg/10">
+              <div className="fixed inset-0 z-[60]" onClick={() => setShowComponentFilter(false)} />
+              <div className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-[70] rounded-lg border border-fg/15 bg-surface shadow-xl py-1 w-72 max-h-80 overflow-y-auto scrollbar-thin">
+                <div className="flex items-center justify-between px-3 py-1.5 border-b border-fg/10 sticky top-0 bg-surface z-10">
                   <span className={cn(typography.caption.size, "text-fg/40 font-medium")}>Components</span>
                   <div className="flex gap-2">
                     <button
@@ -740,52 +718,44 @@ function VirtualizedLogViewer({
             </>
           )}
         </div>
-        <div className="w-px h-4 bg-fg/10 mx-1" />
-        <button
-          onClick={() => {
-            setSearchOpen(true);
-            requestAnimationFrame(() => searchInputRef.current?.focus());
-          }}
-          className={cn(
-            "text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-            interactive.transition.default,
-            searchOpen && "text-info",
-          )}
-          title="Search"
-        >
-          <Search className="h-3.5 w-3.5" />
-        </button>
-        {fontSize !== FONT_SIZE_BASE && (
-          <button
-            onClick={() => setFontIdx(DEFAULT_FONT_IDX)}
+        <div className="w-px h-4 bg-fg/10 mx-0.5 shrink-0" />
+        {/* Time range filter */}
+        <div className="flex items-center gap-1 shrink-0">
+          <input
+            type="time"
+            step="1"
+            value={timeFrom}
+            onChange={(e) => setTimeFrom(e.target.value)}
             className={cn(
-              "text-[10px] text-fg/30 hover:text-fg/50 tabular-nums",
-              interactive.transition.default,
+              "bg-transparent border border-fg/10 rounded px-1.5 py-0.5 text-[10px] font-mono text-fg/60 w-22",
+              "focus:outline-none focus:border-fg/25",
+              !timeFrom && "text-fg/25",
             )}
-            title="Reset zoom (Ctrl+0)"
-          >
-            {fontSize}px
-          </button>
-        )}
-        <button
-          onClick={() => virtualizer.scrollToIndex(0, { align: "start" })}
-          className={cn("text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1", interactive.transition.default)}
-          title="Jump to top"
-        >
-          <ArrowUpToLine className="h-3.5 w-3.5" />
-        </button>
-        <button
-          onClick={scrollToBottom}
-          disabled={loadingMore}
-          className={cn(
-            "text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-            interactive.transition.default,
-            "disabled:opacity-50",
+            title="From time"
+          />
+          <span className="text-fg/20 text-[10px]">-</span>
+          <input
+            type="time"
+            step="1"
+            value={timeTo}
+            onChange={(e) => setTimeTo(e.target.value)}
+            className={cn(
+              "bg-transparent border border-fg/10 rounded px-1.5 py-0.5 text-[10px] font-mono text-fg/60 w-22",
+              "focus:outline-none focus:border-fg/25",
+              !timeTo && "text-fg/25",
+            )}
+            title="To time"
+          />
+          {(timeFrom || timeTo) && (
+            <button
+              onClick={() => { setTimeFrom(""); setTimeTo(""); }}
+              className="text-fg/30 hover:text-fg/60"
+              title="Clear time filter"
+            >
+              <X className="h-3 w-3" />
+            </button>
           )}
-          title="Jump to bottom"
-        >
-          <ArrowDownToLine className="h-3.5 w-3.5" />
-        </button>
+        </div>
       </div>
 
       {/* Search bar */}
@@ -865,7 +835,7 @@ function VirtualizedLogViewer({
       )}
 
       {/* Log lines */}
-      <div key={`zoom-${fontIdx}`} ref={parentRef} className={cn("flex-1 overflow-y-auto min-h-0 scrollbar-thin", displayCount === 0 && "hidden")}>
+      <div key={`zoom-${fontIdx}`} ref={parentRef} className={cn("flex-1 overflow-y-auto min-h-0 scrollbar-thin pb-[calc(env(safe-area-inset-bottom)+4px)]", displayCount === 0 && "hidden")}>
         <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const originalIdx = filteredIndices ? filteredIndices[virtualRow.index] : virtualRow.index;
@@ -921,6 +891,7 @@ function VirtualizedLogViewer({
       {contextMenu && (
           <div
             id="log-context-menu"
+            ref={contextMenuRef}
             className="fixed z-50 rounded-lg border border-fg/15 bg-surface shadow-xl py-1 min-w-44"
             style={{ left: contextMenu.x, top: contextMenu.y }}
           >
@@ -993,10 +964,8 @@ function VirtualizedLogViewer({
 }
 
 function LogsPageInner() {
-  const { t } = useI18n();
   const platform = getPlatform();
   const isAndroid = platform.os === "android";
-  const isDesktop = platform.type === "desktop";
   const [logFiles, setLogFiles] = useState<string[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -1004,7 +973,6 @@ function LogsPageInner() {
   const [exportDir, setExportDir] = useState<string>("");
   const [diagnosticsText, setDiagnosticsText] = useState("");
   const [generatingDiagnostics, setGeneratingDiagnostics] = useState(false);
-  const [diagnosticsExpanded, setDiagnosticsExpanded] = useState(false);
 
   const formatBytes = (bytes: number | null | undefined) => {
     if (bytes == null) return "Unknown";
@@ -1297,332 +1265,218 @@ function LogsPageInner() {
   }, [logFiles]);
 
 
-  const fileList = (
-    <div className="space-y-1">
-      {logFiles.map((file) => (
-        <button
-          key={file}
-          onClick={() => selectFile(file)}
-          className={cn(
-            "group w-full rounded-lg px-3 py-2 text-left",
-            interactive.transition.default,
-            selectedFile === file
-              ? "bg-info/10 text-info"
-              : "text-fg/70 hover:bg-fg/5",
-          )}
-        >
-          <div className="flex items-center gap-2">
-            <FileText className="h-3.5 w-3.5 shrink-0 opacity-50" />
-            <span className={cn(typography.caption.size, "flex-1 truncate font-medium")}>
-              {file.replace(/^app-/, "").replace(/\.log$/, "")}
-            </span>
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                deleteLogFile(file);
-              }}
-              className={cn(
-                "p-1 rounded opacity-0 group-hover:opacity-100",
-                "text-danger/50 hover:text-danger hover:bg-danger/10",
-                interactive.transition.default,
-              )}
-            >
-              <Trash2 className="h-3 w-3" />
-            </button>
-            {selectedFile !== file && (
-              <ChevronRight className="h-3 w-3 text-fg/20 group-hover:text-fg/40" />
-            )}
-          </div>
-        </button>
-      ))}
-    </div>
-  );
-
-  const viewerToolbar = selectedFile && (
-    <div className="flex items-center gap-1">
-      <button
-        onClick={downloadLogFile}
-        disabled={!selectedFile}
-        className={cn(
-          "flex items-center gap-1 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-          interactive.transition.default,
-          "disabled:opacity-30",
-        )}
-      >
-        <Download className="h-3.5 w-3.5" />
-      </button>
-      <button
-        onClick={() => {
-          const f = selectedFile;
-          setSelectedFile(null);
-          setTimeout(() => setSelectedFile(f), 0);
-        }}
-        disabled={!selectedFile}
-        className={cn(
-          "flex items-center gap-1 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-          interactive.transition.default,
-          "disabled:opacity-30",
-        )}
-      >
-        <RefreshCw className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  );
-
-  const diagnosticsSection = (
-    <div>
-      <SectionHeader
-        title={t("logs.sectionTitles.diagnostics")}
-        right={
-          <div className="flex items-center gap-2">
-            <button
-              onClick={buildDiagnostics}
-              disabled={generatingDiagnostics}
-              className={cn(
-                typography.caption.size,
-                "flex items-center gap-1 text-fg/50 hover:text-fg/80",
-                interactive.transition.default,
-                "disabled:opacity-50",
-              )}
-            >
-              <Sparkles className={cn("h-3.5 w-3.5", generatingDiagnostics && "animate-spin")} />
-              {t("logs.sectionTitles.generate")}
-            </button>
-            <button
-              onClick={copyDiagnostics}
-              disabled={generatingDiagnostics}
-              className={cn(
-                typography.caption.size,
-                "flex items-center gap-1 text-info/70 hover:text-info",
-                interactive.transition.default,
-                "disabled:opacity-50",
-              )}
-            >
-              <Clipboard className="h-3.5 w-3.5" />
-              {t("logs.sectionTitles.copy")}
-            </button>
-          </div>
-        }
-      />
-      <div className="rounded-xl border border-fg/10 bg-fg/5 overflow-hidden">
-        {generatingDiagnostics ? (
-          <div className="flex items-center justify-center py-8">
-            <Loader2 className="h-5 w-5 animate-spin text-fg/30" />
-          </div>
-        ) : (
-          <div className="relative">
-            <div className={cn("overflow-y-auto", diagnosticsExpanded ? "max-h-130" : "max-h-40")}>
-              <pre
-                className={cn(
-                  typography.caption.size,
-                  "font-mono p-3 text-fg/60 whitespace-pre-wrap wrap-break-word leading-relaxed",
-                )}
-              >
-                {diagnosticsText || "Click Generate to see device/app summary."}
-              </pre>
-            </div>
-            {!diagnosticsExpanded && diagnosticsText && (
-              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-linear-to-t from-surface-el to-transparent" />
-            )}
-          </div>
-        )}
-      </div>
-      {diagnosticsText && !generatingDiagnostics && (
-        <button
-          onClick={() => setDiagnosticsExpanded((prev) => !prev)}
-          className={cn(
-            typography.caption.size,
-            "mt-1.5 text-fg/40 hover:text-fg/70",
-            interactive.transition.default,
-          )}
-        >
-          {diagnosticsExpanded ? "Collapse" : "Expand"}
-        </button>
-      )}
-    </div>
-  );
-
-  const actionsSection = (
-    <div className="space-y-3">
-      {logDir && (
-        <div className="flex items-center gap-2 px-1">
-          <FolderOpen className="h-3.5 w-3.5 text-fg/30 shrink-0" />
-          <p className={cn(typography.caption.size, "text-fg/40 font-mono truncate")}>{logDir}</p>
-        </div>
-      )}
-      {isAndroid && (
-        <div className="rounded-xl border border-fg/10 bg-fg/5 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="min-w-0">
-              <p className={cn(typography.caption.size, "text-fg/50")}>Export folder</p>
-              <p className={cn(typography.caption.size, "text-fg/70 break-all")}>
-                {exportDir || "Downloads/lettuceai/logs"}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                onClick={pickLogExportDir}
-                className={cn(
-                  typography.caption.size,
-                  "text-info/70 hover:text-info",
-                  interactive.transition.default,
-                )}
-              >
-                Choose
-              </button>
-              {exportDir && (
-                <button
-                  onClick={clearLogExportDir}
-                  className={cn(
-                    typography.caption.size,
-                    "text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-                    interactive.transition.default,
-                  )}
-                >
-                  Reset
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-      {logFiles.length > 0 && (
-        <button
-          onClick={clearAllLogs}
-          className={cn(
-            "w-full rounded-lg border border-danger/20 px-3 py-2 text-left",
-            interactive.transition.default,
-            "hover:border-danger/40 hover:bg-danger/5",
-          )}
-        >
-          <div className="flex items-center gap-2">
-            <Trash2 className="h-3.5 w-3.5 text-danger/60" />
-            <span className={cn(typography.caption.size, "text-danger/70")}>Clear All Logs</span>
-          </div>
-        </button>
-      )}
-    </div>
-  );
-
-  if (isDesktop) {
-    return (
-      <div className="flex h-[calc(100dvh-72px)] overflow-hidden">
-        {/* Left sidebar: */}
-        <div className="w-56 shrink-0 flex flex-col border-r border-fg/10">
-          {/* Header */}
-          <div className="shrink-0 px-3 pt-3 pb-1">
-            <SectionHeader
-              title={`Log Files (${logFiles.length})`}
-              right={
-                <button
-                  onClick={loadLogFiles}
-                  disabled={refreshing}
-                  className={cn(
-                    "text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
-                    interactive.transition.default,
-                    "disabled:opacity-50",
-                  )}
-                >
-                  <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
-                </button>
-              }
-            />
-          </div>
-          {/* Scrollable file list */}
-          <div className="flex-1 overflow-y-auto min-h-0 px-3">
-            {logFiles.length === 0 ? (
-              <div className="py-8 text-center">
-                <FileCode className="mx-auto h-8 w-8 text-fg/15" />
-                <p className={cn("mt-2", typography.caption.size, "text-fg/30")}>No logs yet</p>
-              </div>
-            ) : (
-              fileList
-            )}
-          </div>
-          {/* bottom actions */}
-          <div className="shrink-0 px-3 py-3 space-y-3 border-t border-fg/10">
-            {diagnosticsSection}
-            {actionsSection}
-          </div>
-        </div>
-
-        {/* Right panel */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0">
-          <div className="flex items-center justify-between px-4 py-2 border-b border-fg/10 shrink-0">
-            <span className={cn(typography.caption.size, "font-medium text-fg/50")}>
-              {selectedFile ?? "No file selected"}
-            </span>
-            {viewerToolbar}
-          </div>
-          <VirtualizedLogViewer filename={selectedFile} loading={false} />
-        </div>
-      </div>
-    );
-  }
+  const [showMenu, setShowMenu] = useState(false);
 
   return (
-    <div className="flex h-full flex-col pb-16">
-      <section className="flex-1 overflow-y-auto px-3 pt-3 space-y-4">
-        {/* File selector */}
-        <div>
-          <SectionHeader
-            title={`Log Files (${logFiles.length})`}
-            right={
+    <div className="flex h-[calc(100dvh-72px-env(safe-area-inset-top))] flex-col overflow-hidden">
+      {/* Header bar: file tabs + action buttons */}
+      <div className="flex items-center gap-1 px-3 py-1.5 border-b border-fg/10 shrink-0">
+        {/* File tabs */}
+        <div className="flex-1 flex gap-1 overflow-x-auto scrollbar-hide min-w-0">
+          {logFiles.length === 0 ? (
+            <span className={cn(typography.caption.size, "text-fg/30 py-1")}>No log files</span>
+          ) : (
+            logFiles.map((file) => (
+              <button
+                key={file}
+                onClick={() => selectFile(file)}
+                className={cn(
+                  "shrink-0 rounded-md px-2.5 py-1",
+                  typography.caption.size,
+                  interactive.transition.default,
+                  selectedFile === file
+                    ? "bg-info/15 text-info font-medium"
+                    : "text-fg/50 hover:bg-fg/10 hover:text-fg/70",
+                )}
+              >
+                {file.replace(/^app-/, "").replace(/\.log$/, "")}
+              </button>
+            ))
+          )}
+        </div>
+        {/* Action buttons */}
+        <button
+          onClick={downloadLogFile}
+          disabled={!selectedFile}
+          className={cn(
+            "shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
+            interactive.transition.default,
+            "disabled:opacity-30",
+          )}
+          title="Download log file"
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={() => {
+            void loadLogFiles();
+            if (selectedFile) {
+              const f = selectedFile;
+              setSelectedFile(null);
+              setTimeout(() => setSelectedFile(f), 0);
+            }
+          }}
+          disabled={refreshing}
+          className={cn(
+            "shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
+            interactive.transition.default,
+            "disabled:opacity-50",
+          )}
+          title="Refresh"
+        >
+          <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+        </button>
+        <button
+          onClick={() => setShowMenu(true)}
+          className={cn(
+            "shrink-0 text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
+            interactive.transition.default,
+          )}
+          title="More options"
+        >
+          <MoreVertical className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      {/* Full-height log viewer */}
+      <VirtualizedLogViewer filename={selectedFile} loading={false} />
+
+      {/* Bottom menu for diagnostics, settings, danger zone */}
+      <BottomMenu
+        isOpen={showMenu}
+        onClose={() => setShowMenu(false)}
+        title="Log Options"
+      >
+        <div className="space-y-4">
+          {/* Diagnostics */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className={cn(typography.caption.size, "font-medium text-fg/50")}>
+                Diagnostics
+              </span>
               <div className="flex items-center gap-2">
-                {viewerToolbar}
                 <button
-                  onClick={loadLogFiles}
-                  disabled={refreshing}
+                  onClick={buildDiagnostics}
+                  disabled={generatingDiagnostics}
                   className={cn(
-                    "text-fg/40 hover:text-fg/70 hover:bg-fg/10 rounded p-1",
+                    typography.caption.size,
+                    "flex items-center gap-1 text-fg/50 hover:text-fg/80",
                     interactive.transition.default,
                     "disabled:opacity-50",
                   )}
                 >
-                  <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+                  <Sparkles className={cn("h-3.5 w-3.5", generatingDiagnostics && "animate-spin")} />
+                  Generate
+                </button>
+                <button
+                  onClick={copyDiagnostics}
+                  disabled={generatingDiagnostics}
+                  className={cn(
+                    typography.caption.size,
+                    "flex items-center gap-1 text-info/70 hover:text-info",
+                    interactive.transition.default,
+                    "disabled:opacity-50",
+                  )}
+                >
+                  <Clipboard className="h-3.5 w-3.5" />
+                  Copy
                 </button>
               </div>
-            }
-          />
-          {logFiles.length === 0 ? (
-            <div className="rounded-xl border border-fg/10 bg-fg/5 p-8 text-center">
-              <FileCode className="mx-auto h-8 w-8 text-fg/15" />
-              <p className={cn("mt-2", typography.caption.size, "text-fg/30")}>
-                Logs will appear here as you use the app
-              </p>
             </div>
-          ) : (
-            <div className="rounded-xl border border-fg/10 bg-fg/5 overflow-hidden">
-              {/* Compact file tabs */}
-              <div className="flex gap-1 overflow-x-auto p-2 border-b border-fg/10">
+            <div className="rounded-lg border border-fg/10 bg-fg/5 overflow-hidden">
+              {generatingDiagnostics ? (
+                <div className="flex items-center justify-center py-6">
+                  <Loader2 className="h-5 w-5 animate-spin text-fg/30" />
+                </div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto">
+                  <pre
+                    className={cn(
+                      typography.caption.size,
+                      "font-mono p-3 text-fg/60 whitespace-pre-wrap wrap-break-word leading-relaxed",
+                    )}
+                  >
+                    {diagnosticsText || "Click Generate to see device/app summary."}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Log directory */}
+          {logDir && (
+            <div className="flex items-center gap-2">
+              <FolderOpen className="h-3.5 w-3.5 text-fg/30 shrink-0" />
+              <p className={cn(typography.caption.size, "text-fg/40 font-mono truncate")}>{logDir}</p>
+            </div>
+          )}
+
+          {/* Android export folder */}
+          {isAndroid && (
+            <div className="rounded-lg border border-fg/10 bg-fg/5 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <p className={cn(typography.caption.size, "text-fg/50")}>Export folder</p>
+                  <p className={cn(typography.caption.size, "text-fg/70 break-all")}>
+                    {exportDir || "Downloads/lettuceai/logs"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <button
+                    onClick={pickLogExportDir}
+                    className={cn(typography.caption.size, "text-info/70 hover:text-info", interactive.transition.default)}
+                  >
+                    Choose
+                  </button>
+                  {exportDir && (
+                    <button
+                      onClick={clearLogExportDir}
+                      className={cn(typography.caption.size, "text-fg/40 hover:text-fg/70", interactive.transition.default)}
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Delete individual files */}
+          {logFiles.length > 0 && (
+            <div>
+              <span className={cn(typography.caption.size, "font-medium text-fg/50 mb-2 block")}>
+                Delete log files
+              </span>
+              <div className="flex flex-wrap gap-1">
                 {logFiles.map((file) => (
                   <button
                     key={file}
-                    onClick={() => selectFile(file)}
+                    onClick={() => deleteLogFile(file)}
                     className={cn(
-                      "shrink-0 rounded-md px-2.5 py-1",
-                      typography.caption.size,
+                      "rounded-md px-2 py-1 border text-[10px]",
                       interactive.transition.default,
-                      selectedFile === file
-                        ? "bg-info/15 text-info font-medium"
-                        : "text-fg/50 hover:bg-fg/10 hover:text-fg/70",
+                      "border-fg/10 text-fg/50 hover:border-danger/30 hover:text-danger/70 hover:bg-danger/5",
                     )}
                   >
                     {file.replace(/^app-/, "").replace(/\.log$/, "")}
                   </button>
                 ))}
               </div>
-              {/* Viewer */}
-              <div style={{ height: 320 }} className="flex flex-col">
-                <VirtualizedLogViewer filename={selectedFile} loading={false} />
-              </div>
             </div>
           )}
-        </div>
 
-        {diagnosticsSection}
-        {actionsSection}
-      </section>
+          {/* Clear all */}
+          {logFiles.length > 0 && (
+            <MenuButton
+              icon={Trash2}
+              title="Clear All Logs"
+              description="Delete all log files permanently"
+              onClick={() => { setShowMenu(false); void clearAllLogs(); }}
+              color="from-danger to-danger/80"
+            />
+          )}
+        </div>
+      </BottomMenu>
     </div>
   );
 }
@@ -1640,7 +1494,7 @@ class LogsErrorBoundary extends Component<
   render() {
     if (this.state.error) {
       return (
-        <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+        <div className="flex h-[calc(100dvh-72px-env(safe-area-inset-bottom))] flex-col items-center justify-center gap-4 px-6 text-center">
           <div className="rounded-xl border border-danger/20 bg-danger/5 p-6 max-w-md">
             <h2 className="text-sm font-semibold text-danger mb-2">Logs page crashed</h2>
             <pre className="text-[11px] font-mono text-fg/50 whitespace-pre-wrap break-all mb-4">
