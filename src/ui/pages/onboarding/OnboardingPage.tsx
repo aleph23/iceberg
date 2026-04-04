@@ -25,14 +25,23 @@ export function OnboardingPage() {
   const controller = useOnboardingController();
   const { state } = controller;
 
-  // If navigated directly to /onboarding/memory, jump to memory step
   useEffect(() => {
     if (location.pathname === "/onboarding/memory" && state.step !== OnboardingStep.Memory) {
       controller.setStep(OnboardingStep.Memory);
     }
   }, [location.pathname]);
 
-  // Modal state for memory download prompt
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === "L") {
+        e.preventDefault();
+        navigate("/settings/logs");
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [navigate]);
+
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [showRecommendations, setShowRecommendations] = useState(false);
 
@@ -46,7 +55,6 @@ export function OnboardingPage() {
   const stepNumber =
     state.step === OnboardingStep.Provider ? 1 : state.step === OnboardingStep.Model ? 2 : 3;
 
-  // Ensure a llamacpp provider credential exists, then navigate
   const ensureLlamaCppProvider = useCallback(async () => {
     const credential = {
       id: "llamacpp-onboarding",
@@ -99,15 +107,12 @@ export function OnboardingPage() {
     navigate("/settings/embedding-download?returnTo=/chat?firstTime=true");
   }, [navigate]);
 
-  // Handle skip download
   const handleSkipDownload = useCallback(async () => {
     setShowDownloadModal(false);
-    // Save with dynamic memory disabled since no model
     controller.handleSelectMemoryType("manual");
     await controller.handleFinish();
   }, [controller]);
 
-  // Loading state
   if (state.capabilitiesLoading && state.step === OnboardingStep.Provider) {
     return (
       <div className="flex min-h-screen flex-col items-center justify-center bg-[#050505] text-gray-200">
@@ -119,7 +124,6 @@ export function OnboardingPage() {
     );
   }
 
-  // Animation variants for step transitions
   const pageVariants = {
     initial: { opacity: 0, x: 20 },
     animate: { opacity: 1, x: 0 },

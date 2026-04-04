@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getName } from "@tauri-apps/api/app";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { Component, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   FileText,
@@ -992,7 +992,7 @@ function VirtualizedLogViewer({
   );
 }
 
-export function LogsPage() {
+function LogsPageInner() {
   const { t } = useI18n();
   const platform = getPlatform();
   const isAndroid = platform.os === "android";
@@ -1018,15 +1018,18 @@ export function LogsPage() {
   const buildDiagnostics = async () => {
     setGeneratingDiagnostics(true);
     try {
-      const [settings, embeddingInfo] = await Promise.all([
+      const [settings, embeddingInfo] = await Promise.allSettled([
         readSettings(),
         getEmbeddingModelInfo(),
-      ]);
+      ]).then(([s, e]) => [
+        s.status === "fulfilled" ? s.value : null,
+        e.status === "fulfilled" ? e.value : { installed: false, version: null, sourceVersion: null, maxTokens: null },
+      ] as const);
       const platform = getPlatform();
-      const [appName, appVersion] = await Promise.all([
-        getName(),
-        invoke<string>("get_app_version"),
-      ]);
+      let appName = "unknown";
+      let appVersion = "unknown";
+      try { appName = await getName(); } catch { /* ignore */ }
+      try { appVersion = await invoke<string>("get_app_version"); } catch { /* ignore */ }
 
       let storageRoot: string | null = null;
       let dbSize: number | null = null;
@@ -1063,7 +1066,7 @@ export function LogsPage() {
         };
       }
 
-      const dynamicSettings = settings.advancedSettings?.dynamicMemory;
+      const dynamicSettings = settings?.advancedSettings?.dynamicMemory;
       const dynamicEnabled = dynamicSettings?.enabled ?? false;
 
       const lines: string[] = [];
@@ -1082,24 +1085,29 @@ export function LogsPage() {
       lines.push("Storage");
       lines.push(`- App data path: ${storageRoot ?? "unknown"}`);
       lines.push(`- Database size: ${formatBytes(dbSize)}`);
-      lines.push("");
-      lines.push("App State");
-      lines.push(
-        `- Pure Mode: ${settings.appState.pureModeLevel ?? (settings.appState.pureModeEnabled ? "standard" : "off")}`,
-      );
-      lines.push(`- Analytics: ${settings.appState.analyticsEnabled ? "enabled" : "disabled"}`);
-      lines.push("");
-      lines.push("Providers");
-      if (settings.providerCredentials.length > 0) {
-        for (const provider of settings.providerCredentials) {
-          lines.push(`- ${provider.providerId} (${provider.label})`);
+      if (settings) {
+        lines.push("");
+        lines.push("App State");
+        lines.push(
+          `- Pure Mode: ${settings.appState.pureModeLevel ?? (settings.appState.pureModeEnabled ? "standard" : "off")}`,
+        );
+        lines.push(`- Analytics: ${settings.appState.analyticsEnabled ? "enabled" : "disabled"}`);
+        lines.push("");
+        lines.push("Providers");
+        if (settings.providerCredentials.length > 0) {
+          for (const provider of settings.providerCredentials) {
+            lines.push(`- ${provider.providerId} (${provider.label})`);
+          }
+        } else {
+          lines.push("- none");
         }
       } else {
-        lines.push("- none");
+        lines.push("");
+        lines.push("Settings: UNAVAILABLE (database may be corrupted)");
       }
       lines.push("");
       lines.push("Models");
-      if (settings.models.length > 0) {
+      if (settings && settings.models.length > 0) {
         for (const model of settings.models) {
           const defaults = createDefaultAdvancedModelSettings();
           const merged: AdvancedModelSettings = {
@@ -1158,6 +1166,10 @@ export function LogsPage() {
 
       setDiagnosticsText(lines.join("\n"));
       return lines.join("\n");
+    } catch (err) {
+      const msg = `Diagnostics generation failed: ${err instanceof Error ? err.message : String(err)}`;
+      setDiagnosticsText(msg);
+      return msg;
     } finally {
       setGeneratingDiagnostics(false);
     }
@@ -1612,5 +1624,46 @@ export function LogsPage() {
         {actionsSection}
       </section>
     </div>
+  );
+}
+
+class LogsErrorBoundary extends Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+          <div className="rounded-xl border border-danger/20 bg-danger/5 p-6 max-w-md">
+            <h2 className="text-sm font-semibold text-danger mb-2">Logs page crashed</h2>
+            <pre className="text-[11px] font-mono text-fg/50 whitespace-pre-wrap break-all mb-4">
+              {this.state.error.message}
+            </pre>
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="rounded-lg border border-fg/15 bg-fg/5 px-4 py-2 text-xs font-medium text-fg/70 hover:bg-fg/10 transition"
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export function LogsPage() {
+  return (
+    <LogsErrorBoundary>
+      <LogsPageInner />
+    </LogsErrorBoundary>
   );
 }
