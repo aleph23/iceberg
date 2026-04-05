@@ -38,12 +38,12 @@ import {
   ADVANCED_OLLAMA_SEED_RANGE,
 } from "../../components/AdvancedModelSettingsForm";
 import { BottomMenu, MenuButton, MenuSection } from "../../components/BottomMenu";
+import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import {
   Info,
   Brain,
   RefreshCw,
   Check,
-  Search,
   ChevronDown,
   ChevronRight,
   HelpCircle,
@@ -1926,10 +1926,16 @@ export function EditModelPage() {
                               <ChevronDown className="h-4 w-4 text-fg/40" />
                             </button>
 
-                            <BottomMenu
+                            <ModelSelectionBottomMenu
                               isOpen={showModelSelector}
                               onClose={() => setShowModelSelector(false)}
                               title="Select Model"
+                              models={filteredModels as any}
+                              selectedModelIds={editorModel.name ? [editorModel.name] : []}
+                              searchQuery={searchQuery}
+                              onSearchChange={setSearchQuery}
+                              searchPlaceholder="Search models..."
+                              filterModels={false}
                               rightAction={
                                 isOpenRouterProvider ? (
                                   <label className="flex items-center gap-2">
@@ -1959,65 +1965,38 @@ export function EditModelPage() {
                                   </label>
                                 ) : null
                               }
-                            >
-                              <div className="sticky top-0 z-10 bg-[#0f1014] px-4 pb-2">
-                                <div className="relative">
-                                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40" />
-                                  <input
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                    placeholder="Search models..."
-                                    className="w-full rounded-xl border border-fg/10 bg-fg/5 py-2.5 pl-9 pr-4 text-[13px] text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
-                                    autoFocus
-                                  />
-                                </div>
-                              </div>
-                              <MenuSection>
-                                {filteredModels.length > 0 ? (
-                                  filteredModels.map((m) => {
-                                    const isSelected = m.id === editorModel.name;
-                                    return (
-                                      <MenuButton
-                                        key={m.id}
-                                        icon={getProviderIcon(editorModel.providerId)}
-                                        title={m.displayName || m.id}
-                                        description={m.description || m.id}
-                                        color="from-accent to-accent/80"
-                                        rightElement={
-                                          isSelected ? (
-                                            <Check className="h-4 w-4 text-accent" />
-                                          ) : undefined
-                                        }
-                                        onClick={() => handleSelectModel(m.id, m.displayName)}
-                                      />
-                                    );
-                                  })
-                                ) : (
-                                  <div className="py-10 text-center text-[13px] text-fg/40">
-                                    <p>
-                                      {t("common.buttons.search")}: "{searchQuery}"
-                                    </p>
-                                    {didYouMeanSuggestions.length > 0 && (
-                                      <div className="mt-4">
-                                        <p className="mb-2 text-[13px] text-fg/50">Did you mean:</p>
-                                        <div className="flex flex-wrap justify-center gap-2">
-                                          {didYouMeanSuggestions.map((model) => (
-                                            <button
-                                              key={model.id}
-                                              type="button"
-                                              onClick={() => setSearchQuery(model.id)}
-                                              className="rounded-full border border-fg/15 bg-fg/5 px-3 py-1.5 text-[13px] text-fg/80 transition hover:border-fg/30 hover:bg-fg/10"
-                                            >
-                                              {model.displayName || model.id}
-                                            </button>
-                                          ))}
-                                        </div>
+                              renderModelIcon={() => getProviderIcon(editorModel.providerId)}
+                              renderModelTitle={(model: any) => model.displayName || model.id}
+                              renderModelDescription={(model: any) => model.description || model.id}
+                              renderEmptyState={() => (
+                                <div className="py-10 text-center text-[13px] text-fg/40">
+                                  <p>
+                                    {t("common.buttons.search")}: "{searchQuery}"
+                                  </p>
+                                  {didYouMeanSuggestions.length > 0 && (
+                                    <div className="mt-4">
+                                      <p className="mb-2 text-[13px] text-fg/50">Did you mean:</p>
+                                      <div className="flex flex-wrap justify-center gap-2">
+                                        {didYouMeanSuggestions.map((model) => (
+                                          <button
+                                            key={model.id}
+                                            type="button"
+                                            onClick={() => setSearchQuery(model.id)}
+                                            className="rounded-full border border-fg/15 bg-fg/5 px-3 py-1.5 text-[13px] text-fg/80 transition hover:border-fg/30 hover:bg-fg/10"
+                                          >
+                                            {model.displayName || model.id}
+                                          </button>
+                                        ))}
                                       </div>
-                                    )}
-                                  </div>
-                                )}
-                              </MenuSection>
-                            </BottomMenu>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              onSelectModel={(modelId) => {
+                                const model = filteredModels.find((item) => item.id === modelId);
+                                handleSelectModel(modelId, model?.displayName);
+                              }}
+                            />
                           </>
                         ) : (
                           <>

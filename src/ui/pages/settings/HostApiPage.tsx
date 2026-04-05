@@ -26,7 +26,7 @@ import {
 } from "../../../core/storage/repo";
 import type { HostApiSettings, Model } from "../../../core/storage/schemas";
 import { cn, colors } from "../../design-tokens";
-import { BottomMenu } from "../../components/BottomMenu";
+import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 
 function createDefaultHostApiSettings(): HostApiSettings {
@@ -61,7 +61,6 @@ export function HostApiPage() {
 
   // Model selector state
   const [showModelSelector, setShowModelSelector] = useState(false);
-  const [modelSearchQuery, setModelSearchQuery] = useState("");
   // Model config editor state
   const [editingModelId, setEditingModelId] = useState<string | null>(null);
 
@@ -598,94 +597,35 @@ export function HostApiPage() {
         </div>
       </main>
 
-      {/* Model Selection BottomMenu */}
-      <BottomMenu
+      <ModelSelectionBottomMenu
         isOpen={showModelSelector}
-        onClose={() => {
-          setShowModelSelector(false);
-          setModelSearchQuery("");
-        }}
+        onClose={() => setShowModelSelector(false)}
         title="Select Models to Expose"
-      >
-        <div className="space-y-4">
-          <div className="relative">
-            <input
-              type="text"
-              value={modelSearchQuery}
-              onChange={(e) => setModelSearchQuery(e.target.value)}
-              placeholder="Search models..."
-              className="w-full rounded-xl border border-fg/10 bg-surface-el/30 px-4 py-2.5 pl-10 text-sm text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
-            />
-            <svg
-              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-          </div>
-
-          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-            {models
-              .filter((model) => {
-                if (!modelSearchQuery) return true;
-                const q = modelSearchQuery.toLowerCase();
-                return (
-                  model.displayName?.toLowerCase().includes(q) ||
-                  model.name?.toLowerCase().includes(q) ||
-                  model.providerLabel?.toLowerCase().includes(q)
-                );
-              })
-              .map((model) => {
-                const isSelected = getExposedModel(model.id)?.enabled ?? false;
-                return (
-                  <button
-                    key={model.id}
-                    onClick={() => {
-                      if (isSelected) {
-                        removeModel(model.id);
-                      } else {
-                        addModel(model);
-                      }
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                      isSelected
-                        ? "border-info/40 bg-info/10"
-                        : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-                    )}
-                  >
-                    {getProviderIcon(model.providerId)}
-                    <div className="flex-1 min-w-0">
-                      <span className="block truncate text-sm text-fg">
-                        {model.displayName || model.name}
-                      </span>
-                      <span className="block truncate text-xs text-fg/40">
-                        {model.providerLabel}
-                      </span>
-                    </div>
-                    {isSelected && <Check className="h-4 w-4 shrink-0 text-info" />}
-                  </button>
-                );
-              })}
-
-            {models.length === 0 && (
-              <div className="py-6 text-center">
-                <p className="text-sm text-fg/40">No text-capable models configured</p>
-                <p className="mt-1 text-[11px] text-fg/30">
-                  Add models in Settings first
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-      </BottomMenu>
+        models={models}
+        selectedModelIds={hostApi.exposedModels.filter((m) => m.enabled).map((m) => m.modelId)}
+        searchPlaceholder="Search models..."
+        tone="info"
+        renderModelDescription={(model) => model.providerLabel}
+        onToggleModel={(model, isSelected) => {
+          if (isSelected) {
+            removeModel(model.id);
+          } else {
+            addModel(model);
+          }
+        }}
+        renderEmptyState={(query, hasModels) =>
+          hasModels ? (
+            <div className="py-6 text-center">
+              <p className="text-sm text-fg/40">No models found matching "{query}"</p>
+            </div>
+          ) : (
+            <div className="py-6 text-center">
+              <p className="text-sm text-fg/40">No text-capable models configured</p>
+              <p className="mt-1 text-[11px] text-fg/30">Add models in Settings first</p>
+            </div>
+          )
+        }
+      />
     </div>
   );
 }

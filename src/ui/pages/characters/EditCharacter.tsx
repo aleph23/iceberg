@@ -30,6 +30,7 @@ import { useEditCharacterForm } from "./hooks/useEditCharacterForm";
 import { AvatarPicker } from "../../components/AvatarPicker";
 import { DesignReferenceEditor } from "../../components/DesignReferenceEditor";
 import { BottomMenu, MenuButton, MenuButtonGroup, MenuSection } from "../../components/BottomMenu";
+import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import { BackgroundPositionModal } from "../../components/BackgroundPositionModal";
 import { CharacterExportMenu } from "../../components/CharacterExportMenu";
 import { cn, radius, colors, interactive, spacing, typography } from "../../design-tokens";
@@ -74,9 +75,7 @@ export function EditCharacterPage() {
   // Tab state
   const [activeTab, setActiveTab] = React.useState<"character" | "settings">("character");
   const [showModelMenu, setShowModelMenu] = React.useState(false);
-  const [modelSearchQuery, setModelSearchQuery] = React.useState("");
   const [showFallbackModelMenu, setShowFallbackModelMenu] = React.useState(false);
-  const [fallbackModelSearchQuery, setFallbackModelSearchQuery] = React.useState("");
   const [showVoiceMenu, setShowVoiceMenu] = React.useState(false);
   const [voiceSearchQuery, setVoiceSearchQuery] = React.useState("");
   const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
@@ -1710,188 +1709,53 @@ export function EditCharacterPage() {
         />
       )}
 
-      {/* Model Selection BottomMenu */}
-      <BottomMenu
+      <ModelSelectionBottomMenu
         isOpen={showModelMenu}
-        onClose={() => {
-          setShowModelMenu(false);
-          setModelSearchQuery("");
-        }}
+        onClose={() => setShowModelMenu(false)}
         title="Select Model"
-      >
-        <div className="space-y-4">
-          <div className="relative">
-            <input
-              type="text"
-              value={modelSearchQuery}
-              onChange={(e) => setModelSearchQuery(e.target.value)}
-              placeholder="Search models..."
-              className="w-full rounded-xl border border-fg/10 bg-surface-el/30 px-4 py-2.5 pl-10 text-sm text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
-            />
-            <svg
-              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-          </div>
-          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-            <button
-              onClick={() => {
-                setFields({ selectedModelId: null });
-                setShowModelMenu(false);
-                setModelSearchQuery("");
-              }}
-              className={cn(
-                "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                !selectedModelId
-                  ? "border-accent/40 bg-accent/10"
-                  : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-              )}
-            >
-              <Cpu className="h-5 w-5 text-fg/40" />
-              <span className="text-sm text-fg">Use global default model</span>
-              {!selectedModelId && <Check className="h-4 w-4 ml-auto text-accent" />}
-            </button>
-            {models
-              .filter((m) => {
-                if (!modelSearchQuery) return true;
-                const q = modelSearchQuery.toLowerCase();
-                return (
-                  m.displayName?.toLowerCase().includes(q) || m.name?.toLowerCase().includes(q)
-                );
-              })
-              .map((model) => (
-                <button
-                  key={model.id}
-                  onClick={() => {
-                    setFields({
-                      selectedModelId: model.id,
-                      selectedFallbackModelId:
-                        selectedFallbackModelId === model.id ? null : selectedFallbackModelId,
-                    });
-                    setShowModelMenu(false);
-                    setModelSearchQuery("");
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                    selectedModelId === model.id
-                      ? "border-accent/40 bg-accent/10"
-                      : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-                  )}
-                >
-                  {getProviderIcon(model.providerId)}
-                  <div className="flex-1 min-w-0">
-                    <span className="block truncate text-sm text-fg">
-                      {model.displayName || model.name}
-                    </span>
-                    <span className="block truncate text-xs text-fg/40">{model.name}</span>
-                  </div>
-                  {selectedModelId === model.id && (
-                    <Check className="h-4 w-4 shrink-0 text-accent" />
-                  )}
-                </button>
-              ))}
-          </div>
-        </div>
-      </BottomMenu>
-
-      {/* Fallback Model Selection BottomMenu */}
-      <BottomMenu
-        isOpen={showFallbackModelMenu}
-        onClose={() => {
-          setShowFallbackModelMenu(false);
-          setFallbackModelSearchQuery("");
+        models={models}
+        selectedModelIds={selectedModelId ? [selectedModelId] : []}
+        searchPlaceholder="Search models..."
+        onSelectModel={(modelId) => {
+          setFields({
+            selectedModelId: modelId,
+            selectedFallbackModelId:
+              selectedFallbackModelId === modelId ? null : selectedFallbackModelId,
+          });
+          setShowModelMenu(false);
         }}
+        clearOption={{
+          label: "Use global default model",
+          icon: Cpu,
+          selected: !selectedModelId,
+          onClick: () => {
+            setFields({ selectedModelId: null });
+            setShowModelMenu(false);
+          },
+        }}
+      />
+
+      <ModelSelectionBottomMenu
+        isOpen={showFallbackModelMenu}
+        onClose={() => setShowFallbackModelMenu(false)}
         title="Select Fallback Model"
-      >
-        <div className="space-y-4">
-          <div className="relative">
-            <input
-              type="text"
-              value={fallbackModelSearchQuery}
-              onChange={(e) => setFallbackModelSearchQuery(e.target.value)}
-              placeholder="Search models..."
-              className="w-full rounded-xl border border-fg/10 bg-surface-el/30 px-4 py-2.5 pl-10 text-sm text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
-            />
-            <svg
-              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-          </div>
-          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-            <button
-              onClick={() => {
-                setFields({ selectedFallbackModelId: null });
-                setShowFallbackModelMenu(false);
-                setFallbackModelSearchQuery("");
-              }}
-              className={cn(
-                "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                !selectedFallbackModelId
-                  ? "border-accent/40 bg-accent/10"
-                  : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-              )}
-            >
-              <Cpu className="h-5 w-5 text-fg/40" />
-              <span className="text-sm text-fg">Off (no fallback)</span>
-              {!selectedFallbackModelId && <Check className="h-4 w-4 ml-auto text-accent" />}
-            </button>
-            {models
-              .filter((m) => m.id !== selectedModelId)
-              .filter((m) => {
-                if (!fallbackModelSearchQuery) return true;
-                const q = fallbackModelSearchQuery.toLowerCase();
-                return (
-                  m.displayName?.toLowerCase().includes(q) || m.name?.toLowerCase().includes(q)
-                );
-              })
-              .map((model) => (
-                <button
-                  key={model.id}
-                  onClick={() => {
-                    setFields({ selectedFallbackModelId: model.id });
-                    setShowFallbackModelMenu(false);
-                    setFallbackModelSearchQuery("");
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                    selectedFallbackModelId === model.id
-                      ? "border-accent/40 bg-accent/10"
-                      : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-                  )}
-                >
-                  {getProviderIcon(model.providerId)}
-                  <div className="flex-1 min-w-0">
-                    <span className="block truncate text-sm text-fg">
-                      {model.displayName || model.name}
-                    </span>
-                    <span className="block truncate text-xs text-fg/40">{model.name}</span>
-                  </div>
-                  {selectedFallbackModelId === model.id && (
-                    <Check className="h-4 w-4 shrink-0 text-accent" />
-                  )}
-                </button>
-              ))}
-          </div>
-        </div>
-      </BottomMenu>
+        models={models.filter((m) => m.id !== selectedModelId)}
+        selectedModelIds={selectedFallbackModelId ? [selectedFallbackModelId] : []}
+        searchPlaceholder="Search models..."
+        onSelectModel={(modelId) => {
+          setFields({ selectedFallbackModelId: modelId });
+          setShowFallbackModelMenu(false);
+        }}
+        clearOption={{
+          label: "Off (no fallback)",
+          icon: Cpu,
+          selected: !selectedFallbackModelId,
+          onClick: () => {
+            setFields({ selectedFallbackModelId: null });
+            setShowFallbackModelMenu(false);
+          },
+        }}
+      />
 
       {/* Voice Selection BottomMenu */}
       <BottomMenu

@@ -43,7 +43,6 @@ import {
 } from "../../../core/storage/repo";
 
 import { storageBridge } from "../../../core/storage/files";
-import { getProviderIcon } from "../../../core/utils/providerIcons";
 import {
   typography,
   radius,
@@ -59,7 +58,8 @@ import {
   useDragRegionProps,
   hasCustomWindowControls,
 } from "../../components/App/TopNav";
-import { BottomMenu, MenuSection } from "../../components/BottomMenu";
+import { BottomMenu } from "../../components/BottomMenu";
+import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import { useI18n } from "../../../core/i18n/context";
 
 type MemoryToolEvent = NonNullable<Session["memoryToolEvents"]>[number];
@@ -797,7 +797,6 @@ export function ChatMemoriesPage() {
   }, [character?.memoryType]);
   const isMemoryCycleActive =
     isDynamic && (session?.memoryStatus === "processing" || ui.retryStatus === "retrying");
-  const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [allModels, setAllModels] = useState<Model[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
 
@@ -1109,7 +1108,6 @@ export function ChatMemoriesPage() {
 
   // Model selection for retry
   const [showModelSelector, setShowModelSelector] = useState(false);
-  const [retryingWithModel, setRetryingWithModel] = useState(false);
 
   useEffect(() => {
     if (!isDynamic) return;
@@ -1128,14 +1126,6 @@ export function ChatMemoriesPage() {
     void loadModels();
   }, [isDynamic]);
 
-  const filteredModels = useMemo(() => {
-    if (!modelSearchQuery) return allModels;
-    const query = modelSearchQuery.toLowerCase();
-    return allModels.filter(
-      (m) => m.name.toLowerCase().includes(query) || m.displayName.toLowerCase().includes(query),
-    );
-  }, [allModels, modelSearchQuery]);
-
   const tabs = useMemo(() => {
     if (!isDynamic) {
       return [{ id: "memories" as const, icon: Bot, label: t("groupChats.memories.tabMemories") }];
@@ -1150,7 +1140,6 @@ export function ChatMemoriesPage() {
   const handleRetryWithModel = useCallback(
     async (modelId?: string) => {
       if (!session?.id || !isDynamic) return;
-      setRetryingWithModel(true);
       setShowModelSelector(false);
       dispatch({ type: "SET_RETRY_STATUS", value: "retrying" });
       try {
@@ -1172,7 +1161,6 @@ export function ChatMemoriesPage() {
         }
         void reload();
       } finally {
-        setRetryingWithModel(false);
       }
     },
     [session?.id, isDynamic, reload],
@@ -2363,107 +2351,37 @@ export function ChatMemoriesPage() {
         })()}
       </BottomMenu>
 
-      {/* Model Selection BottomMenu */}
-      <BottomMenu
+      <ModelSelectionBottomMenu
         isOpen={showModelSelector}
-        onClose={() => {
-          setShowModelSelector(false);
-          setModelSearchQuery("");
-        }}
+        onClose={() => setShowModelSelector(false)}
         title="Select Model for Retry"
-      >
-        <MenuSection className="pb-0">
-          <div className="px-4 py-3">
-            <div
-              className={cn(
-                "relative flex items-center",
-                radius.md,
-                "bg-white/5 border",
-                colors.border.subtle,
-              )}
-            >
-              <Search className="absolute left-3 h-4 w-4 text-white/30" />
-              <input
-                type="text"
-                placeholder="Search models..."
-                value={modelSearchQuery}
-                onChange={(e) => setModelSearchQuery(e.target.value)}
-                className="w-full bg-transparent py-2.5 pl-9 pr-4 text-sm text-white placeholder:text-white/20 focus:outline-none"
-              />
-              {modelSearchQuery && (
-                <button
-                  onClick={() => setModelSearchQuery("")}
-                  className="absolute right-3 text-white/30 hover:text-white/50"
-                >
-                  <X size={14} />
-                </button>
-              )}
-            </div>
+        models={allModels}
+        selectedModelIds={character.defaultModelId ? [character.defaultModelId] : []}
+        searchPlaceholder="Search models..."
+        theme="dark"
+        tone="emerald"
+        loading={loadingModels}
+        loadingContent={
+          <div className="flex flex-col items-center justify-center py-12">
+            <RefreshCw className="h-6 w-6 animate-spin text-white/20" />
+            <p className={cn(typography.bodySmall.size, colors.text.tertiary, "mt-3")}>
+              Loading available models...
+            </p>
           </div>
-        </MenuSection>
-
-        <div className="max-h-[60vh] overflow-y-auto pb-6">
-          {loadingModels ? (
-            <div className="flex flex-col items-center justify-center py-12">
-              <RefreshCw className="h-6 w-6 animate-spin text-white/20" />
-              <p className={cn(typography.bodySmall.size, colors.text.tertiary, "mt-3")}>
-                Loading available models...
-              </p>
-            </div>
-          ) : filteredModels.length === 0 ? (
-            <div className="px-4 py-12 text-center">
-              <p className={cn(typography.body.size, colors.text.secondary)}>
-                No models found matching "{modelSearchQuery}"
-              </p>
-            </div>
-          ) : (
-            <div className="flex flex-col">
-              {filteredModels.map((model) => {
-                const isSelected = model.id === character.defaultModelId;
-                return (
-                  <button
-                    key={model.id}
-                    onClick={() => handleRetryWithModel(model.id)}
-                    disabled={retryingWithModel}
-                    className={cn(
-                      "group relative flex w-full flex-col gap-1 px-4 py-3 transition",
-                      isSelected ? "bg-white/5" : "hover:bg-white/5",
-                    )}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-white/5">
-                        {getProviderIcon(model.providerId)}
-                      </div>
-                      <div className="min-w-0 flex-1 text-left">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={cn(
-                              typography.body.size,
-                              "font-semibold text-white truncate",
-                            )}
-                          >
-                            {model.displayName}
-                          </span>
-                          {isSelected && (
-                            <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-emerald-500/20">
-                              <Check size={10} className="text-emerald-400" />
-                            </span>
-                          )}
-                        </div>
-                        <p
-                          className={cn(typography.caption.size, colors.text.tertiary, "truncate")}
-                        >
-                          {model.providerLabel} • {model.name}
-                        </p>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </BottomMenu>
+        }
+        renderModelTitle={(model) => model.displayName || model.name}
+        renderModelDescription={(model) => `${model.providerLabel} • ${model.name}`}
+        renderEmptyState={(query) => (
+          <div className="px-4 py-12 text-center">
+            <p className={cn(typography.body.size, colors.text.secondary)}>
+              No models found matching "{query}"
+            </p>
+          </div>
+        )}
+        onSelectModel={(modelId) => {
+          handleRetryWithModel(modelId);
+        }}
+      />
     </div>
   );
 }

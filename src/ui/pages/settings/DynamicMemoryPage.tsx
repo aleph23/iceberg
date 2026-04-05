@@ -27,6 +27,7 @@ import { useNavigate } from "react-router-dom";
 import { EmbeddingUpgradePrompt } from "../../components/EmbeddingUpgradePrompt";
 import { BottomMenu } from "../../components/BottomMenu";
 import { confirmBottomMenu } from "../../components/ConfirmBottomMenu";
+import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { useI18n } from "../../../core/i18n/context";
 
@@ -185,7 +186,6 @@ export function DynamicMemoryPage() {
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false);
   const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
-  const [modelSearchQuery, setModelSearchQuery] = useState("");
 
   useEffect(() => {
     const loadData = async () => {
@@ -1203,97 +1203,27 @@ export function DynamicMemoryPage() {
         </div>
       </BottomMenu>
 
-      {/* Model Selection BottomMenu */}
-      <BottomMenu
+      <ModelSelectionBottomMenu
         isOpen={showModelMenu}
-        onClose={() => {
-          setShowModelMenu(false);
-          setModelSearchQuery("");
-        }}
+        onClose={() => setShowModelMenu(false)}
         title={t("dynamicMemory.page.selectModel")}
-      >
-        <div className="space-y-4">
-          <div className="relative">
-            <input
-              type="text"
-              value={modelSearchQuery}
-              onChange={(e) => setModelSearchQuery(e.target.value)}
-              placeholder={t("dynamicMemory.page.searchModels")}
-              className="w-full rounded-xl border border-fg/10 bg-surface-el/30 px-4 py-2.5 pl-10 text-sm text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
-            />
-            <svg
-              className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-              />
-            </svg>
-          </div>
-          <div className="space-y-2 max-h-[50vh] overflow-y-auto">
-            <button
-              onClick={() => {
-                handleSummarisationModelChange(null);
-                setShowModelMenu(false);
-                setModelSearchQuery("");
-              }}
-              className={cn(
-                "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                !summarisationModelId
-                  ? "border-accent/40 bg-accent/10"
-                  : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-              )}
-            >
-              <Cpu className="h-5 w-5 text-fg/40" />
-              <span className="text-sm text-fg">
-                {t("dynamicMemory.page.useGlobalDefaultModel")}
-              </span>
-              {!summarisationModelId && <Check className="h-4 w-4 ml-auto text-accent" />}
-            </button>
-            {models
-              .filter((model) => {
-                if (!modelSearchQuery) return true;
-                const q = modelSearchQuery.toLowerCase();
-                return (
-                  model.displayName?.toLowerCase().includes(q) ||
-                  model.name?.toLowerCase().includes(q)
-                );
-              })
-              .map((model) => (
-                <button
-                  key={model.id}
-                  onClick={() => {
-                    handleSummarisationModelChange(model.id);
-                    setShowModelMenu(false);
-                    setModelSearchQuery("");
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                    summarisationModelId === model.id
-                      ? "border-accent/40 bg-accent/10"
-                      : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-                  )}
-                >
-                  {getProviderIcon(model.providerId)}
-                  <div className="flex-1 min-w-0">
-                    <span className="block truncate text-sm text-fg">
-                      {model.displayName || model.name}
-                    </span>
-                    <span className="block truncate text-xs text-fg/40">{model.name}</span>
-                  </div>
-                  {summarisationModelId === model.id && (
-                    <Check className="h-4 w-4 shrink-0 text-accent" />
-                  )}
-                </button>
-              ))}
-          </div>
-        </div>
-      </BottomMenu>
+        models={models}
+        selectedModelIds={summarisationModelId ? [summarisationModelId] : []}
+        searchPlaceholder={t("dynamicMemory.page.searchModels")}
+        onSelectModel={(modelId) => {
+          handleSummarisationModelChange(modelId);
+          setShowModelMenu(false);
+        }}
+        clearOption={{
+          label: t("dynamicMemory.page.useGlobalDefaultModel"),
+          icon: Cpu,
+          selected: !summarisationModelId,
+          onClick: () => {
+            handleSummarisationModelChange(null);
+            setShowModelMenu(false);
+          },
+        }}
+      />
     </div>
   );
 }
