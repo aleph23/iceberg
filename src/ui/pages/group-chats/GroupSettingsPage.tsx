@@ -206,7 +206,7 @@ export function GroupSettingsPage() {
                     alt="Background"
                     className="h-full w-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-linear-to-t from-[#0c0d13] to-transparent" />
+                  <div className="absolute inset-0 bg-linear-to-t from-surface-el/90 to-transparent" />
                   <button
                     onClick={() => void handleRemoveBackground()}
                     disabled={savingBackground}

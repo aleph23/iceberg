@@ -402,7 +402,7 @@ export function GroupChatSettingsPage() {
                     alt="Background"
                     className="h-full w-full object-cover"
                   />
-                  <div className="absolute inset-0 bg-linear-to-t from-[#0c0d13] to-transparent" />
+                  <div className="absolute inset-0 bg-linear-to-t from-surface-el/90 to-transparent" />
                   <button
                     onClick={handleRemoveBackground}
                     disabled={savingBackground}
@@ -1432,7 +1432,7 @@ export function GroupChatSettingsPage() {
                         return { ...prev, [participantKey]: next };
                       });
                     }}
-                    className="mt-2 w-full rounded-lg border border-fg/10 bg-black/20 px-3 py-2 text-sm text-fg focus:border-fg/30 focus:outline-none"
+                    className="mt-2 w-full rounded-lg border border-fg/10 bg-surface-el/40 px-3 py-2 text-sm text-fg focus:border-fg/30 focus:outline-none focus:ring-1 focus:ring-fg/10"
                   >
                     <option value="">
                       {t("groupChats.sessionSettings.selectCharacterPlaceholder")}

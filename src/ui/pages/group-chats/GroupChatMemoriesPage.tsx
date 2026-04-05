@@ -130,7 +130,7 @@ export function GroupChatMemoriesPage() {
   if (loading) {
     return (
       <div className={cn("flex h-screen items-center justify-center", colors.surface.base)}>
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/10 border-t-white/60" />
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-fg/10 border-t-fg/60" />
       </div>
     );
   }
@@ -751,7 +751,7 @@ export function GroupChatMemoriesPage() {
               radius.lg,
               "border border-fg/10 bg-surface-el/30",
               "text-sm text-fg/90 resize-none leading-relaxed",
-              "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-white/10",
+              "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-fg/10",
               "placeholder:text-fg/30",
             )}
             placeholder="Short recap used to keep context consistent across messages..."
@@ -827,7 +827,7 @@ export function GroupChatMemoriesPage() {
               radius.lg,
               "border border-fg/10 bg-surface-el/30",
               "text-sm text-fg/90 resize-none leading-relaxed",
-              "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-white/10",
+              "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-fg/10",
               "placeholder:text-fg/30",
             )}
             placeholder="What should be remembered?"
@@ -898,7 +898,7 @@ export function GroupChatMemoriesPage() {
                     radius.lg,
                     "border border-fg/10 bg-surface-el/30",
                     "text-sm text-fg/90 resize-none leading-relaxed",
-                    "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-white/10",
+                    "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-fg/10",
                     "placeholder:text-fg/30",
                   )}
                   placeholder="Enter memory content..."
