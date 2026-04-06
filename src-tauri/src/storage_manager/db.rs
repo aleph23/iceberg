@@ -585,6 +585,23 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           cached_at INTEGER NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS openrouter_provider_pricing_cache (
+          model_id TEXT PRIMARY KEY,
+          provider_pricings_json TEXT NOT NULL,
+          cached_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS deferred_pricing_refreshes (
+          provider_id TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          refresh_kind TEXT NOT NULL,
+          retry_after INTEGER NOT NULL,
+          last_error TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (provider_id, model_id, refresh_kind)
+        );
+
         -- Audio providers for TTS
         CREATE TABLE IF NOT EXISTS audio_providers (
           id TEXT PRIMARY KEY,
@@ -739,6 +756,10 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         CREATE INDEX IF NOT EXISTS idx_secrets_service ON secrets(service);
         CREATE INDEX IF NOT EXISTS idx_prompt_templates_scope ON prompt_templates(scope);
         CREATE INDEX IF NOT EXISTS idx_model_pricing_cached_at ON model_pricing_cache(cached_at);
+        CREATE INDEX IF NOT EXISTS idx_openrouter_provider_pricing_cached_at
+          ON openrouter_provider_pricing_cache(cached_at);
+        CREATE INDEX IF NOT EXISTS idx_deferred_pricing_refreshes_due
+          ON deferred_pricing_refreshes(provider_id, retry_after);
         CREATE INDEX IF NOT EXISTS idx_group_sessions_updated ON group_sessions(updated_at);
         CREATE INDEX IF NOT EXISTS idx_group_participation_session ON group_participation(session_id);
         CREATE INDEX IF NOT EXISTS idx_group_messages_session ON group_messages(session_id);

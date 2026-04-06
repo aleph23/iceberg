@@ -7,7 +7,7 @@ use crate::storage_manager::settings::{read_settings_typed, write_settings_typed
 use crate::utils::log_info;
 
 /// Current migration version
-pub const CURRENT_MIGRATION_VERSION: u32 = 48;
+pub const CURRENT_MIGRATION_VERSION: u32 = 49;
 
 pub fn run_migrations(app: &AppHandle) -> Result<(), String> {
     log_info(app, "migrations", "Starting migration check");
@@ -517,6 +517,16 @@ pub fn run_migrations(app: &AppHandle) -> Result<(), String> {
         );
         migrate_v47_to_v48(app)?;
         version = 48;
+    }
+
+    if version < 49 {
+        log_info(
+            app,
+            "migrations",
+            "Running migration v48 -> v49: Add deferred pricing refresh caches",
+        );
+        migrate_v48_to_v49(app)?;
+        version = 49;
     }
 
     // Update the stored version
@@ -2753,5 +2763,45 @@ fn migrate_v47_to_v48(app: &AppHandle) -> Result<(), String> {
         "ALTER TABLE lorebooks ADD COLUMN keyword_detection_mode TEXT NOT NULL DEFAULT 'recent_message_window'",
         [],
     );
+    Ok(())
+}
+
+fn migrate_v48_to_v49(app: &AppHandle) -> Result<(), String> {
+    let conn = crate::storage_manager::db::open_db(app)?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS openrouter_provider_pricing_cache (
+          model_id TEXT PRIMARY KEY,
+          provider_pricings_json TEXT NOT NULL,
+          cached_at INTEGER NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS deferred_pricing_refreshes (
+          provider_id TEXT NOT NULL,
+          model_id TEXT NOT NULL,
+          refresh_kind TEXT NOT NULL,
+          retry_after INTEGER NOT NULL,
+          last_error TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (provider_id, model_id, refresh_kind)
+        )",
+        [],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_openrouter_provider_pricing_cached_at
+          ON openrouter_provider_pricing_cache(cached_at)",
+        [],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_deferred_pricing_refreshes_due
+          ON deferred_pricing_refreshes(provider_id, retry_after)",
+        [],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     Ok(())
 }
