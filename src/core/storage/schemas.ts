@@ -2087,31 +2087,36 @@ export const GroupSessionSchema = z.object({
   /** Memory tool events tracking (for dynamic memory cycle gating) */
   memoryToolEvents: z
     .array(
-      z.object({
-        type: z.string().optional(),
-        windowEnd: z.number().int().optional(),
-        timestamp: z.number().int().optional(),
-        memoriesCount: z.number().int().optional(),
-        // Also support the full format used in normal sessions
-        id: z.string().optional(),
-        windowStart: z.number().int().optional(),
-        summary: z.string().optional(),
-        error: z.string().optional(),
-        status: z.string().optional(),
-        stage: z.string().optional(),
-        windowMessageIds: z.array(z.string()).optional(),
-        actions: z
-          .array(
-            z.object({
-              name: z.string(),
-              arguments: z.any().optional(),
-              timestamp: z.number().int().optional(),
-              updatedMemories: z.array(z.string()).optional(),
-            }),
-          )
-          .optional(),
-        createdAt: z.number().int().optional(),
-      }),
+      z
+        .object({
+          type: z.string().optional(),
+          windowEnd: z.number().int().optional(),
+          timestamp: z.number().int().optional(),
+          memoriesCount: z.number().int().optional(),
+          // Also support the full format used in normal sessions
+          id: z.string().optional(),
+          windowStart: z.number().int().optional(),
+          summary: z.string().optional(),
+          error: z.string().optional(),
+          status: z.string().optional(),
+          stage: z.string().optional(),
+          windowMessageIds: z.array(z.string()).optional(),
+          revertedAt: z.number().int().optional(),
+          actions: z
+            .array(
+              z
+                .object({
+                  name: z.string(),
+                  arguments: z.any().optional(),
+                  timestamp: z.number().int().optional(),
+                  updatedMemories: z.array(z.string()).optional(),
+                })
+                .passthrough(),
+            )
+            .optional(),
+          createdAt: z.number().int().optional(),
+        })
+        .passthrough(),
     )
     .default([]),
   memoryStatus: z.string().nullish().optional().default("idle"),
@@ -2681,25 +2686,30 @@ export const SessionSchema = z.object({
   memorySummaryTokenCount: z.number().default(0),
   memoryToolEvents: z
     .array(
-      z.object({
-        id: z.string(),
-        windowStart: z.number().int(),
-        windowEnd: z.number().int(),
-        windowMessageIds: z.array(z.string()).optional(),
-        summary: z.string(),
-        error: z.string().optional(),
-        status: z.string().optional(),
-        stage: z.string().optional(),
-        actions: z.array(
-          z.object({
-            name: z.string(),
-            arguments: z.any().optional(),
-            timestamp: z.number().int().optional(),
-            updatedMemories: z.array(z.string()).optional(),
-          }),
-        ),
-        createdAt: z.number().int(),
-      }),
+      z
+        .object({
+          id: z.string(),
+          windowStart: z.number().int(),
+          windowEnd: z.number().int(),
+          windowMessageIds: z.array(z.string()).optional(),
+          summary: z.string(),
+          error: z.string().optional(),
+          status: z.string().optional(),
+          stage: z.string().optional(),
+          revertedAt: z.number().int().optional(),
+          actions: z.array(
+            z
+              .object({
+                name: z.string(),
+                arguments: z.any().optional(),
+                timestamp: z.number().int().optional(),
+                updatedMemories: z.array(z.string()).optional(),
+              })
+              .passthrough(),
+          ),
+          createdAt: z.number().int(),
+        })
+        .passthrough(),
     )
     .default([])
     .optional(),

@@ -41,6 +41,10 @@ import {
   toggleMemoryPin,
   readSettings,
 } from "../../../core/storage/repo";
+import {
+  markMemoryToolEventReverted,
+  revertMemoryToolEvent,
+} from "../../../core/storage/memoryToolEvents";
 
 import { storageBridge } from "../../../core/storage/files";
 import {
@@ -643,7 +647,17 @@ function summarizeActions(actions: MemoryToolEvent["actions"]): string {
     .join(", ");
 }
 
-function CycleCard({ event, defaultOpen }: { event: MemoryToolEvent; defaultOpen: boolean }) {
+function CycleCard({
+  event,
+  defaultOpen,
+  onRevert,
+  reverting,
+}: {
+  event: MemoryToolEvent;
+  defaultOpen: boolean;
+  onRevert?: (event: MemoryToolEvent) => void;
+  reverting?: boolean;
+}) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
   const hasError = !!event.error;
   const actionSummary = event.actions?.length ? summarizeActions(event.actions) : null;
@@ -730,6 +744,27 @@ function CycleCard({ event, defaultOpen }: { event: MemoryToolEvent; defaultOpen
             </div>
           )}
 
+          {event.id && !event.revertedAt && onRevert && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => onRevert(event)}
+                disabled={reverting}
+                className="rounded-lg border border-fg/10 bg-fg/5 px-3 py-1.5 text-xs font-medium text-fg/80 transition hover:bg-fg/10 disabled:pointer-events-none disabled:opacity-50"
+              >
+                {reverting ? "Reverting..." : "Revert"}
+              </button>
+            </div>
+          )}
+
+          {event.revertedAt && (
+            <div className="flex justify-end">
+              <span className="rounded-lg border border-warning/20 bg-warning/10 px-3 py-1.5 text-xs font-medium text-warning">
+                Reverted
+              </span>
+            </div>
+          )}
+
           {/* Footer meta */}
           <div
             className={cn(
@@ -749,7 +784,15 @@ function CycleCard({ event, defaultOpen }: { event: MemoryToolEvent; defaultOpen
   );
 }
 
-function ToolLog({ events }: { events: MemoryToolEvent[] }) {
+function ToolLog({
+  events,
+  onRevert,
+  revertingEventId,
+}: {
+  events: MemoryToolEvent[];
+  onRevert?: (event: MemoryToolEvent) => void;
+  revertingEventId?: string | null;
+}) {
   const { t } = useI18n();
   if (!events.length) {
     return (
@@ -775,7 +818,13 @@ function ToolLog({ events }: { events: MemoryToolEvent[] }) {
   return (
     <div className={cn(spacing.item, "space-y-2")}>
       {events.map((event, idx) => (
-        <CycleCard key={event.id} event={event} defaultOpen={idx === events.length - 1} />
+        <CycleCard
+          key={event.id}
+          event={event}
+          defaultOpen={idx === events.length - 1}
+          onRevert={onRevert}
+          reverting={revertingEventId != null && event.id === revertingEventId}
+        />
       ))}
     </div>
   );
@@ -808,6 +857,7 @@ export function ChatMemoriesPage() {
     isDynamic && (session?.memoryStatus === "processing" || ui.retryStatus === "retrying");
   const [allModels, setAllModels] = useState<Model[]>([]);
   const [loadingModels, setLoadingModels] = useState(false);
+  const [revertingEventId, setRevertingEventId] = useState<string | null>(null);
 
   const handleSetColdState = useCallback(
     async (memoryIndex: number, isCold: boolean) => {
@@ -1185,6 +1235,37 @@ export function ChatMemoriesPage() {
       console.error("Failed to dismiss error:", err);
     }
   }, [session, reload]);
+
+  const handleRevertMemoryEvent = useCallback(
+    async (event: MemoryToolEvent) => {
+      if (!session?.id || !event.id || !session.memoryEmbeddings) return;
+      setRevertingEventId(event.id);
+      try {
+        const nextEmbeddings = revertMemoryToolEvent(session.memoryEmbeddings, event);
+        const nextEvents = markMemoryToolEventReverted(
+          (session.memoryToolEvents as MemoryToolEvent[]) ?? [],
+          event.id,
+          Date.now(),
+        );
+        const nextSession: Session = {
+          ...session,
+          memoryEmbeddings: nextEmbeddings,
+          memories: nextEmbeddings.map((memory) => memory.text),
+          memoryToolEvents: nextEvents,
+          updatedAt: Date.now(),
+        };
+        await saveSession(nextSession);
+        setSession(nextSession);
+        dispatch({ type: "SET_ACTION_ERROR", value: null });
+      } catch (err: any) {
+        console.error("Failed to revert memory cycle:", err);
+        dispatch({ type: "SET_ACTION_ERROR", value: err?.message || "Failed to revert cycle" });
+      } finally {
+        setRevertingEventId(null);
+      }
+    },
+    [session, setSession],
+  );
 
   const handleRetry = useCallback(async () => {
     await handleRetryWithModel();
@@ -1862,7 +1943,11 @@ export function ChatMemoriesPage() {
                   {isMemoryCycleActive ? t("common.buttons.cancel") : "Run"}
                 </button>
               </div>
-              <ToolLog events={(session.memoryToolEvents as MemoryToolEvent[]) || []} />
+              <ToolLog
+                events={(session.memoryToolEvents as MemoryToolEvent[]) || []}
+                onRevert={handleRevertMemoryEvent}
+                revertingEventId={revertingEventId}
+              />
             </motion.div>
           ) : isDynamic && ui.activeTab === "pinned" ? (
             <motion.div

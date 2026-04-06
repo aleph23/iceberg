@@ -2914,6 +2914,7 @@ async fn run_group_memory_tool_update(
                                 "arguments": call.arguments,
                                 "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
                                 "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
+                                "memorySnapshot": target_memory,
                                 "softDelete": true,
                                 "reason": if force_soft_delete {
                                     "hard_delete_limit_reached"
@@ -2945,6 +2946,7 @@ async fn run_group_memory_tool_update(
                                 "arguments": call.arguments,
                                 "deletedText": removed_memory.as_ref().map(|m| m.text.clone()),
                                 "deletedMemoryId": removed_memory.as_ref().map(|m| m.id.clone()),
+                                "memorySnapshot": removed_memory,
                                 "confidence": confidence,
                                 "confidenceDefaulted": confidence_defaulted,
                                 "hardDeleteCount": hard_delete_count,

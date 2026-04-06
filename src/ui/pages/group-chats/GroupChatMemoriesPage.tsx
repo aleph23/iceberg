@@ -102,10 +102,12 @@ export function GroupChatMemoriesPage() {
     saveEdit,
     handleRunMemoryCycle,
     handleAbortMemoryCycle,
+    handleRevertMemoryEvent,
     handleRefresh,
     handleDismissError,
     handleTogglePinnedMessage,
     handleSaveSummaryClick,
+    revertingEventId,
   } = useGroupChatMemoriesController(groupSessionId);
 
   const [showAddMemoryMenu, setShowAddMemoryMenu] = useState(false);
@@ -729,7 +731,11 @@ export function GroupChatMemoriesPage() {
                   {session.memoryStatus !== "idle" ? t("common.buttons.cancel") : "Run"}
                 </button>
               </div>
-              <ToolLog events={session.memoryToolEvents || []} />
+              <ToolLog
+                events={session.memoryToolEvents || []}
+                onRevert={handleRevertMemoryEvent}
+                revertingEventId={revertingEventId}
+              />
             </motion.div>
           )}
         </AnimatePresence>
