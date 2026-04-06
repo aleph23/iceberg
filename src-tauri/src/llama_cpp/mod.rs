@@ -995,12 +995,24 @@ mod desktop {
             let gpu_load_fallback_activated = engine.gpu_load_fallback_activated;
             let gpu_load_fallback_reason = engine.gpu_load_fallback_reason.clone();
             let actual_gpu_layers_used = engine.actual_gpu_layers_used;
+            let runtime_offload_kqv = if backend_path_used == "cpu"
+                || actual_gpu_layers_used == Some(0)
+                || !engine.supports_gpu_offload
+            {
+                Some(false)
+            } else if llama_offload_kqv.is_some() {
+                llama_offload_kqv
+            } else if using_rocm_backend() {
+                Some(false)
+            } else {
+                None
+            };
             let recommended_ctx = compute_recommended_context(
                 model,
                 available_memory_bytes,
                 available_vram_bytes,
                 max_ctx,
-                llama_offload_kqv,
+                runtime_offload_kqv,
                 llama_kv_type_raw.as_deref(),
             );
             let mut ctx_size = if let Some(requested) = requested_context {
@@ -1083,7 +1095,10 @@ mod desktop {
                 Some(backend_path_used),
                 gpu_load_fallback_activated,
             );
-            if !llama_strict_mode && gpu_load_fallback_activated && backend_path_used == "cpu" {
+            let cpu_runtime_active = backend_path_used == "cpu"
+                || actual_gpu_layers_used == Some(0)
+                || !engine.supports_gpu_offload;
+            if !llama_strict_mode && cpu_runtime_active {
                 if let Some((safe_ctx, safe_batch)) = compute_cpu_fallback_limits(
                     model,
                     available_memory_bytes,
@@ -1097,8 +1112,16 @@ mod desktop {
                             &app,
                             "llama_cpp",
                             format!(
-                                "GPU load fell back to CPU; clamping context from {} to {} using RAM-derived fallback limits (requested_context={:?}, recommended_context={:?})",
-                                ctx_size, safe_ctx, requested_context, recommended_ctx
+                                "{} clamping context from {} to {} using RAM-derived fallback limits (requested_context={:?}, recommended_context={:?})",
+                                if gpu_load_fallback_activated {
+                                    "GPU load fell back to CPU;"
+                                } else {
+                                    "CPU runtime active;"
+                                },
+                                ctx_size,
+                                safe_ctx,
+                                requested_context,
+                                recommended_ctx
                             ),
                         );
                         ctx_size = safe_ctx;
@@ -1108,8 +1131,14 @@ mod desktop {
                             &app,
                             "llama_cpp",
                             format!(
-                                "GPU load fell back to CPU; reducing llama batch size from {} to {} for CPU headroom",
-                                llama_batch_size, safe_batch
+                                "{} reducing llama batch size from {} to {} for CPU headroom",
+                                if gpu_load_fallback_activated {
+                                    "GPU load fell back to CPU;"
+                                } else {
+                                    "CPU runtime active;"
+                                },
+                                llama_batch_size,
+                                safe_batch
                             ),
                         );
                         llama_batch_size = safe_batch;

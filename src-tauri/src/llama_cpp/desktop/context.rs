@@ -1,4 +1,4 @@
-use super::engine::using_rocm_backend;
+use super::engine::{shared_backend, using_rocm_backend};
 use super::offload::{
     compute_recommended_context_for_gpu_layers, load_model_metadata, plan_smart_gpu_offload,
 };
@@ -457,15 +457,24 @@ pub(crate) async fn llamacpp_context_info(
     let max_ctx = metadata.max_context_length.max(1);
     let available_memory_bytes = get_available_memory_bytes();
     let available_vram_bytes = get_available_vram_bytes();
+    let supports_gpu_offload = shared_backend()?.supports_gpu_offload();
     let resolved_offload_kqv = if llama_offload_kqv.is_some() {
         llama_offload_kqv
+    } else if !supports_gpu_offload {
+        Some(false)
     } else if using_rocm_backend() {
         Some(false)
     } else {
         None
     };
     let resolved_gpu_layers = if let Some(requested) = llama_gpu_layers {
-        requested.min(metadata.layer_count.max(1))
+        if supports_gpu_offload {
+            requested.min(metadata.layer_count.max(1))
+        } else {
+            0
+        }
+    } else if !supports_gpu_offload {
+        0
     } else {
         let flash_attention_policy = if using_rocm_backend() {
             llama_cpp_sys_2::LLAMA_FLASH_ATTN_TYPE_DISABLED
