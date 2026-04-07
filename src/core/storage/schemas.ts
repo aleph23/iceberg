@@ -554,8 +554,6 @@ export const PROVIDER_REASONING_CAPABILITIES: Record<string, ReasoningCapability
     ],
   },
   featherless: { type: "none" },
-  pollinations: { type: "none" },
-  "pollinations-image": { type: "none" },
 };
 
 /**

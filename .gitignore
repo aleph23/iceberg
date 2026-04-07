@@ -50,8 +50,3 @@ docs/sync-current-system.md
 docs/sync-old-architecture.mmd
 docs/sync-old-architecture.svg
 src-tauri/target-check/
-.vscode/
-.qlty/
-.github/
-.vs/
-src-tauri/onnxruntime/

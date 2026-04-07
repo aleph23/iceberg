@@ -8,7 +8,6 @@ use llama_cpp_sys_2::{
     ggml_backend_dev_count, ggml_backend_dev_get, ggml_backend_dev_memory, ggml_backend_dev_type,
     GGML_BACKEND_DEVICE_TYPE_ACCEL, GGML_BACKEND_DEVICE_TYPE_GPU, GGML_BACKEND_DEVICE_TYPE_IGPU,
 };
-
 #[cfg(target_os = "windows")]
 use windows::core::Interface;
 #[cfg(target_os = "windows")]
@@ -218,8 +217,8 @@ fn windows_local_vram_cap_bytes() -> Option<u64> {
                         .QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
                         .ok()?;
                     Some(
-                        (info.Budget as u64)
-                            .saturating_sub(info.CurrentUsage as u64)
+                        info.Budget
+                            .saturating_sub(info.CurrentUsage)
                             .min(dedicated_bytes),
                     )
                 })
