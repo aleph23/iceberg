@@ -37,7 +37,7 @@ export function GroupChatHistoryPage() {
   if (isLoading) {
     return (
       <div className="min-h-screen bg-surface flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border border-fg/10 border-t-white/60" />
+        <div className="animate-spin rounded-full h-8 w-8 border border-fg/10 border-t-fg/60" />
       </div>
     );
   }
@@ -109,7 +109,7 @@ export function GroupChatHistoryPage() {
                   radius.lg,
                   typography.bodySmall.size,
                   "text-fg placeholder-fg/40",
-                  "focus:outline-none focus:ring-2 focus:ring-white/10 focus:border-fg/20",
+                  "focus:outline-none focus:ring-2 focus:ring-fg/10 focus:border-fg/20",
                 )}
               />
               {query.trim().length > 0 && (

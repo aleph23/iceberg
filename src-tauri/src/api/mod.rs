@@ -56,6 +56,22 @@ pub async fn api_request(app: tauri::AppHandle, req: ApiRequest) -> Result<ApiRe
         return crate::ollama::execute_chat_request(&app, &req).await;
     }
 
+    if req.provider_id.as_deref() == Some("openrouter") {
+        if let Some(api_key) = req
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.get("Authorization"))
+            .and_then(|value| value.strip_prefix("Bearer "))
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            crate::pricing_cache::kick_openrouter_deferred_refreshes(
+                app.clone(),
+                api_key.to_string(),
+            );
+        }
+    }
+
     let method_str = req.method.clone().unwrap_or_else(|| "POST".to_string());
     let url_for_log = req.url.clone();
     let method = match Method::from_bytes(method_str.as_bytes()) {

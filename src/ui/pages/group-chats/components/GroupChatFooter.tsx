@@ -380,7 +380,7 @@ export function GroupChatFooter({
         className={cn(
           "relative flex items-end gap-2.5 p-2",
           "rounded-4xl",
-          "border border-fg/15 bg-fg/5 backdrop-blur-md",
+          "border border-fg/15 bg-surface-el/65 backdrop-blur-md",
           shadows.md,
         )}
       >
@@ -417,7 +417,7 @@ export function GroupChatFooter({
           placeholder=" "
           rows={1}
           className={cn(
-            "max-h-32 flex-1 resize-none bg-transparent py-2.5",
+            "peer max-h-32 flex-1 resize-none bg-transparent py-2.5",
             typography.body.size,
             "text-fg placeholder:text-transparent",
             "focus:outline-none",
@@ -451,7 +451,7 @@ export function GroupChatFooter({
               ? "border border-red-400/40 bg-red-400/20 text-red-100"
               : hasDraft || hasAttachments
                 ? "border border-accent/40 bg-accent/20 text-accent"
-                : "border border-white/15 bg-white/10 text-white/70",
+                : "border border-fg/15 bg-fg/10 text-fg/70",
             interactive.transition.fast,
             interactive.active.scale,
             sending && onAbort && "hover:border-red-400/60 hover:bg-red-400/30",
@@ -459,8 +459,7 @@ export function GroupChatFooter({
             !sending &&
               !hasDraft &&
               !hasAttachments &&
-              onContinue &&
-              "hover:border-emerald-400/60 hover:bg-emerald-400/30",
+              "hover:border-fg/25 hover:bg-fg/15",
             "disabled:cursor-not-allowed disabled:opacity-40",
           )}
           title={
@@ -544,8 +543,8 @@ function MentionPickerItem({
       <div
         className={cn(
           "h-8 w-8 shrink-0 rounded-full overflow-hidden",
-          "bg-linear-to-br from-white/10 to-white/5",
-          "ring-1 ring-white/10",
+          "bg-linear-to-br from-fg/8 to-fg/4",
+          "ring-1 ring-fg/10",
         )}
       >
         {avatarUrl ? (

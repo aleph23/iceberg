@@ -1,4 +1,4 @@
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, OptionalExtension};
@@ -19,6 +19,10 @@ use super::dynamic::{
     enforce_hot_memory_budget, ensure_pinned_hot, generate_memory_id, normalize_query_text,
     search_cold_memory_indices_by_keyword, select_relevant_memory_indices,
     select_top_cosine_memory_indices, trim_memories_to_max,
+};
+use super::structured_fallback::{
+    parse_memory_operations_from_text, parse_memory_tag_repairs_from_text,
+    MEMORY_OPERATIONS_XML_FALLBACK_PROMPT, MEMORY_REPAIRS_XML_FALLBACK_PROMPT,
 };
 use crate::chat_manager::execution::{
     find_model_with_credential, prepare_default_sampling_request,
@@ -47,6 +51,17 @@ const ALLOWED_MEMORY_CATEGORIES: &[&str] = &[
     "preference",
     "other",
 ];
+const HARD_DELETE_CONFIDENCE_THRESHOLD: f32 = 0.7;
+fn max_hard_deletes_per_cycle(initial_count: usize, ratio: f32) -> usize {
+    if initial_count == 0 {
+        return 0;
+    }
+
+    ((initial_count as f32) * ratio)
+        .floor()
+        .max(1.0) as usize
+}
+
 fn dynamic_memory_run_key(session_id: &str) -> String {
     format!("chat:{}", session_id)
 }
@@ -60,10 +75,24 @@ fn uses_local_dynamic_memory_model(provider_cred: &ProviderCredential, model: &M
         || crate::llama_cpp::is_llama_cpp(Some(model.provider_id.as_str()))
 }
 
-fn emit_dynamic_memory_transition_toast(app: &AppHandle, title: &str, description: String) {
+fn dynamic_memory_llama_sampler_overwrite_enabled(settings: &Settings) -> bool {
+    settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.dynamic_memory_llama_sampler_overwrite_enabled)
+        .unwrap_or(true)
+}
+
+fn emit_dynamic_memory_transition_toast(
+    app: &AppHandle,
+    toast_id: String,
+    title: &str,
+    description: String,
+) {
     let _ = app.emit(
         "app://toast",
         json!({
+            "id": toast_id,
             "variant": "info",
             "title": title,
             "description": description,
@@ -78,6 +107,7 @@ async fn prepare_local_dynamic_memory_cycle(
 ) -> Result<(), String> {
     emit_dynamic_memory_transition_toast(
         app,
+        format!("dynamic-memory:prepare:{session_id}"),
         "Preparing dynamic memory",
         format!(
             "Unloading the active local chat model before loading {}.",
@@ -105,6 +135,7 @@ async fn finish_local_dynamic_memory_cycle(
 ) -> Result<(), String> {
     emit_dynamic_memory_transition_toast(
         app,
+        format!("dynamic-memory:finish:{session_id}"),
         "Finishing dynamic memory",
         format!(
             "Unloading {} after the memory update completes.",
@@ -1229,76 +1260,6 @@ fn validate_memory_text(memory: &str) -> Result<String, String> {
     Ok(normalized)
 }
 
-fn extract_json_value_from_text(raw: &str) -> Option<Value> {
-    let normalized = normalize_llm_output_text(raw);
-    if let Ok(value) = serde_json::from_str::<Value>(&normalized) {
-        return Some(value);
-    }
-
-    let candidates = [
-        (normalized.find('{'), normalized.rfind('}')),
-        (normalized.find('['), normalized.rfind(']')),
-    ];
-
-    for (start, end) in candidates {
-        if let (Some(start_idx), Some(end_idx)) = (start, end) {
-            if start_idx <= end_idx {
-                let snippet = &normalized[start_idx..=end_idx];
-                if let Ok(value) = serde_json::from_str::<Value>(snippet) {
-                    return Some(value);
-                }
-            }
-        }
-    }
-
-    None
-}
-
-fn tool_call_from_json_operation(operation: &Value, index: usize) -> Result<ToolCall, String> {
-    let object = operation
-        .as_object()
-        .ok_or_else(|| format!("operation {} was not an object", index))?;
-    let name = object
-        .get("name")
-        .or_else(|| object.get("op"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| format!("operation {} missing name", index))?;
-
-    let mut args = Map::new();
-    for (key, value) in object {
-        if key == "name" || key == "op" {
-            continue;
-        }
-        args.insert(key.clone(), value.clone());
-    }
-
-    Ok(ToolCall {
-        id: format!("json_op_{}", index + 1),
-        name,
-        arguments: Value::Object(args),
-        raw_arguments: None,
-    })
-}
-
-fn parse_memory_operations_from_text(raw: &str) -> Result<Vec<ToolCall>, String> {
-    let value = extract_json_value_from_text(raw)
-        .ok_or_else(|| "fallback response did not contain valid JSON".to_string())?;
-
-    let operations = value
-        .get("operations")
-        .or_else(|| value.get("actions"))
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "fallback JSON missing operations array".to_string())?;
-
-    operations
-        .iter()
-        .enumerate()
-        .map(|(index, item)| tool_call_from_json_operation(item, index))
-        .collect()
-}
-
 fn guess_memory_category(text: &str) -> String {
     let lower = text.to_ascii_lowercase();
 
@@ -1389,30 +1350,6 @@ fn guess_memory_category(text: &str) -> String {
     "other".to_string()
 }
 
-fn parse_memory_tag_repairs_from_text(raw: &str) -> Result<HashMap<String, String>, String> {
-    let value = extract_json_value_from_text(raw)
-        .ok_or_else(|| "fallback response did not contain valid JSON".to_string())?;
-    let items = value
-        .get("items")
-        .or_else(|| value.get("repairs"))
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "fallback JSON missing items array".to_string())?;
-
-    let mut repaired = HashMap::new();
-    for item in items {
-        let Some(text) = item.get("text").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        let Some(category) = item.get("category").and_then(|v| v.as_str()) else {
-            continue;
-        };
-        if ALLOWED_MEMORY_CATEGORIES.contains(&category) {
-            repaired.insert(text.to_string(), category.to_string());
-        }
-    }
-    Ok(repaired)
-}
-
 fn tool_choice_requires_auto(error: &str) -> bool {
     let lower = error.to_ascii_lowercase();
     lower.contains("tool choice must be auto")
@@ -1430,6 +1367,7 @@ async fn send_dynamic_memory_request(
     app: &AppHandle,
     provider_cred: &ProviderCredential,
     model: &Model,
+    overwrite_llama_sampler_config: bool,
     api_key: &str,
     messages_for_api: &Vec<Value>,
     max_tokens: u32,
@@ -1438,13 +1376,17 @@ async fn send_dynamic_memory_request(
     tool_config: Option<&ToolConfig>,
     request_id: Option<&str>,
 ) -> Result<ApiResponse, String> {
+    let extra_body_fields = sanitize_dynamic_memory_extra_body_fields(
+        extra_body_fields,
+        overwrite_llama_sampler_config,
+    );
     let built = request_builder::build_chat_request(
         provider_cred,
         api_key,
         &model.name,
         messages_for_api,
         None,
-        Some(0.2),
+        Some(0.4),
         Some(1.0),
         max_tokens,
         context_length,
@@ -1535,6 +1477,45 @@ async fn send_dynamic_memory_request(
     Ok(first_response)
 }
 
+fn sanitize_dynamic_memory_extra_body_fields(
+    extra_body_fields: Option<HashMap<String, Value>>,
+    overwrite_llama_sampler_config: bool,
+) -> Option<HashMap<String, Value>> {
+    if !overwrite_llama_sampler_config {
+        return extra_body_fields;
+    }
+    let mut extra = extra_body_fields.unwrap_or_default();
+    for key in [
+        "llamaSamplerProfile",
+        "llamaSamplerOrder",
+        "llamaMinP",
+        "llamaTypicalP",
+        "llamaDisableSamplerProfileDefaults",
+        "top_k",
+        "frequency_penalty",
+        "presence_penalty",
+        "min_p",
+        "typical_p",
+    ] {
+        extra.remove(key);
+    }
+    extra.insert(
+        "llamaDisableSamplerProfileDefaults".to_string(),
+        json!(true),
+    );
+    extra.insert(
+        "llamaSamplerOrder".to_string(),
+        json!(["penalties", "grammar", "top_k", "top_p", "temp", "min_p", "typical"]),
+    );
+    extra.insert("top_k".to_string(), json!(40));
+    extra.insert("frequency_penalty".to_string(), json!(0.0));
+    extra.insert("presence_penalty".to_string(), json!(0.0));
+    extra.insert("min_p".to_string(), json!(0.0));
+    extra.insert("typical_p".to_string(), json!(0.0));
+
+    if extra.is_empty() { None } else { Some(extra) }
+}
+
 async fn run_memory_tool_update(
     app: &AppHandle,
     provider_cred: &ProviderCredential,
@@ -1548,6 +1529,7 @@ async fn run_memory_tool_update(
     request_id: Option<&str>,
     cancel_token: Option<&DynamicMemoryCancellationToken>,
 ) -> Result<Vec<Value>, String> {
+    let overwrite_llama_sampler_config = dynamic_memory_llama_sampler_overwrite_enabled(settings);
     let tool_config = build_memory_tool_config();
     let max_entries = dynamic_max_entries(settings);
 
@@ -1612,6 +1594,7 @@ async fn run_memory_tool_update(
         app,
         provider_cred,
         model,
+        overwrite_llama_sampler_config,
         api_key,
         &messages_for_api,
         request_settings.max_tokens,
@@ -1655,13 +1638,14 @@ async fn run_memory_tool_update(
                 let mut fallback_messages = messages_for_api.clone();
                 fallback_messages.push(json!({
                     "role": "user",
-                    "content": "Return only JSON. Format: {\"operations\":[{\"name\":\"create_memory\",\"text\":\"...\",\"category\":\"plot_event\",\"important\":false},{\"name\":\"delete_memory\",\"text\":\"123456\",\"confidence\":0.9},{\"name\":\"pin_memory\",\"id\":\"123456\"},{\"name\":\"unpin_memory\",\"id\":\"123456\"},{\"name\":\"done\",\"summary\":\"optional note\"}]}. Use an empty operations array when no changes are needed. Do not use markdown."
+                    "content": MEMORY_OPERATIONS_XML_FALLBACK_PROMPT
                 }));
 
                 let api_response = send_dynamic_memory_request(
                     app,
                     provider_cred,
                     model,
+                    overwrite_llama_sampler_config,
                     api_key,
                     &fallback_messages,
                     request_settings.max_tokens,
@@ -1719,12 +1703,13 @@ async fn run_memory_tool_update(
                     let mut fallback_messages = messages_for_api.clone();
                     fallback_messages.push(json!({
                         "role": "user",
-                        "content": "Return only JSON. Format: {\"operations\":[{\"name\":\"create_memory\",\"text\":\"...\",\"category\":\"plot_event\",\"important\":false},{\"name\":\"delete_memory\",\"text\":\"123456\",\"confidence\":0.9},{\"name\":\"pin_memory\",\"id\":\"123456\"},{\"name\":\"unpin_memory\",\"id\":\"123456\"},{\"name\":\"done\",\"summary\":\"optional note\"}]}. Use an empty operations array when no changes are needed. Do not use markdown."
+                        "content": MEMORY_OPERATIONS_XML_FALLBACK_PROMPT
                     }));
                     let api_response = send_dynamic_memory_request(
                         app,
                         provider_cred,
                         model,
+                        overwrite_llama_sampler_config,
                         api_key,
                         &fallback_messages,
                         request_settings.max_tokens,
@@ -1785,12 +1770,13 @@ async fn run_memory_tool_update(
             let mut fallback_messages = messages_for_api.clone();
             fallback_messages.push(json!({
                 "role": "user",
-                "content": "Return only JSON. Format: {\"operations\":[{\"name\":\"create_memory\",\"text\":\"...\",\"category\":\"plot_event\",\"important\":false},{\"name\":\"delete_memory\",\"text\":\"123456\",\"confidence\":0.9},{\"name\":\"pin_memory\",\"id\":\"123456\"},{\"name\":\"unpin_memory\",\"id\":\"123456\"},{\"name\":\"done\",\"summary\":\"optional note\"}]}. Use an empty operations array when no changes are needed. Do not use markdown."
+                "content": MEMORY_OPERATIONS_XML_FALLBACK_PROMPT
             }));
             let api_response = send_dynamic_memory_request(
                 app,
                 provider_cred,
                 model,
+                overwrite_llama_sampler_config,
                 api_key,
                 &fallback_messages,
                 request_settings.max_tokens,
@@ -1837,6 +1823,21 @@ async fn run_memory_tool_update(
 
     let mut actions_log: Vec<Value> = Vec::new();
     let mut untagged_candidates: Vec<(String, bool)> = Vec::new();
+    let initial_memory_count = session.memory_embeddings.len();
+    let delete_confidence_default = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.dynamic_memory.as_ref())
+        .map(|dynamic| dynamic.delete_confidence_default)
+        .unwrap_or(0.5);
+    let max_hard_delete_ratio = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.dynamic_memory.as_ref())
+        .map(|dynamic| dynamic.max_hard_delete_ratio_per_cycle)
+        .unwrap_or(0.5);
+    let max_hard_deletes = max_hard_deletes_per_cycle(initial_memory_count, max_hard_delete_ratio);
+    let mut hard_delete_count = 0usize;
     for call in calls {
         match call.name.as_str() {
             "create_memory" => {
@@ -1916,6 +1917,14 @@ async fn run_memory_tool_update(
                                 "reason": reason,
                                 "timestamp": now_millis().unwrap_or_default(),
                             }));
+                            log_info(
+                                app,
+                                "dynamic_memory",
+                                format!(
+                                    "Queued memory for category repair: text=\"{}\" pinned={}",
+                                    text, is_pinned
+                                ),
+                            );
                             untagged_candidates.push((text, is_pinned));
                             continue;
                         }
@@ -1959,12 +1968,19 @@ async fn run_memory_tool_update(
                                 .position(|m| m.text == text)
                         };
                     if let Some(idx) = target_idx {
+                        let target_memory = session.memory_embeddings.get(idx).cloned();
                         let confidence = call
                             .arguments
                             .get("confidence")
                             .and_then(|v| v.as_f64())
-                            .unwrap_or(1.0) as f32;
-                        if confidence < 0.7 {
+                            .unwrap_or(delete_confidence_default as f64)
+                            as f32;
+                        let confidence_defaulted =
+                            call.arguments.get("confidence").and_then(|v| v.as_f64()).is_none();
+                        let force_soft_delete =
+                            confidence >= HARD_DELETE_CONFIDENCE_THRESHOLD
+                                && hard_delete_count >= max_hard_deletes;
+                        if confidence < HARD_DELETE_CONFIDENCE_THRESHOLD || force_soft_delete {
                             // Soft-delete: move to cold storage instead of removing
                             if idx < session.memory_embeddings.len() {
                                 let cold_threshold = dynamic_cold_threshold(settings);
@@ -1973,24 +1989,57 @@ async fn run_memory_tool_update(
                                 log_info(
                                     app,
                                     "dynamic_memory",
-                                    format!("Soft-deleted memory (confidence={:.2})", confidence),
+                                    if force_soft_delete {
+                                        format!(
+                                            "Soft-deleted memory due to hard-delete safeguard (hard_deletes={}/{}, confidence={:.2})",
+                                            hard_delete_count,
+                                            max_hard_deletes,
+                                            confidence
+                                        )
+                                    } else {
+                                        format!(
+                                            "Soft-deleted memory (confidence={:.2}, defaulted={})",
+                                            confidence, confidence_defaulted
+                                        )
+                                    },
                                 );
                             }
                             actions_log.push(json!({
                                 "name": "delete_memory",
                                 "arguments": call.arguments,
+                                "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
+                                "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
+                                "memorySnapshot": target_memory,
                                 "softDelete": true,
+                                "reason": if force_soft_delete {
+                                    "hard_delete_limit_reached"
+                                } else {
+                                    "low_confidence"
+                                },
                                 "confidence": confidence,
+                                "confidenceDefaulted": confidence_defaulted,
+                                "hardDeleteCount": hard_delete_count,
+                                "hardDeleteLimit": max_hard_deletes,
                                 "timestamp": now_millis().unwrap_or_default(),
                                 "updatedMemories": format_memories_with_ids(session),
                             }));
                         } else {
-                            if idx < session.memory_embeddings.len() {
-                                session.memory_embeddings.remove(idx);
-                            }
+                            let removed_memory = if idx < session.memory_embeddings.len() {
+                                Some(session.memory_embeddings.remove(idx))
+                            } else {
+                                None
+                            };
+                            hard_delete_count += 1;
                             actions_log.push(json!({
                                 "name": "delete_memory",
                                 "arguments": call.arguments,
+                                "deletedText": removed_memory.as_ref().map(|m| m.text.clone()),
+                                "deletedMemoryId": removed_memory.as_ref().map(|m| m.id.clone()),
+                                "memorySnapshot": removed_memory,
+                                "confidence": confidence,
+                                "confidenceDefaulted": confidence_defaulted,
+                                "hardDeleteCount": hard_delete_count,
+                                "hardDeleteLimit": max_hard_deletes,
                                 "timestamp": now_millis().unwrap_or_default(),
                                 "updatedMemories": format_memories_with_ids(session),
                             }));
@@ -2065,10 +2114,44 @@ async fn run_memory_tool_update(
             .filter(|text| seen.insert(text.clone()))
             .collect();
 
-        match run_memory_tag_repair(app, provider_cred, model, api_key, &candidate_texts).await {
+        log_info(
+            app,
+            "dynamic_memory",
+            format!(
+                "Running memory category repair for {} candidate(s)",
+                candidate_texts.len()
+            ),
+        );
+
+        match run_memory_tag_repair(
+            app,
+            provider_cred,
+            model,
+            overwrite_llama_sampler_config,
+            api_key,
+            &candidate_texts,
+        )
+        .await
+        {
             Ok(repaired) => {
+                log_info(
+                    app,
+                    "dynamic_memory",
+                    format!(
+                        "Memory category repair returned {} mapped candidate(s)",
+                        repaired.len()
+                    ),
+                );
                 for (text, is_pinned) in untagged_candidates {
                     let Some(category) = repaired.get(&text).cloned() else {
+                        log_warn(
+                            app,
+                            "dynamic_memory",
+                            format!(
+                                "Memory category repair returned no category for text=\"{}\"",
+                                text
+                            ),
+                        );
                         continue;
                     };
 
@@ -2078,7 +2161,11 @@ async fn run_memory_tool_update(
                             actions_log.push(json!({
                                 "name": "create_memory",
                                 "repaired": true,
-                                "text": text,
+                                "arguments": {
+                                    "text": text,
+                                    "category": category,
+                                    "important": is_pinned,
+                                },
                                 "skipped": true,
                                 "reason": reason,
                                 "timestamp": now_millis().unwrap_or_default(),
@@ -2109,7 +2196,11 @@ async fn run_memory_tool_update(
                             actions_log.push(json!({
                                 "name": "create_memory",
                                 "repaired": true,
-                                "text": text,
+                                "arguments": {
+                                    "text": text,
+                                    "category": category,
+                                    "important": is_pinned,
+                                },
                                 "skipped": true,
                                 "reason": "duplicate (cosine > 0.85)",
                                 "timestamp": now_millis().unwrap_or_default(),
@@ -2136,12 +2227,23 @@ async fn run_memory_tool_update(
                     actions_log.push(json!({
                         "name": "create_memory",
                         "repaired": true,
-                        "text": text,
-                        "category": category,
+                        "arguments": {
+                            "text": text,
+                            "category": category,
+                            "important": is_pinned,
+                        },
                         "memoryId": mem_id,
                         "timestamp": now_millis().unwrap_or_default(),
                         "updatedMemories": format_memories_with_ids(session),
                     }));
+                    log_info(
+                        app,
+                        "dynamic_memory",
+                        format!(
+                            "Created repaired memory {} category={} pinned={}",
+                            mem_id, category, is_pinned
+                        ),
+                    );
                 }
             }
             Err(err) => {
@@ -2261,6 +2363,7 @@ async fn run_memory_tag_repair(
     app: &AppHandle,
     provider_cred: &ProviderCredential,
     model: &Model,
+    overwrite_llama_sampler_config: bool,
     api_key: &str,
     texts: &[String],
 ) -> Result<HashMap<String, String>, String> {
@@ -2297,6 +2400,7 @@ async fn run_memory_tag_repair(
         app,
         provider_cred,
         model,
+        overwrite_llama_sampler_config,
         api_key,
         &messages_for_api,
         512,
@@ -2353,12 +2457,13 @@ async fn run_memory_tag_repair(
         let mut fallback_messages = messages_for_api.clone();
         fallback_messages.push(json!({
             "role": "user",
-            "content": "Return only JSON. Format: {\"items\":[{\"text\":\"...\",\"category\":\"other\"}]}. Use exactly one item per input text. Do not use markdown."
+            "content": MEMORY_REPAIRS_XML_FALLBACK_PROMPT
         }));
         match send_dynamic_memory_request(
             app,
             provider_cred,
             model,
+            overwrite_llama_sampler_config,
             api_key,
             &fallback_messages,
             512,
@@ -2373,7 +2478,9 @@ async fn run_memory_tag_repair(
                 if let Some(text) =
                     extract_text(api_response.data(), Some(&provider_cred.provider_id))
                 {
-                    if let Ok(parsed) = parse_memory_tag_repairs_from_text(&text) {
+                    if let Ok(parsed) =
+                        parse_memory_tag_repairs_from_text(&text, ALLOWED_MEMORY_CATEGORIES)
+                    {
                         repaired.extend(parsed);
                     }
                 }
@@ -2518,6 +2625,7 @@ async fn summarize_messages(
     request_id: Option<&str>,
     cancel_token: Option<&DynamicMemoryCancellationToken>,
 ) -> Result<String, String> {
+    let overwrite_llama_sampler_config = dynamic_memory_llama_sampler_overwrite_enabled(settings);
     let mut messages_for_api = Vec::new();
     let system_role = request_builder::system_role_for(provider_cred);
 
@@ -2574,6 +2682,7 @@ async fn summarize_messages(
         app,
         provider_cred,
         model,
+        overwrite_llama_sampler_config,
         api_key,
         &messages_for_api,
         request_settings.max_tokens,
@@ -2681,6 +2790,7 @@ async fn summarize_messages(
         app,
         provider_cred,
         model,
+        overwrite_llama_sampler_config,
         api_key,
         &fallback_messages,
         request_settings.max_tokens,

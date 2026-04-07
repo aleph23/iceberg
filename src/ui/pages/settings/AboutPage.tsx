@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ExternalLink, Globe, Github, RefreshCw } from "lucide-react";
+import { ExternalLink, Globe, RefreshCw } from "lucide-react";
 
+import githubSvg from "../../../assets/github.svg";
 import logoSvg from "../../../assets/logo.svg";
 import { checkForAppUpdate, type AppUpdateInfo } from "../../../core/app-updates/checkForAppUpdate";
 import { presentAppUpdateToast } from "../../../core/app-updates/presentAppUpdateToast";
@@ -18,6 +19,7 @@ import { getPlatform } from "../../../core/utils/platform";
 import { isDevelopmentMode, setDeveloperModeOverride } from "../../../core/utils/env";
 import { toast } from "../../components/toast";
 import { cn, interactive } from "../../design-tokens";
+import { Switch } from "../../components/Switch";
 
 function ensureAdvancedSettings(settings: Settings): NonNullable<Settings["advancedSettings"]> {
   return {
@@ -219,23 +221,11 @@ export function AboutPage() {
                   <span className="text-[11px] font-medium text-fg/50">
                     {autoChecksEnabled ? t("common.labels.on") : t("common.labels.off")}
                   </span>
-                  <button
-                    type="button"
-                    onClick={toggleAutoChecks}
-                    className={cn(
-                      "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-all duration-200 ease-in-out",
-                      autoChecksEnabled ? "bg-accent" : "bg-fg/20",
-                    )}
-                    aria-pressed={autoChecksEnabled}
+                  <Switch
+                    checked={autoChecksEnabled}
+                    onChange={() => void toggleAutoChecks()}
                     aria-label={t("about.update.autoChecks")}
-                  >
-                    <span
-                      className={cn(
-                        "inline-block h-5 w-5 transform rounded-full bg-fg transition duration-200 ease-in-out",
-                        autoChecksEnabled ? "translate-x-5" : "translate-x-0",
-                      )}
-                    />
-                  </button>
+                  />
                 </div>
               </div>
 
@@ -304,7 +294,7 @@ export function AboutPage() {
               },
               {
                 key: "github",
-                icon: <Github className="h-4 w-4" />,
+                icon: <img src={githubSvg} alt="" className="h-4 w-4" />,
                 title: t("about.links.github"),
                 subtitle: t("about.links.githubDescription"),
                 url: GITHUB_REPO_LINK,

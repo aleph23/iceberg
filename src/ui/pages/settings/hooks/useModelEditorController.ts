@@ -58,6 +58,7 @@ type ControllerReturn = {
   handleLlamaKvTypeChange: (value: AdvancedModelSettings["llamaKvType"]) => void;
   handleLlamaFlashAttentionChange: (value: AdvancedModelSettings["llamaFlashAttention"]) => void;
   handleLlamaSamplerProfileChange: (value: AdvancedModelSettings["llamaSamplerProfile"]) => void;
+  handleLlamaSamplerOrderChange: (value: AdvancedModelSettings["llamaSamplerOrder"]) => void;
   handleLlamaMinPChange: (value: number | null) => void;
   handleLlamaTypicalPChange: (value: number | null) => void;
   handleLlamaChatTemplateOverrideChange: (value: string | null) => void;
@@ -192,8 +193,11 @@ export function useModelEditorController(): ControllerReturn {
 
           const isFromHfBrowser = !!hfModelPath;
 
+          const providerParam = searchParams.get("provider");
           let selectedProvider: ProviderCredential | undefined;
-          if (isFromHfBrowser) {
+          if (providerParam) {
+            selectedProvider = providers.find((p) => p.providerId === providerParam);
+          } else if (isFromHfBrowser) {
             selectedProvider = providers.find((p) => p.providerId === "llamacpp");
           }
           if (!selectedProvider) {
@@ -700,6 +704,19 @@ export function useModelEditorController(): ControllerReturn {
     [dispatch, state.modelAdvancedDraft],
   );
 
+  const handleLlamaSamplerOrderChange = useCallback(
+    (value: AdvancedModelSettings["llamaSamplerOrder"]) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaSamplerOrder: value ?? null,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
   const handleLlamaMinPChange = useCallback(
     (value: number | null) => {
       dispatch({
@@ -1087,8 +1104,15 @@ export function useModelEditorController(): ControllerReturn {
     dispatch({ type: "set_error", payload: null });
   }, [dispatch]);
 
+  const getProviderCredentialIdForSave = useCallback((providerCred: ProviderCredential) => {
+    if (providerCred.providerId === "llamacpp") {
+      return null;
+    }
+    return providerCred.id;
+  }, []);
+
   const doSave = useCallback(
-    async (navigate: boolean): Promise<boolean> => {
+    async (): Promise<boolean> => {
       const { editorModel, providers, modelAdvancedDraft } = state;
       if (!editorModel) return false;
 
@@ -1155,17 +1179,23 @@ export function useModelEditorController(): ControllerReturn {
       dispatch({ type: "set_saving", payload: true });
       try {
         const hardCappedScopes = getHardCappedScopes(providerCred.providerId);
-        await addOrUpdateModel({
+        const providerCredentialId = getProviderCredentialIdForSave(providerCred);
+        const savedModel = {
           ...editorModel,
           providerId: providerCred.providerId,
-          providerCredentialId: providerCred.id,
+          providerCredentialId,
           providerLabel: providerCred.label,
           ...hardCappedScopes,
           advancedModelSettings: sanitizeAdvancedModelSettings(modelAdvancedDraft),
+        };
+        await addOrUpdateModel({
+          ...savedModel,
         });
-        if (navigate) {
-          backOrReplace(Routes.settingsModels);
-        }
+        dispatch({ type: "update_editor_model", payload: savedModel });
+        initialStateRef.current = {
+          editorModel: cloneSnapshot(savedModel),
+          modelAdvancedDraft: cloneSnapshot(savedModel.advancedModelSettings ?? modelAdvancedDraft),
+        };
         return true;
       } catch (error: any) {
         console.error("Failed to save model", error);
@@ -1178,15 +1208,15 @@ export function useModelEditorController(): ControllerReturn {
         dispatch({ type: "set_saving", payload: false });
       }
     },
-    [backOrReplace, state],
+    [dispatch, getProviderCredentialIdForSave, state],
   );
 
   const handleSave = useCallback(async () => {
-    await doSave(true);
+    await doSave();
   }, [doSave]);
 
   const saveModel = useCallback(async (): Promise<boolean> => {
-    return doSave(false);
+    return doSave();
   }, [doSave]);
 
   const handleDelete = useCallback(async () => {
@@ -1328,10 +1358,11 @@ export function useModelEditorController(): ControllerReturn {
     dispatch({ type: "set_error", payload: null });
     try {
       const hardCappedScopes = getHardCappedScopes(providerCred.providerId);
+      const providerCredentialId = getProviderCredentialIdForSave(providerCred);
       await addOrUpdateModel({
         ...editorModel,
         providerId: providerCred.providerId,
-        providerCredentialId: providerCred.id,
+        providerCredentialId,
         providerLabel: providerCred.label,
         ...hardCappedScopes,
         advancedModelSettings: nextDraft,
@@ -1340,7 +1371,7 @@ export function useModelEditorController(): ControllerReturn {
         type: "update_editor_model",
         payload: {
           providerId: providerCred.providerId,
-          providerCredentialId: providerCred.id,
+          providerCredentialId,
           providerLabel: providerCred.label,
           ...hardCappedScopes,
           advancedModelSettings: nextDraft,
@@ -1351,7 +1382,7 @@ export function useModelEditorController(): ControllerReturn {
         editorModel: cloneSnapshot({
           ...editorModel,
           providerId: providerCred.providerId,
-          providerCredentialId: providerCred.id,
+          providerCredentialId,
           providerLabel: providerCred.label,
           ...hardCappedScopes,
           advancedModelSettings: nextDraft,
@@ -1369,7 +1400,7 @@ export function useModelEditorController(): ControllerReturn {
     } finally {
       dispatch({ type: "set_saving", payload: false });
     }
-  }, [state]);
+  }, [getProviderCredentialIdForSave, state]);
 
   return {
     state,
@@ -1400,6 +1431,7 @@ export function useModelEditorController(): ControllerReturn {
     handleLlamaKvTypeChange,
     handleLlamaFlashAttentionChange,
     handleLlamaSamplerProfileChange,
+    handleLlamaSamplerOrderChange,
     handleLlamaMinPChange,
     handleLlamaTypicalPChange,
     handleLlamaChatTemplateOverrideChange,

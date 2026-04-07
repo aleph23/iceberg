@@ -38,12 +38,12 @@ import {
   ADVANCED_OLLAMA_SEED_RANGE,
 } from "../../components/AdvancedModelSettingsForm";
 import { BottomMenu, MenuButton, MenuSection } from "../../components/BottomMenu";
+import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import {
   Info,
   Brain,
   RefreshCw,
   Check,
-  Search,
   ChevronDown,
   ChevronRight,
   HelpCircle,
@@ -57,10 +57,12 @@ import {
   Maximize2,
 } from "lucide-react";
 import { ProviderParameterSupportInfo } from "../../components/ProviderParameterSupportInfo";
+import { LlamaSamplerOrderEditor } from "../../components/LlamaSamplerOrderEditor";
 import { toast } from "../../components/toast";
 import { useModelEditorController } from "./hooks/useModelEditorController";
-import { Routes, useNavigationManager } from "../../navigation";
-import { addOrUpdateModel } from "../../../core/storage/repo";
+import { useNavigationManager } from "../../navigation";
+import { useSearchParams, useNavigate } from "react-router-dom";
+import { addOrUpdateModel, readSettingsCached } from "../../../core/storage/repo";
 import type { LlamaLastRuntimeReport, ReasoningSupport } from "../../../core/storage/schemas";
 import {
   getProviderReasoningSupport,
@@ -70,6 +72,7 @@ import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { cn } from "../../design-tokens";
 import { openDocs } from "../../../core/utils/docs";
 import { useI18n } from "../../../core/i18n/context";
+import { Switch } from "../../components/Switch";
 import { getPlatform } from "../../../core/utils/platform";
 
 type DownloadedGgufModel = {
@@ -429,6 +432,7 @@ export function EditModelPage() {
     handleLlamaKvTypeChange,
     handleLlamaFlashAttentionChange,
     handleLlamaSamplerProfileChange,
+    handleLlamaSamplerOrderChange,
     handleLlamaMinPChange,
     handleLlamaTypicalPChange,
     handleLlamaChatTemplateOverrideChange,
@@ -462,7 +466,10 @@ export function EditModelPage() {
     resetToInitial,
     fetchModels,
   } = useModelEditorController();
-  const { backOrReplace } = useNavigationManager();
+  useNavigationManager();
+  const editNavigate = useNavigate();
+  const [editSearchParams] = useSearchParams();
+  const returnTo = editSearchParams.get("returnTo");
   const isLocalModel = editorModel?.providerId === "llamacpp";
   const isOllamaModel = editorModel?.providerId === "ollama";
   const llamaRuntimeReport = modelAdvancedDraft.llamaLastRuntimeReport ?? null;
@@ -875,9 +882,6 @@ export function EditModelPage() {
       }
 
       setShowMovePrompt(false);
-      if (movePromptSource === "save") {
-        backOrReplace(Routes.settingsModels);
-      }
     } catch (err: any) {
       console.error("Failed to move model", err);
       setMoveError(
@@ -890,9 +894,6 @@ export function EditModelPage() {
 
   const handleSkipMove = () => {
     setShowMovePrompt(false);
-    if (movePromptSource === "save") {
-      backOrReplace(Routes.settingsModels);
-    }
   };
   const selectedProviderCredential =
     editorModel &&
@@ -1922,98 +1923,61 @@ export function EditModelPage() {
                               <ChevronDown className="h-4 w-4 text-fg/40" />
                             </button>
 
-                            <BottomMenu
+                            <ModelSelectionBottomMenu
                               isOpen={showModelSelector}
                               onClose={() => setShowModelSelector(false)}
                               title="Select Model"
+                              models={filteredModels as any}
+                              selectedModelIds={editorModel.name ? [editorModel.name] : []}
+                              searchQuery={searchQuery}
+                              onSearchChange={setSearchQuery}
+                              searchPlaceholder="Search models..."
+                              filterModels={false}
                               rightAction={
                                 isOpenRouterProvider ? (
-                                  <label className="flex items-center gap-2">
+                                  <span className="flex items-center gap-2">
                                     <span className="text-[13px] text-fg/70 whitespace-nowrap">
                                       only free models
                                     </span>
-                                    <span className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200">
-                                      <input
-                                        type="checkbox"
-                                        checked={showOnlyFreeModels}
-                                        onChange={(e) => setShowOnlyFreeModels(e.target.checked)}
-                                        className="sr-only"
-                                      />
-                                      <span
-                                        className={cn(
-                                          "inline-block h-full w-full rounded-full transition-colors duration-200",
-                                          showOnlyFreeModels ? "bg-accent" : "bg-fg/10",
-                                        )}
-                                      />
-                                      <span
-                                        className={cn(
-                                          "absolute h-3.5 w-3.5 transform rounded-full bg-fg transition-transform duration-200",
-                                          showOnlyFreeModels ? "translate-x-4.5" : "translate-x-1",
-                                        )}
-                                      />
-                                    </span>
-                                  </label>
+                                    <Switch
+                                      checked={showOnlyFreeModels}
+                                      onChange={setShowOnlyFreeModels}
+                                    />
+                                  </span>
                                 ) : null
                               }
-                            >
-                              <div className="sticky top-0 z-10 bg-[#0f1014] px-4 pb-2">
-                                <div className="relative">
-                                  <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40" />
-                                  <input
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                    placeholder="Search models..."
-                                    className="w-full rounded-xl border border-fg/10 bg-fg/5 py-2.5 pl-9 pr-4 text-[13px] text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
-                                    autoFocus
-                                  />
-                                </div>
-                              </div>
-                              <MenuSection>
-                                {filteredModels.length > 0 ? (
-                                  filteredModels.map((m) => {
-                                    const isSelected = m.id === editorModel.name;
-                                    return (
-                                      <MenuButton
-                                        key={m.id}
-                                        icon={getProviderIcon(editorModel.providerId)}
-                                        title={m.displayName || m.id}
-                                        description={m.description || m.id}
-                                        color="from-accent to-accent/80"
-                                        rightElement={
-                                          isSelected ? (
-                                            <Check className="h-4 w-4 text-accent" />
-                                          ) : undefined
-                                        }
-                                        onClick={() => handleSelectModel(m.id, m.displayName)}
-                                      />
-                                    );
-                                  })
-                                ) : (
-                                  <div className="py-10 text-center text-[13px] text-fg/40">
-                                    <p>
-                                      {t("common.buttons.search")}: "{searchQuery}"
-                                    </p>
-                                    {didYouMeanSuggestions.length > 0 && (
-                                      <div className="mt-4">
-                                        <p className="mb-2 text-[13px] text-fg/50">Did you mean:</p>
-                                        <div className="flex flex-wrap justify-center gap-2">
-                                          {didYouMeanSuggestions.map((model) => (
-                                            <button
-                                              key={model.id}
-                                              type="button"
-                                              onClick={() => setSearchQuery(model.id)}
-                                              className="rounded-full border border-fg/15 bg-fg/5 px-3 py-1.5 text-[13px] text-fg/80 transition hover:border-fg/30 hover:bg-fg/10"
-                                            >
-                                              {model.displayName || model.id}
-                                            </button>
-                                          ))}
-                                        </div>
+                              renderModelIcon={() => getProviderIcon(editorModel.providerId)}
+                              renderModelTitle={(model: any) => model.displayName || model.id}
+                              renderModelDescription={(model: any) => model.description || model.id}
+                              renderEmptyState={() => (
+                                <div className="py-10 text-center text-[13px] text-fg/40">
+                                  <p>
+                                    {t("common.buttons.search")}: "{searchQuery}"
+                                  </p>
+                                  {didYouMeanSuggestions.length > 0 && (
+                                    <div className="mt-4">
+                                      <p className="mb-2 text-[13px] text-fg/50">Did you mean:</p>
+                                      <div className="flex flex-wrap justify-center gap-2">
+                                        {didYouMeanSuggestions.map((model) => (
+                                          <button
+                                            key={model.id}
+                                            type="button"
+                                            onClick={() => setSearchQuery(model.id)}
+                                            className="rounded-full border border-fg/15 bg-fg/5 px-3 py-1.5 text-[13px] text-fg/80 transition hover:border-fg/30 hover:bg-fg/10"
+                                          >
+                                            {model.displayName || model.id}
+                                          </button>
+                                        ))}
                                       </div>
-                                    )}
-                                  </div>
-                                )}
-                              </MenuSection>
-                            </BottomMenu>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              onSelectModel={(modelId) => {
+                                const model = filteredModels.find((item) => item.id === modelId);
+                                handleSelectModel(modelId, model?.displayName);
+                              }}
+                            />
                           </>
                         ) : (
                           <>
@@ -3567,6 +3531,11 @@ export function EditModelPage() {
                                   </div>
                                 </div>
 
+                                <LlamaSamplerOrderEditor
+                                  value={modelAdvancedDraft.llamaSamplerOrder}
+                                  onChange={handleLlamaSamplerOrderChange}
+                                />
+
                                 <div className="grid grid-cols-2 gap-6">
                                   <div className="space-y-4">
                                     <div className="space-y-0.5">
@@ -3841,36 +3810,14 @@ export function EditModelPage() {
                                             ? "On"
                                             : "Off"}
                                         </span>
-                                        <input
+                                        <Switch
                                           id="llama-strict-mode"
-                                          type="checkbox"
                                           checked={modelAdvancedDraft.llamaStrictMode === true}
-                                          onChange={(e) =>
-                                            handleLlamaStrictModeChange(
-                                              e.target.checked ? true : null,
-                                            )
+                                          onChange={(next) =>
+                                            handleLlamaStrictModeChange(next ? true : null)
                                           }
-                                          className="peer sr-only"
-                                        />
-                                        <label
-                                          htmlFor="llama-strict-mode"
-                                          className={cn(
-                                            "relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full transition-all",
-                                            modelAdvancedDraft.llamaStrictMode === true
-                                              ? "bg-danger/80"
-                                              : "bg-fg/18",
-                                          )}
                                           aria-label="Toggle llama strict mode"
-                                        >
-                                          <span
-                                            className={cn(
-                                              "mt-0.5 inline-block h-5 w-5 rounded-full bg-white transition",
-                                              modelAdvancedDraft.llamaStrictMode === true
-                                                ? "translate-x-5"
-                                                : "translate-x-0.5",
-                                            )}
-                                          />
-                                        </label>
+                                        />
                                       </div>
                                     </div>
                                   </div>
@@ -4383,32 +4330,10 @@ export function EditModelPage() {
                                   </button>
                                 </div>
                                 {!isAutoReasoning && (
-                                  <label className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200">
-                                    <input
-                                      type="checkbox"
-                                      checked={modelAdvancedDraft.reasoningEnabled || false}
-                                      onChange={(e) =>
-                                        handleReasoningEnabledChange(e.target.checked)
-                                      }
-                                      className="sr-only"
-                                    />
-                                    <span
-                                      className={cn(
-                                        "inline-block h-full w-full rounded-full transition-colors duration-200",
-                                        modelAdvancedDraft.reasoningEnabled
-                                          ? "bg-warning"
-                                          : "bg-fg/10",
-                                      )}
-                                    />
-                                    <span
-                                      className={cn(
-                                        "absolute h-3.5 w-3.5 transform rounded-full bg-fg transition-transform duration-200",
-                                        modelAdvancedDraft.reasoningEnabled
-                                          ? "translate-x-4.5"
-                                          : "translate-x-1",
-                                      )}
-                                    />
-                                  </label>
+                                  <Switch
+                                    checked={modelAdvancedDraft.reasoningEnabled || false}
+                                    onChange={handleReasoningEnabledChange}
+                                  />
                                 )}
                               </div>
 
@@ -4512,32 +4437,10 @@ export function EditModelPage() {
                                   </div>
                                 </div>
 
-                                <label className="relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200">
-                                  <input
-                                    type="checkbox"
-                                    checked={modelAdvancedDraft.promptCachingEnabled || false}
-                                    onChange={(e) =>
-                                      handlePromptCachingEnabledChange(e.target.checked)
-                                    }
-                                    className="sr-only"
-                                  />
-                                  <span
-                                    className={cn(
-                                      "inline-block h-full w-full rounded-full transition-colors duration-200",
-                                      modelAdvancedDraft.promptCachingEnabled
-                                        ? "bg-accent"
-                                        : "bg-fg/10",
-                                    )}
-                                  />
-                                  <span
-                                    className={cn(
-                                      "absolute h-3.5 w-3.5 transform rounded-full bg-fg transition-transform duration-200",
-                                      modelAdvancedDraft.promptCachingEnabled
-                                        ? "translate-x-4.5"
-                                        : "translate-x-1",
-                                    )}
-                                  />
-                                </label>
+                                <Switch
+                                  checked={modelAdvancedDraft.promptCachingEnabled || false}
+                                  onChange={handlePromptCachingEnabledChange}
+                                />
                               </div>
 
                               {modelAdvancedDraft.promptCachingEnabled && (
@@ -4838,6 +4741,29 @@ export function EditModelPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Continue Setup button when coming from onboarding */}
+      {returnTo && (() => {
+        const cached = readSettingsCached();
+        const hasModel = cached ? cached.models.some((m) => m.providerId === "llamacpp") : false;
+        return (
+          <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
+            <button
+              onClick={() => editNavigate(returnTo)}
+              disabled={!hasModel}
+              className={cn(
+                "flex items-center gap-2 rounded-full px-6 py-3 text-sm font-bold transition active:scale-[0.98]",
+                hasModel
+                  ? "border border-emerald-500/40 bg-emerald-500 text-black shadow-[0_4px_20px_rgba(16,185,129,0.35)] hover:bg-emerald-400"
+                  : "border border-white/10 bg-white/10 text-white/40 cursor-not-allowed",
+              )}
+            >
+              {hasModel ? "Continue Setup" : "Save a model to continue"}
+              <ArrowRight size={16} />
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }

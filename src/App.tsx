@@ -38,6 +38,7 @@ import { ChangelogPage } from "./ui/pages/settings/ChangelogPage";
 import { AdvancedPage } from "./ui/pages/settings/AdvancedPage";
 import { CreationHelperPage as AICreationHelperPage } from "./ui/pages/settings/CreationHelperPage";
 import { HelpMeReplyPage } from "./ui/pages/settings/HelpMeReplyPage";
+import { HostApiPage } from "./ui/pages/settings/HostApiPage";
 import { VoicesPage } from "./ui/pages/settings/VoicesPage";
 import { DynamicMemoryPage } from "./ui/pages/settings/DynamicMemoryPage";
 import { EmbeddingDownloadPage } from "./ui/pages/settings/EmbeddingDownloadPage";
@@ -113,6 +114,128 @@ import { readSettings, SETTINGS_UPDATED_EVENT } from "./core/storage/repo";
 import { recordChatDebugEvent } from "./core/debug/chatDebugStore";
 
 const chatLog = logManager({ component: "Chat" });
+
+function getPayloadObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function getBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function getNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function summarizeChatDebugEvent(
+  state: string,
+  payload: unknown,
+  level?: string,
+): { level: "info" | "warn" | "error"; message: string } | null {
+  const obj = getPayloadObject(payload);
+  if (!obj) return null;
+
+  const operation = getString(obj.operation);
+  const providerId = getString(obj.providerId);
+  const model = getString(obj.model);
+  const requestId = getString(obj.requestId);
+  const status = getNumber(obj.status);
+  const elapsedMs = getNumber(obj.elapsedMs);
+  const stream = getBoolean(obj.stream);
+  const fallbackAttempt = getBoolean(obj.fallbackAttempt);
+  const message = getString(obj.message);
+  const hasReasoning = getBoolean(obj.hasReasoning);
+  const length = getNumber(obj.length);
+
+  switch (state) {
+    case "continue_start":
+      return {
+        level: "info",
+        message: `session=${getString(obj.sessionId) ?? "unknown"} character=${getString(obj.characterId) ?? "unknown"} messages=${getNumber(obj.messageCount) ?? 0}`,
+      };
+    case "continue_model_selected":
+      return {
+        level: "info",
+        message: `provider=${providerId ?? "unknown"} model=${model ?? "unknown"} credential=${getString(obj.credentialId) ?? "unknown"}`,
+      };
+    case "system_prompt_built": {
+      const debug = getPayloadObject(obj.system_prompt_debug);
+      return {
+        level: "info",
+        message: `session=${getString(debug?.session_id) ?? "unknown"} base_source=${getString(debug?.base_template_source) ?? "unknown"} entries=${getNumber(debug?.entry_count) ?? 0} total_chars=${getNumber(debug?.total_chars) ?? 0}`,
+      };
+    }
+    case "sending_request":
+    case "continue_request":
+    case "regenerate_request":
+      return {
+        level: "info",
+        message:
+          `operation=${operation ?? state} provider=${providerId ?? "unknown"} model=${model ?? "unknown"}` +
+          ` stream=${stream ?? false} request_id=${requestId ?? "missing"}` +
+          (fallbackAttempt ? " fallback_attempt=true" : ""),
+      };
+    case "response":
+    case "continue_response":
+    case "regenerate_response":
+      return {
+        level: "info",
+        message:
+          `operation=${operation ?? state} model=${model ?? "unknown"} status=${status ?? "unknown"}` +
+          (elapsedMs != null ? ` elapsed_ms=${elapsedMs}` : "") +
+          (requestId ? ` request_id=${requestId}` : ""),
+      };
+    case "provider_error":
+    case "continue_provider_error":
+    case "regenerate_provider_error":
+      return {
+        level: "error",
+        message:
+          `operation=${operation ?? state} model=${model ?? "unknown"} status=${status ?? "unknown"}` +
+          (requestId ? ` request_id=${requestId}` : "") +
+          (message ? ` message=${message}` : ""),
+      };
+    case "assistant_reply":
+    case "continue_assistant_reply":
+      return {
+        level: "info",
+        message:
+          `operation=${operation ?? state} reply_length=${length ?? 0}` +
+          (requestId ? ` request_id=${requestId}` : ""),
+      };
+    case "continue_empty_response":
+    case "regenerate_empty_response":
+      return {
+        level: "warn",
+        message:
+          `operation=${operation ?? state} empty_response=true has_reasoning=${hasReasoning ?? false}` +
+          (requestId ? ` request_id=${requestId}` : ""),
+      };
+    case "transport_retry":
+      return {
+        level: "warn",
+        message:
+          `scope=${getString(obj.scope) ?? "unknown"} attempt=${getNumber(obj.attempt) ?? 0}/${getNumber(obj.maxRetries) ?? 0}` +
+          ` reason=${getString(obj.reason) ?? "unknown"}` +
+          (status != null ? ` status=${status}` : "") +
+          (getNumber(obj.delayMs) != null ? ` delay_ms=${getNumber(obj.delayMs)}` : "") +
+          (requestId ? ` request_id=${requestId}` : ""),
+      };
+    default:
+      if (level?.toUpperCase() === "ERROR" && message) {
+        return { level: "error", message };
+      }
+      if (level?.toUpperCase() === "WARN" && message) {
+        return { level: "warn", message };
+      }
+      return null;
+  }
+}
 
 type LlamaModelLoadProgressEvent = {
   requestId?: string | null;
@@ -241,9 +364,10 @@ function App() {
               }
             } else if (payload !== undefined) {
               recordChatDebugEvent({ state, payload, level });
-              chatLog.with({ fn: state }).log(payload);
-            } else {
-              chatLog.with({ fn: state }).log(event.payload);
+              const summary = summarizeChatDebugEvent(state, payload, level);
+              if (summary) {
+                chatLog.with({ fn: state })[summary.level](summary.message);
+              }
             }
           } else {
             chatLog.warn("unknown event payload", event.payload);
@@ -297,22 +421,25 @@ function App() {
           const variant = payload.variant;
           const title = payload.title;
           const description = payload.description;
+          const id = payload.id;
           if (typeof title !== "string") {
             return;
           }
           const detail = typeof description === "string" ? description : undefined;
+          const toastOptions =
+            typeof id === "string" || typeof id === "number" ? { id } : undefined;
           switch (variant) {
             case "success":
-              toast.success(title, detail);
+              toast.success(title, detail, toastOptions);
               break;
             case "warning":
-              toast.warning(title, detail);
+              toast.warning(title, detail, toastOptions);
               break;
             case "error":
-              toast.error(title, detail);
+              toast.error(title, detail, toastOptions);
               break;
             default:
-              toast.info(title, detail);
+              toast.info(title, detail, toastOptions);
           }
         });
       } catch (err) {
@@ -603,6 +730,8 @@ function AppContent() {
     () => location.pathname.startsWith("/settings"),
     [location.pathname],
   );
+
+  const isLogsRoute = location.pathname === "/settings/logs";
 
   const isLorebookEditorRoute = useMemo(
     () =>
@@ -933,9 +1062,11 @@ function AppContent() {
                   ? "overflow-hidden px-0 pt-0 pb-0"
                   : isSearchRoute
                     ? "overflow-hidden px-0 pt-0 pb-0"
-                    : isLorebookEditorRoute
+                    : isLogsRoute
                       ? "overflow-hidden px-0 pt-0 pb-0"
-                      : isPersonaEditRoute
+                      : isLorebookEditorRoute
+                        ? "overflow-hidden px-0 pt-0 pb-0"
+                        : isPersonaEditRoute
                         ? "overflow-hidden px-0 pt-0 pb-0"
                         : isTemplateEditorRoute
                           ? "overflow-hidden px-0 pt-0 pb-0"
@@ -1030,6 +1161,7 @@ function AppContent() {
               <Route path="/settings/advanced/memory" element={<DynamicMemoryPage />} />
               <Route path="/settings/advanced/creation-helper" element={<AICreationHelperPage />} />
               <Route path="/settings/advanced/help-me-reply" element={<HelpMeReplyPage />} />
+              <Route path="/settings/advanced/host-api" element={<HostApiPage />} />
               <Route path="/settings/embedding-download" element={<EmbeddingDownloadPage />} />
               <Route path="/settings/embedding-test" element={<EmbeddingTestPage />} />
               <Route path="/settings/changelog" element={<ChangelogPage />} />

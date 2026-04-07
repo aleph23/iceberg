@@ -24,6 +24,9 @@ pub trait ImageProviderAdapter: Send + Sync {
     }
 
     fn endpoint(&self, base_url: &str, request: &ImageGenerationRequest) -> String;
+    fn requires_api_key(&self) -> bool {
+        !self.required_auth_headers().is_empty()
+    }
     #[allow(dead_code)]
     fn required_auth_headers(&self) -> &'static [&'static str];
     fn headers(

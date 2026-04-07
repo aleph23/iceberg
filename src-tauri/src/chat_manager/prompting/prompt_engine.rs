@@ -196,7 +196,7 @@ pub fn default_dynamic_memory_entries() -> Vec<SystemPromptEntry> {
             id: "memory_rules".to_string(),
             name: "Rules".to_string(),
             role: PromptEntryRole::System,
-            content: "Rules:\n- Each memory must be atomic: exactly one durable fact per entry.\n- Write memories as plain factual statements, not dialogue or narration.\n- Prefer explicit names, roles, and outcomes over vague pronouns.\n- Only store what was explicitly stated or clearly shown in the transcript.\n- Do not store transient phrasing, stylistic descriptions, erotic detail, gore detail, or generic chat filler.\n- Avoid duplicates by checking whether the same fact already exists in other words.\n- If a new fact supersedes an old fact, delete or replace the old one.\n- Respect the {{max_entries}} limit.\n- When deleting, use the 6-digit memory ID shown in brackets when available.".to_string(),
+            content: "Rules:\n- Each memory must be atomic: exactly one durable fact per entry.\n- Write memories as plain factual statements, not dialogue or narration.\n- Prefer explicit names, roles, and outcomes over vague pronouns.\n- Only store what was explicitly stated or clearly shown in the transcript.\n- Do not store transient phrasing, stylistic descriptions, erotic detail, gore detail, or generic chat filler.\n- Avoid duplicates by checking whether the same fact already exists in other words.\n- If a new fact supersedes an old fact, create the replacement first, then delete or demote the old one.\n- Before deleting multiple related memories, preserve their durable facts by consolidating them into fewer high-value entries.\n- Respect the {{max_entries}} limit.\n- When deleting, use the 6-digit memory ID shown in brackets when available.".to_string(),
             enabled: true,
             injection_position: PromptEntryPosition::Relative,
             injection_depth: 0,
@@ -238,7 +238,7 @@ pub fn default_dynamic_memory_entries() -> Vec<SystemPromptEntry> {
             id: "memory_tools".to_string(),
             name: "Tool Usage".to_string(),
             role: PromptEntryRole::System,
-            content: "Tool usage:\n- Use `create_memory` only for durable facts worth recalling later. Supply `text` and `category`; add `important: true` only when pinning is justified.\n- Use `delete_memory` for duplicates, contradictions, stale assumptions, or obsolete context.\n- Use `pin_memory` only for identity-defining or continuity-critical memories.\n- Use `unpin_memory` when a previously critical fact no longer needs permanent priority.\n- If nothing should change, call `done` with no extra narration.\n- Output no natural language outside tool calls.".to_string(),
+            content: "Tool usage:\n- Use `create_memory` only for durable facts worth recalling later. Supply `text` and `category`; add `important: true` only when pinning is justified.\n- Use `delete_memory` for duplicates, contradictions, stale assumptions, or obsolete context.\n- When deleting multiple overlapping memories, first create the merged replacement memories that preserve the important facts.\n- Use `pin_memory` only for identity-defining or continuity-critical memories.\n- Use `unpin_memory` when a previously critical fact no longer needs permanent priority.\n- If nothing should change, call `done` with no extra narration.\n- Output no natural language outside tool calls.".to_string(),
             enabled: true,
             injection_position: PromptEntryPosition::Relative,
             injection_depth: 0,
@@ -940,6 +940,22 @@ pub fn default_scene_generation_entries() -> Vec<SystemPromptEntry> {
             system_prompt: false,
             conditions: Some(PromptEntryCondition::HasCharacterReferenceText { value: true }),
             prompt_entry_payload: None,
+        },
+        SystemPromptEntry {
+            id: "scene_gen_chat_background".to_string(),
+            name: "Chat Background Reference".to_string(),
+            role: PromptEntryRole::User,
+            content: "# Chat Background Reference\nUse the attached chat background image as the environmental and backdrop reference when it fits the current moment. Preserve major location cues, palette, lighting mood, architecture, and large environmental features from it unless the recent messages clearly establish a different setting.".to_string(),
+            enabled: true,
+            injection_position: PromptEntryPosition::InChat,
+            injection_depth: 0,
+            conditional_min_messages: None,
+            interval_turns: None,
+            system_prompt: false,
+            conditions: Some(PromptEntryCondition::HasChatBackground { value: true }),
+            prompt_entry_payload: Some(PromptEntryPayload::ImageSlot {
+                slot: PromptEntryImageSlot::ChatBackground,
+            }),
         },
         SystemPromptEntry {
             id: "scene_gen_persona_image".to_string(),
@@ -1767,6 +1783,7 @@ pub fn build_system_prompt_entries(
         has_subject_description: false,
         has_current_description: false,
         has_character_reference_images: false,
+        has_chat_background: false,
         has_persona_reference_images: false,
         has_character_reference_text: false,
         has_persona_reference_text: false,
@@ -1929,7 +1946,7 @@ pub fn build_system_prompt_entries(
 
     let combined_hash = hasher.finalize().to_hex().to_string();
 
-    utils::emit_debug(
+    utils::emit_info(
         app,
         "system_prompt_built",
         json!({
@@ -2450,6 +2467,7 @@ mod tests {
             id: "s1".into(),
             character_id: "c1".into(),
             title: "t".into(),
+            background_image_path: None,
             system_prompt: None,
             selected_scene_id: None,
             prompt_template_id: None,

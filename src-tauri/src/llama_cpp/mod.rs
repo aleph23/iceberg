@@ -73,6 +73,7 @@ mod desktop {
     use sampler::{
         build_sampler, flash_attention_policy_label, kv_type_label, normalize_sampler_profile,
         offload_kqv_mode_label, sampler_profile_defaults, ResolvedSamplerConfig,
+        SamplerProfileDefaults,
     };
 
     const LLAMA_RUNTIME_REPORT_UPDATED_EVENT: &str = "llama-runtime-report-updated";
@@ -583,7 +584,36 @@ mod desktop {
             .or_else(|| body.get("llama_sampler_profile"))
             .and_then(|v| v.as_str())
             .and_then(normalize_sampler_profile);
-        let sampler_defaults = sampler_profile_defaults(sampler_profile);
+        let disable_sampler_profile_defaults = body
+            .get("llamaDisableSamplerProfileDefaults")
+            .or_else(|| body.get("llama_disable_sampler_profile_defaults"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let sampler_order = body
+            .get("llamaSamplerOrder")
+            .or_else(|| body.get("llama_sampler_order"))
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str().map(|stage| stage.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|items| !items.is_empty());
+        let sampler_defaults = if disable_sampler_profile_defaults {
+            SamplerProfileDefaults {
+                name: "custom",
+                temperature: 0.8,
+                top_p: 0.95,
+                top_k: None,
+                min_p: None,
+                typical_p: None,
+                frequency_penalty: None,
+                presence_penalty: None,
+            }
+        } else {
+            sampler_profile_defaults(sampler_profile)
+        };
         let temperature = body
             .get("temperature")
             .and_then(|v| v.as_f64())
@@ -965,14 +995,43 @@ mod desktop {
             let gpu_load_fallback_activated = engine.gpu_load_fallback_activated;
             let gpu_load_fallback_reason = engine.gpu_load_fallback_reason.clone();
             let actual_gpu_layers_used = engine.actual_gpu_layers_used;
-            let recommended_ctx = compute_recommended_context(
+            let cpu_runtime_active = backend_path_used == "cpu"
+                || actual_gpu_layers_used == Some(0)
+                || !engine.supports_gpu_offload;
+            let runtime_offload_kqv = if backend_path_used == "cpu"
+                || actual_gpu_layers_used == Some(0)
+                || !engine.supports_gpu_offload
+            {
+                Some(false)
+            } else if llama_offload_kqv.is_some() {
+                llama_offload_kqv
+            } else if using_rocm_backend() {
+                Some(false)
+            } else {
+                None
+            };
+            let raw_recommended_ctx = compute_recommended_context(
                 model,
                 available_memory_bytes,
                 available_vram_bytes,
                 max_ctx,
-                llama_offload_kqv,
+                runtime_offload_kqv,
                 llama_kv_type_raw.as_deref(),
             );
+            let recommended_ctx = if cpu_runtime_active {
+                compute_cpu_fallback_limits(
+                    model,
+                    available_memory_bytes,
+                    max_ctx,
+                    llama_kv_type_raw.as_deref(),
+                    None,
+                    llama_batch_size,
+                )
+                .map(|(safe_ctx, _)| safe_ctx)
+                .or(raw_recommended_ctx)
+            } else {
+                raw_recommended_ctx
+            };
             let mut ctx_size = if let Some(requested) = requested_context {
                 requested.min(max_ctx)
             } else if let Some(recommended) = recommended_ctx {
@@ -1053,7 +1112,7 @@ mod desktop {
                 Some(backend_path_used),
                 gpu_load_fallback_activated,
             );
-            if !llama_strict_mode && gpu_load_fallback_activated && backend_path_used == "cpu" {
+            if !llama_strict_mode && cpu_runtime_active {
                 if let Some((safe_ctx, safe_batch)) = compute_cpu_fallback_limits(
                     model,
                     available_memory_bytes,
@@ -1067,8 +1126,16 @@ mod desktop {
                             &app,
                             "llama_cpp",
                             format!(
-                                "GPU load fell back to CPU; clamping context from {} to {} using RAM-derived fallback limits (requested_context={:?}, recommended_context={:?})",
-                                ctx_size, safe_ctx, requested_context, recommended_ctx
+                                "{} clamping context from {} to {} using RAM-derived fallback limits (requested_context={:?}, recommended_context={:?})",
+                                if gpu_load_fallback_activated {
+                                    "GPU load fell back to CPU;"
+                                } else {
+                                    "CPU runtime active;"
+                                },
+                                ctx_size,
+                                safe_ctx,
+                                requested_context,
+                                recommended_ctx
                             ),
                         );
                         ctx_size = safe_ctx;
@@ -1078,8 +1145,14 @@ mod desktop {
                             &app,
                             "llama_cpp",
                             format!(
-                                "GPU load fell back to CPU; reducing llama batch size from {} to {} for CPU headroom",
-                                llama_batch_size, safe_batch
+                                "{} reducing llama batch size from {} to {} for CPU headroom",
+                                if gpu_load_fallback_activated {
+                                    "GPU load fell back to CPU;"
+                                } else {
+                                    "CPU runtime active;"
+                                },
+                                llama_batch_size,
+                                safe_batch
                             ),
                         );
                         llama_batch_size = safe_batch;
@@ -1159,6 +1232,20 @@ mod desktop {
                             .unwrap_or("unknown")
                     ),
                 );
+                if let Some(diagnostics) = built_prompt.tool_template_diagnostics.as_deref() {
+                    log_warn(
+                        &app,
+                        "llama_cpp",
+                        format!(
+                            "llama native tool-call template heuristic warning: source={} {}",
+                            built_prompt
+                                .applied_template_source
+                                .as_deref()
+                                .unwrap_or("unknown"),
+                            diagnostics
+                        ),
+                    );
+                }
             }
             let model_default_add_bos = model_tokenizer_adds_bos(model);
             let prompt_add_bos = resolve_prompt_add_bos(model, built_prompt.prompt_mode);
@@ -1672,6 +1759,7 @@ mod desktop {
 
             let sampler_config = ResolvedSamplerConfig {
                 profile: sampler_defaults.name,
+                order: sampler_order.clone(),
                 temperature,
                 top_p,
                 top_k,
@@ -1715,6 +1803,7 @@ mod desktop {
                     "requestId": request_id,
                     "modelPath": model_path,
                     "profile": sampler_config.profile,
+                    "requestedOrder": sampler_order,
                     "order": built_sampler.order,
                     "activeParams": built_sampler.active_params,
                 }),

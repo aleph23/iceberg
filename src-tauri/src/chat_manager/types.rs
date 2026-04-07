@@ -40,6 +40,7 @@ impl Default for PromptEntryPosition {
 pub enum PromptEntryImageSlot {
     Character,
     Persona,
+    ChatBackground,
     Avatar,
     References,
 }
@@ -112,6 +113,9 @@ pub enum PromptEntryCondition {
         value: bool,
     },
     HasCharacterReferenceImages {
+        value: bool,
+    },
+    HasChatBackground {
         value: bool,
     },
     HasPersonaReferenceImages {
@@ -274,6 +278,8 @@ pub struct AdvancedSettings {
     #[serde(default)]
     pub summarisation_model_id: Option<String>,
     #[serde(default)]
+    pub dynamic_memory_llama_sampler_overwrite_enabled: Option<bool>,
+    #[serde(default)]
     pub avatar_generation_enabled: Option<bool>,
     #[serde(default)]
     pub avatar_generation_model_id: Option<String>,
@@ -309,7 +315,47 @@ pub struct AdvancedSettings {
     #[serde(default)]
     pub embedding_max_tokens: Option<u32>,
     #[serde(default)]
+    pub host_api: Option<HostApiSettings>,
+    #[serde(default)]
     pub accessibility: Option<AccessibilitySettings>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HostApiSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_host_api_bind_address")]
+    pub bind_address: String,
+    #[serde(default = "default_host_api_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub exposed_models: Vec<HostApiExposedModel>,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct HostApiExposedModel {
+    pub id: String,
+    pub model_id: String,
+    #[serde(default = "default_host_api_exposed_model_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+fn default_host_api_bind_address() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_host_api_port() -> u16 {
+    3333
+}
+
+fn default_host_api_exposed_model_enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
@@ -356,6 +402,12 @@ pub struct DynamicMemorySettings {
     /// Score below which memories are demoted to cold (0.2-0.4 recommended)
     #[serde(default = "default_cold_threshold")]
     pub cold_threshold: f32,
+    /// Default delete confidence when the model omits it. Lower values prefer soft-delete.
+    #[serde(default = "default_delete_confidence")]
+    pub delete_confidence_default: f32,
+    /// Maximum fraction of the starting hot set that can be hard-deleted in one cycle.
+    #[serde(default = "default_max_hard_delete_ratio_per_cycle")]
+    pub max_hard_delete_ratio_per_cycle: f32,
     /// v2 exclusive: Use last 2 messages for better memory retrieval
     #[serde(default = "default_context_enrichment")]
     pub context_enrichment_enabled: bool,
@@ -383,6 +435,14 @@ fn default_decay_rate() -> f32 {
 
 fn default_cold_threshold() -> f32 {
     0.4 // Memories below this score are demoted to cold
+}
+
+fn default_delete_confidence() -> f32 {
+    0.5 // Omitted confidence should prefer cold storage over hard delete
+}
+
+fn default_max_hard_delete_ratio_per_cycle() -> f32 {
+    0.5 // At most half of the hot set can be hard-deleted per cycle
 }
 
 fn default_context_enrichment() -> bool {
@@ -436,6 +496,8 @@ pub struct AdvancedModelSettings {
     pub llama_strict_mode: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_sampler_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_sampler_order: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_min_p: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -503,6 +565,7 @@ impl Default for AdvancedModelSettings {
             llama_raw_completion_fallback: None,
             llama_strict_mode: None,
             llama_sampler_profile: None,
+            llama_sampler_order: None,
             llama_min_p: None,
             llama_typical_p: None,
             llama_last_runtime_report: None,
@@ -660,6 +723,8 @@ pub struct Session {
     pub id: String,
     pub character_id: String,
     pub title: String,
+    #[serde(default)]
+    pub background_image_path: Option<String>,
     /// DEPRECATED: System prompts are now always rebuilt dynamically
     #[serde(default, skip_serializing)]
     #[allow(dead_code)]
