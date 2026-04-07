@@ -15,6 +15,7 @@ import {
   isStartingSceneMessage,
   resolveSceneContent,
 } from "./chatControllerShared";
+import { applyLiveChatAction } from "./chatLiveState";
 
 export interface VariantState {
   variants: StoredMessage["variants"];
@@ -245,8 +246,20 @@ export function useChatMessageActionsController({ context }: UseChatMessageActio
 
       await persistSession(updatedSession);
       messagesRef.current = updatedMessages;
-      dispatch({ type: "SET_SESSION", payload: updatedSession });
-      dispatch({ type: "SET_MESSAGES", payload: updatedMessages });
+      dispatch({
+        type: "BATCH",
+        actions: [
+          { type: "SET_SESSION", payload: updatedSession },
+          { type: "SET_MESSAGES", payload: updatedMessages },
+        ],
+      });
+      applyLiveChatAction(state.session.id, state, {
+        type: "BATCH",
+        actions: [
+          { type: "SET_SESSION", payload: updatedSession },
+          { type: "SET_MESSAGES", payload: updatedMessages },
+        ],
+      });
       resetMessageActions();
     } catch (err) {
       dispatch({

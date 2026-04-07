@@ -1,8 +1,8 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { Check, ChevronDown, Image, LucideIcon, PenLine, Sparkles } from "lucide-react";
 
-import { BottomMenu } from "../../components/BottomMenu";
+import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import {
   resolveImageGenerationOptions,
   resolveSceneWriterOptions,
@@ -12,6 +12,7 @@ import type { Model } from "../../../core/storage/schemas";
 import { useI18n } from "../../../core/i18n/context";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { cn, spacing, typography } from "../../design-tokens";
+import { Switch } from "../../components/Switch";
 
 interface ImageGenerationState {
   loading: boolean;
@@ -194,35 +195,11 @@ function SelectorCard({
               {hasToggle ? (
                 <div className="flex items-center gap-2 pt-0.5">
                   <span className="text-[11px] font-medium text-fg/50">{stateLabel}</span>
-                  <input
+                  <Switch
                     id={toggleId}
-                    type="checkbox"
                     checked={enabled}
-                    onChange={(event) => {
-                      event.stopPropagation();
-                      onToggle();
-                    }}
-                    onClick={(event) => event.stopPropagation()}
-                    className="peer sr-only"
+                    onChange={() => onToggle()}
                   />
-                  <label
-                    htmlFor={toggleId}
-                    onClick={(event) => event.stopPropagation()}
-                    className={cn(
-                      "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full",
-                      "border-2 border-transparent transition-all duration-200 ease-in-out",
-                      "focus:outline-none focus:ring-2 focus:ring-fg/20",
-                      enabled ? "bg-emerald-500 shadow-sm shadow-emerald-500/20" : "bg-fg/20",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "inline-block h-4 w-4 transform rounded-full bg-fg shadow-sm",
-                        "ring-0 transition duration-200 ease-in-out",
-                        enabled ? "translate-x-4" : "translate-x-0",
-                      )}
-                    />
-                  </label>
                 </div>
               ) : null}
             </div>
@@ -252,112 +229,6 @@ function SelectorCard({
   );
 }
 
-type ModelSelectionMenuProps = {
-  isOpen: boolean;
-  title: string;
-  models: Model[];
-  selectedModelId: string | null;
-  searchQuery: string;
-  emptyLabel: string;
-  fallbackLabel: string;
-  clearIcon?: LucideIcon;
-  onClose: () => void;
-  onSearchChange: (value: string) => void;
-  onSelect: (modelId: string | null) => void;
-};
-
-function ModelSelectionMenu({
-  isOpen,
-  title,
-  models,
-  selectedModelId,
-  searchQuery,
-  emptyLabel,
-  fallbackLabel,
-  clearIcon: ClearIcon = Image,
-  onClose,
-  onSearchChange,
-  onSelect,
-}: ModelSelectionMenuProps) {
-  const filteredModels = useMemo(() => {
-    if (!searchQuery) return models;
-    const q = searchQuery.toLowerCase();
-    return models.filter(
-      (model) =>
-        model.displayName?.toLowerCase().includes(q) || model.name?.toLowerCase().includes(q),
-    );
-  }, [models, searchQuery]);
-
-  return (
-    <BottomMenu isOpen={isOpen} onClose={onClose} title={title}>
-      <div className="space-y-4">
-        <div className="relative">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={fallbackLabel}
-            className="w-full rounded-xl border border-fg/10 bg-surface-el/30 px-4 py-2.5 pl-10 text-sm text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
-          />
-          <svg
-            className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-            />
-          </svg>
-        </div>
-
-        <div className="max-h-[50vh] space-y-2 overflow-y-auto">
-          <button
-            onClick={() => onSelect(null)}
-            className={cn(
-              "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-              !selectedModelId
-                ? "border-accent/40 bg-accent/10"
-                : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-            )}
-          >
-            <ClearIcon className="h-5 w-5 text-fg/40" />
-            <span className="text-sm text-fg">{emptyLabel}</span>
-            {!selectedModelId && <Check className="ml-auto h-4 w-4 text-accent/80" />}
-          </button>
-
-          {filteredModels.map((model) => (
-            <button
-              key={model.id}
-              onClick={() => onSelect(model.id)}
-              className={cn(
-                "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
-                selectedModelId === model.id
-                  ? "border-accent/40 bg-accent/10"
-                  : "border-fg/10 bg-fg/5 hover:bg-fg/10",
-              )}
-            >
-              {getProviderIcon(model.providerId)}
-              <div className="min-w-0 flex-1">
-                <span className="block truncate text-sm text-fg">
-                  {model.displayName || model.name}
-                </span>
-                <span className="block truncate text-xs text-fg/40">{model.name}</span>
-              </div>
-              {selectedModelId === model.id && (
-                <Check className="h-4 w-4 shrink-0 text-accent/80" />
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
-    </BottomMenu>
-  );
-}
-
 export function ImageGenerationPage() {
   const { t } = useI18n();
   const [state, setState] = useState<ImageGenerationState>({
@@ -375,9 +246,6 @@ export function ImageGenerationPage() {
   const [showAvatarMenu, setShowAvatarMenu] = useState(false);
   const [showSceneMenu, setShowSceneMenu] = useState(false);
   const [showWriterMenu, setShowWriterMenu] = useState(false);
-  const [avatarSearchQuery, setAvatarSearchQuery] = useState("");
-  const [sceneSearchQuery, setSceneSearchQuery] = useState("");
-  const [writerSearchQuery, setWriterSearchQuery] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -675,64 +543,69 @@ export function ImageGenerationPage() {
         </div>
       </main>
 
-      <ModelSelectionMenu
+      <ModelSelectionBottomMenu
         isOpen={showAvatarMenu}
+        onClose={() => setShowAvatarMenu(false)}
         title={t("imageGeneration.labels.selectAvatarModel")}
         models={state.models}
-        selectedModelId={state.avatarModelId}
-        searchQuery={avatarSearchQuery}
-        emptyLabel={t("imageGeneration.labels.useFirstAvailable")}
-        fallbackLabel={t("imageGeneration.labels.searchModels")}
-        onClose={() => {
-          setShowAvatarMenu(false);
-          setAvatarSearchQuery("");
-        }}
-        onSearchChange={setAvatarSearchQuery}
-        onSelect={(modelId) => {
+        selectedModelIds={state.avatarModelId ? [state.avatarModelId] : []}
+        searchPlaceholder={t("imageGeneration.labels.searchModels")}
+        onSelectModel={(modelId) => {
           void persistSelection("avatarModelId", modelId);
           setShowAvatarMenu(false);
-          setAvatarSearchQuery("");
+        }}
+        clearOption={{
+          label: t("imageGeneration.labels.useFirstAvailable"),
+          icon: Image,
+          selected: !state.avatarModelId,
+          onClick: () => {
+            void persistSelection("avatarModelId", null);
+            setShowAvatarMenu(false);
+          },
         }}
       />
 
-      <ModelSelectionMenu
+      <ModelSelectionBottomMenu
         isOpen={showSceneMenu}
+        onClose={() => setShowSceneMenu(false)}
         title={t("imageGeneration.labels.selectSceneModel")}
         models={state.models}
-        selectedModelId={state.sceneModelId}
-        searchQuery={sceneSearchQuery}
-        emptyLabel={t("imageGeneration.labels.useFirstAvailable")}
-        fallbackLabel={t("imageGeneration.labels.searchModels")}
-        onClose={() => {
-          setShowSceneMenu(false);
-          setSceneSearchQuery("");
-        }}
-        onSearchChange={setSceneSearchQuery}
-        onSelect={(modelId) => {
+        selectedModelIds={state.sceneModelId ? [state.sceneModelId] : []}
+        searchPlaceholder={t("imageGeneration.labels.searchModels")}
+        onSelectModel={(modelId) => {
           void persistSelection("sceneModelId", modelId);
           setShowSceneMenu(false);
-          setSceneSearchQuery("");
+        }}
+        clearOption={{
+          label: t("imageGeneration.labels.useFirstAvailable"),
+          icon: Image,
+          selected: !state.sceneModelId,
+          onClick: () => {
+            void persistSelection("sceneModelId", null);
+            setShowSceneMenu(false);
+          },
         }}
       />
 
-      <ModelSelectionMenu
+      <ModelSelectionBottomMenu
         isOpen={showWriterMenu}
+        onClose={() => setShowWriterMenu(false)}
         title={t("imageGeneration.labels.selectWriterModel")}
         models={state.writerModels}
-        selectedModelId={state.writerModelId}
-        searchQuery={writerSearchQuery}
-        emptyLabel={t("imageGeneration.labels.useFirstCompatible")}
-        fallbackLabel={t("imageGeneration.labels.searchModels")}
-        clearIcon={PenLine}
-        onClose={() => {
-          setShowWriterMenu(false);
-          setWriterSearchQuery("");
-        }}
-        onSearchChange={setWriterSearchQuery}
-        onSelect={(modelId) => {
+        selectedModelIds={state.writerModelId ? [state.writerModelId] : []}
+        searchPlaceholder={t("imageGeneration.labels.searchModels")}
+        onSelectModel={(modelId) => {
           void persistSelection("writerModelId", modelId);
           setShowWriterMenu(false);
-          setWriterSearchQuery("");
+        }}
+        clearOption={{
+          label: t("imageGeneration.labels.useFirstCompatible"),
+          icon: PenLine,
+          selected: !state.writerModelId,
+          onClick: () => {
+            void persistSelection("writerModelId", null);
+            setShowWriterMenu(false);
+          },
         }}
       />
     </div>

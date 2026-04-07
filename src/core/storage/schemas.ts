@@ -11,6 +11,74 @@ const OptionalPositiveNumber = z.preprocess(
   z.number().nonnegative().optional(),
 );
 
+export const LLAMA_SAMPLER_PROFILE_VALUES = [
+  "balanced",
+  "creative",
+  "stable",
+  "reasoning",
+] as const;
+export const LLAMA_SAMPLER_ORDER_STAGE_VALUES = [
+  "penalties",
+  "grammar",
+  "top_k",
+  "top_p",
+  "min_p",
+  "typical",
+  "temp",
+] as const;
+
+export const LlamaSamplerProfileSchema = z.enum(LLAMA_SAMPLER_PROFILE_VALUES);
+export const LlamaSamplerOrderStageSchema = z.enum(LLAMA_SAMPLER_ORDER_STAGE_VALUES);
+
+export type LlamaSamplerProfile = z.infer<typeof LlamaSamplerProfileSchema>;
+export type LlamaSamplerOrderStage = z.infer<typeof LlamaSamplerOrderStageSchema>;
+
+export const DEFAULT_LLAMA_SAMPLER_ORDER: readonly LlamaSamplerOrderStage[] = [
+  "penalties",
+  "grammar",
+  "top_k",
+  "top_p",
+  "min_p",
+  "typical",
+  "temp",
+];
+
+export const LLAMA_SAMPLER_ORDER_PRESETS = {
+  default: DEFAULT_LLAMA_SAMPLER_ORDER,
+  unsloth: ["top_k", "top_p", "min_p", "temp", "typical", "penalties", "grammar"],
+  focused: ["penalties", "grammar", "min_p", "top_k", "top_p", "typical", "temp"],
+  creative: ["penalties", "grammar", "top_k", "typical", "top_p", "temp", "min_p"],
+} as const satisfies Record<string, readonly LlamaSamplerOrderStage[]>;
+
+export type LlamaSamplerOrderPreset = keyof typeof LLAMA_SAMPLER_ORDER_PRESETS;
+
+export function normalizeLlamaSamplerOrder(value: unknown): LlamaSamplerOrderStage[] | null {
+  if (!Array.isArray(value)) return null;
+
+  const known = new Set<string>(LLAMA_SAMPLER_ORDER_STAGE_VALUES);
+  const seen = new Set<string>();
+  const normalized: LlamaSamplerOrderStage[] = [];
+
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim().toLowerCase();
+    if (!known.has(trimmed) || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    normalized.push(trimmed as LlamaSamplerOrderStage);
+  }
+
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  for (const stage of DEFAULT_LLAMA_SAMPLER_ORDER) {
+    if (seen.has(stage)) continue;
+    normalized.push(stage);
+  }
+
+  return normalized;
+}
+
 export const PromptScopeSchema = z.enum(["appWide", "modelSpecific", "characterSpecific"]);
 export type PromptScope = z.infer<typeof PromptScopeSchema>;
 
@@ -42,6 +110,7 @@ export type PromptEntryCondition =
   | { type: "hasSubjectDescription"; value: boolean }
   | { type: "hasCurrentDescription"; value: boolean }
   | { type: "hasCharacterReferenceImages"; value: boolean }
+  | { type: "hasChatBackground"; value: boolean }
   | { type: "hasPersonaReferenceImages"; value: boolean }
   | { type: "hasCharacterReferenceText"; value: boolean }
   | { type: "hasPersonaReferenceText"; value: boolean }
@@ -74,6 +143,7 @@ export const PromptEntryConditionSchema: z.ZodType<PromptEntryCondition> = z.laz
     z.object({ type: z.literal("hasSubjectDescription"), value: z.boolean() }),
     z.object({ type: z.literal("hasCurrentDescription"), value: z.boolean() }),
     z.object({ type: z.literal("hasCharacterReferenceImages"), value: z.boolean() }),
+    z.object({ type: z.literal("hasChatBackground"), value: z.boolean() }),
     z.object({ type: z.literal("hasPersonaReferenceImages"), value: z.boolean() }),
     z.object({ type: z.literal("hasCharacterReferenceText"), value: z.boolean() }),
     z.object({ type: z.literal("hasPersonaReferenceText"), value: z.boolean() }),
@@ -118,7 +188,7 @@ export const SystemPromptEntrySchema = z.object({
   promptEntryPayload: z
     .object({
       type: z.literal("imageSlot"),
-      slot: z.enum(["character", "persona", "avatar", "references"]),
+      slot: z.enum(["character", "persona", "chatBackground", "avatar", "references"]),
     })
     .nullable()
     .optional(),
@@ -260,10 +330,8 @@ export const AdvancedModelSettingsSchema = z.object({
   llamaChatTemplatePreset: z.string().trim().min(1).nullable().optional(),
   llamaRawCompletionFallback: z.boolean().nullable().optional(),
   llamaStrictMode: z.boolean().nullable().optional(),
-  llamaSamplerProfile: z
-    .enum(["balanced", "creative", "stable", "reasoning"])
-    .nullable()
-    .optional(),
+  llamaSamplerProfile: LlamaSamplerProfileSchema.nullable().optional(),
+  llamaSamplerOrder: z.array(LlamaSamplerOrderStageSchema).min(1).nullable().optional(),
   llamaMinP: z.number().min(0).max(1).nullable().optional(),
   llamaTypicalP: z.number().min(0).max(1).nullable().optional(),
   llamaLastRuntimeReport: LlamaLastRuntimeReportSchema.nullish().optional(),
@@ -337,6 +405,14 @@ export type ReasoningCapability =
 
 export const PROVIDER_REASONING_CAPABILITIES: Record<string, ReasoningCapability> = {
   openai: {
+    type: "effort",
+    options: [
+      { value: "low", label: "Low", description: "Quick responses with less reasoning" },
+      { value: "medium", label: "Medium", description: "Balanced reasoning depth" },
+      { value: "high", label: "High", description: "Maximum reasoning depth" },
+    ],
+  },
+  "lettuce-host": {
     type: "effort",
     options: [
       { value: "low", label: "Low", description: "Quick responses with less reasoning" },
@@ -594,6 +670,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -643,6 +720,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -694,6 +772,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: true,
@@ -745,6 +824,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -796,6 +876,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -845,6 +926,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -894,6 +976,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -943,6 +1026,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -992,6 +1076,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1041,6 +1126,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1090,6 +1176,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1139,6 +1226,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1188,6 +1276,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1237,6 +1326,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1286,6 +1376,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1335,6 +1426,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1384,6 +1476,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1433,6 +1526,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1482,6 +1576,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1529,6 +1624,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaRawCompletionFallback: true,
       llamaStrictMode: true,
       llamaSamplerProfile: true,
+      llamaSamplerOrder: true,
       llamaMinP: true,
       llamaTypicalP: true,
       reasoningEnabled: true,
@@ -1581,6 +1677,57 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
+      llamaMinP: false,
+      llamaTypicalP: false,
+      ollamaNumCtx: false,
+      ollamaNumPredict: false,
+      ollamaNumKeep: false,
+      ollamaNumBatch: false,
+      ollamaNumGpu: false,
+      ollamaNumThread: false,
+      ollamaTfsZ: false,
+      ollamaTypicalP: false,
+      ollamaMinP: false,
+      ollamaMirostat: false,
+      ollamaMirostatTau: false,
+      ollamaMirostatEta: false,
+      ollamaRepeatPenalty: false,
+      ollamaSeed: false,
+      ollamaStop: false,
+    },
+  },
+  "lettuce-host": {
+    providerId: "lettuce-host",
+    displayName: "Lettuce Host",
+    reasoningSupport: "effort" as ReasoningSupport,
+    supportedParameters: {
+      temperature: true,
+      topP: true,
+      maxOutputTokens: true,
+      contextLength: false,
+      frequencyPenalty: true,
+      presencePenalty: true,
+      topK: true,
+      reasoningEnabled: true,
+      reasoningEffort: true,
+      reasoningBudgetTokens: true,
+      llamaGpuLayers: false,
+      llamaThreads: false,
+      llamaThreadsBatch: false,
+      llamaSeed: false,
+      llamaRopeFreqBase: false,
+      llamaRopeFreqScale: false,
+      llamaOffloadKqv: false,
+      llamaBatchSize: false,
+      llamaKvType: false,
+      llamaFlashAttention: false,
+      llamaChatTemplateOverride: false,
+      llamaMmprojPath: false,
+      llamaChatTemplatePreset: false,
+      llamaRawCompletionFallback: false,
+      llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1630,6 +1777,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1681,6 +1829,7 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
       llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
       ollamaNumCtx: false,
@@ -1893,13 +2042,15 @@ export type ChatTemplate = z.infer<typeof ChatTemplateSchema>;
 export const DynamicMemorySettingsSchema = z.object({
   enabled: z.boolean().default(false),
   summaryMessageInterval: z.number().min(1).default(20),
-  maxEntries: z.number().min(10).max(200).default(50),
+  maxEntries: z.number().min(10).max(500).default(50),
   minSimilarityThreshold: z.number().min(0).max(1).default(0.35),
   retrievalLimit: z.number().min(1).max(20).default(5),
   retrievalStrategy: z.enum(["smart", "cosine"]).default("smart"),
-  hotMemoryTokenBudget: z.number().min(500).max(10000).default(2000),
+  hotMemoryTokenBudget: z.number().min(500).max(16384).default(2000),
   decayRate: z.number().min(0.01).max(0.3).default(0.08),
   coldThreshold: z.number().min(0.1).max(0.5).default(0.3),
+  deleteConfidenceDefault: z.number().min(0).max(1).default(0.5),
+  maxHardDeleteRatioPerCycle: z.number().min(0.1).max(1).default(0.5),
   contextEnrichmentEnabled: z.boolean().default(true),
 });
 export type DynamicMemorySettings = z.infer<typeof DynamicMemorySettingsSchema>;
@@ -1938,31 +2089,36 @@ export const GroupSessionSchema = z.object({
   /** Memory tool events tracking (for dynamic memory cycle gating) */
   memoryToolEvents: z
     .array(
-      z.object({
-        type: z.string().optional(),
-        windowEnd: z.number().int().optional(),
-        timestamp: z.number().int().optional(),
-        memoriesCount: z.number().int().optional(),
-        // Also support the full format used in normal sessions
-        id: z.string().optional(),
-        windowStart: z.number().int().optional(),
-        summary: z.string().optional(),
-        error: z.string().optional(),
-        status: z.string().optional(),
-        stage: z.string().optional(),
-        windowMessageIds: z.array(z.string()).optional(),
-        actions: z
-          .array(
-            z.object({
-              name: z.string(),
-              arguments: z.any().optional(),
-              timestamp: z.number().int().optional(),
-              updatedMemories: z.array(z.string()).optional(),
-            }),
-          )
-          .optional(),
-        createdAt: z.number().int().optional(),
-      }),
+      z
+        .object({
+          type: z.string().optional(),
+          windowEnd: z.number().int().optional(),
+          timestamp: z.number().int().optional(),
+          memoriesCount: z.number().int().optional(),
+          // Also support the full format used in normal sessions
+          id: z.string().optional(),
+          windowStart: z.number().int().optional(),
+          summary: z.string().optional(),
+          error: z.string().optional(),
+          status: z.string().optional(),
+          stage: z.string().optional(),
+          windowMessageIds: z.array(z.string()).optional(),
+          revertedAt: z.number().int().optional(),
+          actions: z
+            .array(
+              z
+                .object({
+                  name: z.string(),
+                  arguments: z.any().optional(),
+                  timestamp: z.number().int().optional(),
+                  updatedMemories: z.array(z.string()).optional(),
+                })
+                .passthrough(),
+            )
+            .optional(),
+          createdAt: z.number().int().optional(),
+        })
+        .passthrough(),
     )
     .default([]),
   memoryStatus: z.string().nullish().optional().default("idle"),
@@ -2192,6 +2348,23 @@ export const AppStateSchema = z.object({
 });
 export type AppState = z.infer<typeof AppStateSchema>;
 
+export const HostApiExposedModelSchema = z.object({
+  id: z.string().min(1),
+  modelId: z.string().uuid(),
+  enabled: z.boolean().default(true),
+  label: z.string().optional(),
+});
+export type HostApiExposedModel = z.infer<typeof HostApiExposedModelSchema>;
+
+export const HostApiSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  bindAddress: z.string().default("0.0.0.0"),
+  port: z.number().int().min(1).max(65535).default(3333),
+  token: z.string().default(""),
+  exposedModels: z.array(HostApiExposedModelSchema).default([]),
+});
+export type HostApiSettings = z.infer<typeof HostApiSettingsSchema>;
+
 export const AccessibilitySoundSchema = z.object({
   enabled: z.boolean().default(false),
   volume: z.number().min(0).max(1).default(0.6),
@@ -2324,6 +2497,7 @@ export const SettingsSchema = z.object({
   advancedSettings: z
     .object({
       summarisationModelId: z.string().optional(),
+      dynamicMemoryLlamaSamplerOverwriteEnabled: z.boolean().optional(),
       avatarGenerationEnabled: z.boolean().optional(),
       avatarGenerationModelId: z.string().optional(),
       sceneGenerationEnabled: z.boolean().optional(),
@@ -2347,6 +2521,7 @@ export const SettingsSchema = z.object({
       embeddingMaxTokens: z.number().optional(), // 1024, 2048, or 4096
       embeddingModelVersion: z.enum(["v2", "v3"]).optional(),
       embeddingKeepModelLoaded: z.boolean().optional(),
+      hostApi: HostApiSettingsSchema.optional(),
       dynamicMemory: DynamicMemorySettingsSchema.optional(),
       groupDynamicMemory: DynamicMemorySettingsSchema.optional(),
       accessibility: AccessibilitySettingsSchema.optional(),
@@ -2368,6 +2543,7 @@ export function createDefaultSettings(): Settings {
     models: [],
     appState: createDefaultAppState(),
     advancedSettings: {
+      dynamicMemoryLlamaSamplerOverwriteEnabled: true,
       avatarGenerationEnabled: true,
       creationHelperEnabled: false,
       helpMeReplyEnabled: true,
@@ -2375,6 +2551,13 @@ export function createDefaultSettings(): Settings {
       sceneGenerationMode: "auto",
       appUpdateChecksEnabled: true,
       developerModeEnabled: false,
+      hostApi: {
+        enabled: false,
+        bindAddress: "0.0.0.0",
+        port: 3333,
+        token: "",
+        exposedModels: [],
+      },
       accessibility: createDefaultAccessibilitySettings(),
     },
     promptTemplateId: null,
@@ -2476,6 +2659,7 @@ export const SessionSchema = z.object({
   id: z.string().uuid(),
   characterId: z.string().uuid(),
   title: z.string(),
+  backgroundImagePath: z.string().nullish().optional(),
   selectedSceneId: z.string().uuid().nullish(), // ID of the scene from character.scenes array
   promptTemplateId: z.string().nullish().optional(),
   personaId: z.union([z.string().uuid(), z.literal(""), z.null(), z.undefined()]).optional(),
@@ -2504,25 +2688,30 @@ export const SessionSchema = z.object({
   memorySummaryTokenCount: z.number().default(0),
   memoryToolEvents: z
     .array(
-      z.object({
-        id: z.string(),
-        windowStart: z.number().int(),
-        windowEnd: z.number().int(),
-        windowMessageIds: z.array(z.string()).optional(),
-        summary: z.string(),
-        error: z.string().optional(),
-        status: z.string().optional(),
-        stage: z.string().optional(),
-        actions: z.array(
-          z.object({
-            name: z.string(),
-            arguments: z.any().optional(),
-            timestamp: z.number().int().optional(),
-            updatedMemories: z.array(z.string()).optional(),
-          }),
-        ),
-        createdAt: z.number().int(),
-      }),
+      z
+        .object({
+          id: z.string(),
+          windowStart: z.number().int(),
+          windowEnd: z.number().int(),
+          windowMessageIds: z.array(z.string()).optional(),
+          summary: z.string(),
+          error: z.string().optional(),
+          status: z.string().optional(),
+          stage: z.string().optional(),
+          revertedAt: z.number().int().optional(),
+          actions: z.array(
+            z
+              .object({
+                name: z.string(),
+                arguments: z.any().optional(),
+                timestamp: z.number().int().optional(),
+                updatedMemories: z.array(z.string()).optional(),
+              })
+              .passthrough(),
+          ),
+          createdAt: z.number().int(),
+        })
+        .passthrough(),
     )
     .default([])
     .optional(),
@@ -2556,6 +2745,7 @@ export function createDefaultAdvancedModelSettings(): AdvancedModelSettings {
     maxOutputTokens: 2048,
     llamaLastRuntimeReport: null,
     llamaStrictMode: null,
+    llamaSamplerOrder: null,
     sdSteps: null,
     sdCfgScale: null,
     sdSampler: null,

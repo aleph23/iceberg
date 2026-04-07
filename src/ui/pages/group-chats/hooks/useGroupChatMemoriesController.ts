@@ -14,6 +14,10 @@ import {
   toggleGroupMessagePin,
 } from "../../../../core/storage/repo";
 import { storageBridge } from "../../../../core/storage/files";
+import {
+  markMemoryToolEventReverted,
+  revertMemoryToolEvent,
+} from "../../../../core/storage/memoryToolEvents";
 import { initUi, uiReducer } from "../reducers/groupChatMemoriesReducer";
 
 type MemoryItem = {
@@ -173,6 +177,7 @@ export function useGroupChatMemoriesController(groupSessionId?: string) {
     (s) => setSession(s),
   );
   const [ui, dispatch] = useReducer(uiReducer, undefined, initUi);
+  const [revertingEventId, setRevertingEventId] = useState<string | null>(null);
 
   const handleSetColdState = useCallback(
     async (memoryIndex: number, isCold: boolean) => {
@@ -466,6 +471,45 @@ export function useGroupChatMemoriesController(groupSessionId?: string) {
     }
   }, [reload, session, setSession]);
 
+  const handleRevertMemoryEvent = useCallback(
+    async (event: NonNullable<GroupSession["memoryToolEvents"]>[number]) => {
+      if (!session?.id || !event.id || !session.memoryEmbeddings) return;
+      setRevertingEventId(event.id);
+      try {
+        const nextEmbeddings = revertMemoryToolEvent(session.memoryEmbeddings, event);
+        const nextEvents = markMemoryToolEventReverted(
+          session.memoryToolEvents ?? [],
+          event.id,
+          Date.now(),
+        );
+        await storageBridge.groupSessionUpdateMemoryState(
+          session.id,
+          nextEmbeddings.map((memory) => memory.text),
+          nextEmbeddings,
+          session.memorySummary ?? "",
+          session.memorySummaryTokenCount ?? 0,
+          nextEvents,
+          session.memoryStatus ?? "idle",
+          session.memoryError ?? null,
+        );
+        setSession({
+          ...session,
+          memories: nextEmbeddings.map((memory) => memory.text),
+          memoryEmbeddings: nextEmbeddings,
+          memoryToolEvents: nextEvents,
+          updatedAt: Date.now(),
+        });
+        dispatch({ type: "SET_ACTION_ERROR", value: null });
+      } catch (err: any) {
+        console.error("Failed to revert group memory cycle:", err);
+        dispatch({ type: "SET_ACTION_ERROR", value: err?.message || "Failed to revert cycle" });
+      } finally {
+        setRevertingEventId(null);
+      }
+    },
+    [session, setSession],
+  );
+
   const handleRefresh = useCallback(async () => {
     if (!session?.id) return;
     try {
@@ -532,9 +576,11 @@ export function useGroupChatMemoriesController(groupSessionId?: string) {
     saveEdit,
     handleRunMemoryCycle,
     handleAbortMemoryCycle,
+    handleRevertMemoryEvent,
     handleRefresh,
     handleDismissError,
     handleTogglePinnedMessage,
     handleSaveSummaryClick,
+    revertingEventId,
   } as const;
 }

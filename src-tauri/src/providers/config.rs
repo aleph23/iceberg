@@ -13,6 +13,7 @@ pub struct ProviderConfig {
     pub api_endpoint_path: String,
     pub system_role: String,
     pub supports_stream: bool,
+    pub requires_api_key: bool,
     pub required_auth_headers: Vec<String>,
     pub default_headers: HashMap<String, String>,
 }
@@ -85,6 +86,7 @@ fn get_all_provider_configs_internal() -> Vec<ProviderConfig> {
             "IntenseRP Next (Local)",
             "http://127.0.0.1:7777/v1",
         ),
+        ("lettuce-host", "Lettuce Host", ""),
         ("lettuce-engine", "Lettuce Engine", ""),
         ("custom", "Custom (OpenAI-format)", ""),
         ("custom-anthropic", "Custom (Anthropic-format)", ""),
@@ -121,6 +123,7 @@ fn get_all_provider_configs_internal() -> Vec<ProviderConfig> {
                 api_endpoint_path,
                 system_role: adapter.system_role().to_string(),
                 supports_stream: adapter.supports_stream(),
+                requires_api_key: adapter.requires_api_key(),
                 required_auth_headers,
                 default_headers,
             }
