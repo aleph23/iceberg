@@ -62,6 +62,7 @@ if (process.platform === "linux") {
 
 const child = spawn("bun", ["run", "tauri", mode, "--features", "llama-gpu-cuda"], {
   stdio: "inherit",
+  shell: true,
   env,
 });
 
