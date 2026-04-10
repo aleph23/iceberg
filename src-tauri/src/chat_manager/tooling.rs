@@ -457,9 +457,8 @@ fn extract_tool_calls_from_json_value(value: &Value, out: &mut Vec<ToolCall>) {
                 return;
             }
 
-            if let Some(function_call) = map
-                .get("function_call")
-                .or_else(|| map.get("functionCall"))
+            if let Some(function_call) =
+                map.get("function_call").or_else(|| map.get("functionCall"))
             {
                 extract_tool_calls_from_json_value(function_call, out);
                 return;
@@ -790,12 +789,16 @@ After<|im_end|>"#;
 
     #[test]
     fn parses_standalone_function_tag_calls() {
-        let raw = r#"<function=create_memory>{"text":"Likes tea","category":"preference"}</function>"#;
+        let raw =
+            r#"<function=create_memory>{"text":"Likes tea","category":"preference"}</function>"#;
 
         let calls = parse_tool_calls_from_text(raw);
 
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "create_memory");
-        assert_eq!(calls[0].arguments, json!({ "text": "Likes tea", "category": "preference" }));
+        assert_eq!(
+            calls[0].arguments,
+            json!({ "text": "Likes tea", "category": "preference" })
+        );
     }
 }

@@ -19,7 +19,9 @@ use crate::chat_manager::provider_adapter::{
 #[cfg(not(mobile))]
 use crate::chat_manager::thinking::{normalize_thinking_content, ThinkingTagStreamParser};
 #[cfg(not(mobile))]
-use crate::chat_manager::tooling::{parse_tool_calls, parse_tool_calls_from_text, strip_tool_call_blocks, ToolCall};
+use crate::chat_manager::tooling::{
+    parse_tool_calls, parse_tool_calls_from_text, strip_tool_call_blocks, ToolCall,
+};
 #[cfg(not(mobile))]
 use crate::chat_manager::types::{ErrorEnvelope, NormalizedEvent, UsageSummary};
 #[cfg(not(mobile))]
@@ -2130,92 +2132,92 @@ mod desktop {
             };
 
             let mut final_tool_calls: Vec<ToolCall> = Vec::new();
-            let parsed_final_message = if let Some(template_result) =
-                built_prompt.chat_template_result.as_ref()
-            {
-                let is_partial = finish_reason == "length";
-                let mut message: Value = if let Some(recovered) =
-                    recover_message_from_raw_tool_output(&output)
-                {
-                    log_info(
-                        &app,
-                        "llama_cpp",
-                        "using app-level raw tool-call recovery for final llama response",
-                    );
-                    recovered
-                } else {
-                    match template_result.parse_response_oaicompat(&output, is_partial) {
-                        Ok(parsed_message) => serde_json::from_str(&parsed_message).map_err(|e| {
-                            crate::utils::err_msg(
+            let parsed_final_message =
+                if let Some(template_result) = built_prompt.chat_template_result.as_ref() {
+                    let is_partial = finish_reason == "length";
+                    let mut message: Value =
+                        if let Some(recovered) = recover_message_from_raw_tool_output(&output) {
+                            log_info(
+                                &app,
+                                "llama_cpp",
+                                "using app-level raw tool-call recovery for final llama response",
+                            );
+                            recovered
+                        } else {
+                            match template_result.parse_response_oaicompat(&output, is_partial) {
+                                Ok(parsed_message) => serde_json::from_str(&parsed_message)
+                                    .map_err(|e| {
+                                        crate::utils::err_msg(
                                 module_path!(),
                                 line!(),
                                 format!("Failed to deserialize llama.cpp structured message: {e}"),
                             )
-                        })?,
-                        Err(native_err) => {
-                            return Err(structured_output_failure(
+                                    })?,
+                                Err(native_err) => {
+                                    return Err(structured_output_failure(
+                                        &app,
+                                        request_id.as_ref(),
+                                        model_path,
+                                        tool_choice,
+                                        &openai_compat_options,
+                                        &built_prompt,
+                                        "structured_response_parse",
+                                        native_err,
+                                    ));
+                                }
+                            }
+                        };
+                    ensure_assistant_role(&mut message);
+
+                    let full_text =
+                        extract_text_content(message.get("content")).unwrap_or_default();
+                    if stream
+                        && full_text.starts_with(&streamed_structured_text)
+                        && full_text.len() > streamed_structured_text.len()
+                    {
+                        if let Some(ref id) = request_id {
+                            transport::emit_normalized(
                                 &app,
-                                request_id.as_ref(),
-                                model_path,
-                                tool_choice,
-                                &openai_compat_options,
-                                &built_prompt,
-                                "structured_response_parse",
-                                native_err,
-                            ));
+                                id,
+                                NormalizedEvent::Delta {
+                                    text: full_text[streamed_structured_text.len()..].to_string(),
+                                },
+                            );
                         }
                     }
-                };
-                ensure_assistant_role(&mut message);
 
-                let full_text = extract_text_content(message.get("content")).unwrap_or_default();
-                if stream
-                    && full_text.starts_with(&streamed_structured_text)
-                    && full_text.len() > streamed_structured_text.len()
-                {
-                    if let Some(ref id) = request_id {
-                        transport::emit_normalized(
-                            &app,
-                            id,
-                            NormalizedEvent::Delta {
-                                text: full_text[streamed_structured_text.len()..].to_string(),
-                            },
-                        );
+                    final_tool_calls = parse_tool_calls(LOCAL_PROVIDER_ID, &message);
+                    if !final_tool_calls.is_empty() && finish_reason != "length" {
+                        finish_reason = "tool_calls";
                     }
-                }
-
-                final_tool_calls = parse_tool_calls(LOCAL_PROVIDER_ID, &message);
-                if !final_tool_calls.is_empty() && finish_reason != "length" {
-                    finish_reason = "tool_calls";
-                }
-                crate::utils::emit_debug(
-                    &app,
-                    "llama_response",
-                    json!({
-                        "requestId": request_id,
-                        "modelPath": model_path,
-                        "structured": true,
-                        "rawOutput": output,
-                        "parsedMessage": message,
-                        "toolCallCount": final_tool_calls.len(),
-                        "finishReason": finish_reason,
-                    }),
-                );
-                message
-            } else {
-                crate::utils::emit_debug(
-                    &app,
-                    "llama_response",
-                    json!({
-                        "requestId": request_id,
-                        "modelPath": model_path,
-                        "structured": false,
-                        "rawOutput": output,
-                        "finishReason": finish_reason,
-                    }),
-                );
-                json!({ "role": "assistant", "content": output })
-            };
+                    crate::utils::emit_debug(
+                        &app,
+                        "llama_response",
+                        json!({
+                            "requestId": request_id,
+                            "modelPath": model_path,
+                            "structured": true,
+                            "rawOutput": output,
+                            "parsedMessage": message,
+                            "toolCallCount": final_tool_calls.len(),
+                            "finishReason": finish_reason,
+                        }),
+                    );
+                    message
+                } else {
+                    crate::utils::emit_debug(
+                        &app,
+                        "llama_response",
+                        json!({
+                            "requestId": request_id,
+                            "modelPath": model_path,
+                            "structured": false,
+                            "rawOutput": output,
+                            "finishReason": finish_reason,
+                        }),
+                    );
+                    json!({ "role": "assistant", "content": output })
+                };
 
             if stream && !final_tool_calls.is_empty() {
                 if let Some(ref id) = request_id {

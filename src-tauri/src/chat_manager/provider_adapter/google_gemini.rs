@@ -300,7 +300,9 @@ impl ProviderAdapter for GoogleGeminiAdapter {
                 GeminiThinkingMode::Budget | GeminiThinkingMode::Unknown => None,
             };
             let thinking_budget = match thinking_mode {
-                GeminiThinkingMode::Budget => Some(reasoning_budget.map(|b| b as i32).unwrap_or(-1)),
+                GeminiThinkingMode::Budget => {
+                    Some(reasoning_budget.map(|b| b as i32).unwrap_or(-1))
+                }
                 GeminiThinkingMode::Level | GeminiThinkingMode::Unknown => None,
             };
 
@@ -663,11 +665,17 @@ mod tests {
 
     #[test]
     fn classifies_gemini_model_thinking_modes() {
-        assert_eq!(gemini_thinking_mode("gemini-2.5-flash"), GeminiThinkingMode::Budget);
+        assert_eq!(
+            gemini_thinking_mode("gemini-2.5-flash"),
+            GeminiThinkingMode::Budget
+        );
         assert_eq!(
             gemini_thinking_mode("gemini-3-flash-preview"),
             GeminiThinkingMode::Level
         );
-        assert_eq!(gemini_thinking_mode("gemini-pro"), GeminiThinkingMode::Unknown);
+        assert_eq!(
+            gemini_thinking_mode("gemini-pro"),
+            GeminiThinkingMode::Unknown
+        );
     }
 }
