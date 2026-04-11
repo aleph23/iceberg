@@ -663,6 +663,7 @@ export function TopNav({
           {showSearchButton && (
             <button
               onClick={() => navigate("/search")}
+              data-tour-id="top-search"
               className={cn(
                 "flex items-center px-[0.6em] py-[0.3em] justify-center rounded-full",
                 "text-fg/70 hover:text-fg hover:bg-fg/10",
@@ -677,6 +678,7 @@ export function TopNav({
           {showSettingsButton && (
             <button
               onClick={() => navigate("/settings")}
+              data-tour-id="top-settings"
               className={cn(
                 "flex items-center px-[0.6em] py-[0.3em] justify-center rounded-full",
                 "text-fg/70 hover:text-fg hover:bg-fg/10",
