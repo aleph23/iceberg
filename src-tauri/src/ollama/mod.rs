@@ -11,6 +11,7 @@ use crate::{
     api::{ApiRequest, ApiResponse},
     chat_manager::{
         provider_adapter::ModelInfo,
+        sse::SseDecoder,
         types::{ErrorEnvelope, NormalizedEvent, ProviderCredential},
     },
     transport::{self, DEFAULT_REQUEST_TIMEOUT_MS},
@@ -398,6 +399,7 @@ async fn execute_streaming_chat_request(
     let mut raw = String::new();
     let mut saw_done = false;
     let mut buffer = String::new();
+    let mut decoder = SseDecoder::new();
 
     loop {
         let next_item = tokio::select! {
@@ -458,12 +460,15 @@ async fn execute_streaming_chat_request(
             raw.push_str(&line);
             raw.push_str("\n\n");
 
-            emit_normalized_events(app, request_id, &value);
-
-            if value.get("done").and_then(Value::as_bool).unwrap_or(false) {
-                transport::emit_normalized(app, request_id, NormalizedEvent::Done);
+            saw_done |= emit_normalized_events(
+                app,
+                request_id,
+                &mut decoder,
+                &serde_json::to_string(&value)
+                    .map_err(|err| crate::utils::err_to_string(module_path!(), line!(), err))?,
+            );
+            if saw_done {
                 raw.push_str("data: [DONE]\n\n");
-                saw_done = true;
             }
         }
     }
@@ -476,11 +481,15 @@ async fn execute_streaming_chat_request(
         raw.push_str("data: ");
         raw.push_str(trailing);
         raw.push_str("\n\n");
-        emit_normalized_events(app, request_id, &value);
-        if value.get("done").and_then(Value::as_bool).unwrap_or(false) {
-            transport::emit_normalized(app, request_id, NormalizedEvent::Done);
+        saw_done |= emit_normalized_events(
+            app,
+            request_id,
+            &mut decoder,
+            &serde_json::to_string(&value)
+                .map_err(|err| crate::utils::err_to_string(module_path!(), line!(), err))?,
+        );
+        if saw_done {
             raw.push_str("data: [DONE]\n\n");
-            saw_done = true;
         }
     }
 
@@ -539,29 +548,20 @@ async fn execute_non_streaming_chat_request(
     })
 }
 
-fn emit_normalized_events(app: &tauri::AppHandle, request_id: &str, value: &Value) {
-    let calls = crate::chat_manager::tooling::parse_tool_calls("ollama", value);
-    if !calls.is_empty() {
-        transport::emit_normalized(app, request_id, NormalizedEvent::ToolCall { calls });
-    }
-
-    if let Some(text) = crate::chat_manager::request::extract_text(value, Some("ollama")) {
-        if !text.is_empty() {
-            transport::emit_normalized(app, request_id, NormalizedEvent::Delta { text });
+fn emit_normalized_events(
+    app: &tauri::AppHandle,
+    request_id: &str,
+    decoder: &mut SseDecoder,
+    line: &str,
+) -> bool {
+    let mut saw_done = false;
+    for event in decoder.feed(&format!("{line}\n"), Some("ollama")) {
+        if matches!(event, NormalizedEvent::Done) {
+            saw_done = true;
         }
+        transport::emit_normalized(app, request_id, event);
     }
-
-    if let Some(text) = crate::chat_manager::request::extract_reasoning(value, Some("ollama")) {
-        if !text.is_empty() {
-            transport::emit_normalized(app, request_id, NormalizedEvent::Reasoning { text });
-        }
-    }
-
-    if value.get("done").and_then(Value::as_bool).unwrap_or(false) {
-        if let Some(usage) = crate::chat_manager::request::extract_usage(value) {
-            transport::emit_normalized(app, request_id, NormalizedEvent::Usage { usage });
-        }
-    }
+    saw_done
 }
 
 async fn error_response_from_http(
@@ -636,6 +636,7 @@ fn parse_models_list(payload: &Value) -> Vec<ModelInfo> {
 #[cfg(test)]
 mod tests {
     use super::{normalize_assistant_tool_calls, normalize_base_url, normalize_request_body};
+    use crate::chat_manager::{sse::SseDecoder, types::NormalizedEvent};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -719,5 +720,44 @@ mod tests {
                 .and_then(|value| value.as_str()),
             Some("get_weather")
         );
+    }
+
+    #[test]
+    fn ollama_stream_decoder_preserves_leading_spaces_in_deltas() {
+        let mut decoder = SseDecoder::new();
+
+        let first = decoder.feed(
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"Mirelle\"},\"done\":false}\n",
+            Some("ollama"),
+        );
+        let second = decoder.feed(
+            "{\"message\":{\"role\":\"assistant\",\"content\":\"'s eyes return to yours\"},\"done\":false}\n",
+            Some("ollama"),
+        );
+        let third = decoder.feed(
+            "{\"message\":{\"role\":\"assistant\",\"content\":\" as she presses her seal into each corner.\"},\"done\":true}\n",
+            Some("ollama"),
+        );
+
+        assert_eq!(first.len(), 1);
+        match &first[0] {
+            NormalizedEvent::Delta { text } => assert_eq!(text, "Mirelle"),
+            other => panic!("unexpected first event: {other:?}"),
+        }
+
+        assert_eq!(second.len(), 1);
+        match &second[0] {
+            NormalizedEvent::Delta { text } => assert_eq!(text, "'s eyes return to yours"),
+            other => panic!("unexpected second event: {other:?}"),
+        }
+
+        assert_eq!(third.len(), 2);
+        match &third[0] {
+            NormalizedEvent::Delta { text } => {
+                assert_eq!(text, " as she presses her seal into each corner.")
+            }
+            other => panic!("unexpected third delta: {other:?}"),
+        }
+        assert!(matches!(third[1], NormalizedEvent::Done));
     }
 }
