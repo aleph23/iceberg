@@ -53,7 +53,6 @@ impl ImageProviderAdapter for PollinationsAdapter {
         let (width, height) = Self::resolve_size(request);
         let quality = request.quality.as_deref().unwrap_or("medium");
 
-        // Here is how you do the "OR" fallback safely in Rust!
         let negative = Self::extract_negative_prompt(request)
             .unwrap_or_else(|| "worst quality, blurry, watermark, text".to_string());
             

@@ -436,6 +436,7 @@ function getProviderDescription(providerId: string): string {
     case "nanogpt":
     case "featherless":
     case "openrouter":
+    case "pollinations":
       return "Access models like GPT-5, Claude 4.5, Grok-3, Mixtral, and more";
     case "openai-compatible":
       return "Use any OpenAI-style API endpoint";
@@ -473,6 +474,7 @@ function getProviderDescriptionShort(providerId: string): string {
     case "nanogpt":
     case "featherless":
     case "openrouter":
+    case "pollinations":
       return "Multi-model aggregator";
     case "openai-compatible":
       return "Custom OpenAI endpoint";
