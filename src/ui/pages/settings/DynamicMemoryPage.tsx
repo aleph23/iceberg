@@ -61,6 +61,7 @@ const DEFAULT_DYNAMIC_MEMORY_SETTINGS: DynamicMemorySettings = {
   maxHardDeleteRatioPerCycle: 0.5,
   contextEnrichmentEnabled: true,
   recursiveMemoryLoops: false,
+  recursiveMemoryLoopHardCap: 20,
 };
 
 type MemoryPreset = "minimal" | "balanced" | "comprehensive" | "custom";
@@ -72,6 +73,7 @@ const PRESETS: Record<
     | "enabled"
     | "contextEnrichmentEnabled"
     | "recursiveMemoryLoops"
+    | "recursiveMemoryLoopHardCap"
     | "deleteConfidenceDefault"
     | "maxHardDeleteRatioPerCycle"
   >
@@ -136,6 +138,9 @@ const hydrateDynamicMemorySettings = (settings?: DynamicMemorySettings): Dynamic
     settings?.contextEnrichmentEnabled ?? DEFAULT_DYNAMIC_MEMORY_SETTINGS.contextEnrichmentEnabled,
   recursiveMemoryLoops:
     settings?.recursiveMemoryLoops ?? DEFAULT_DYNAMIC_MEMORY_SETTINGS.recursiveMemoryLoops,
+  recursiveMemoryLoopHardCap:
+    settings?.recursiveMemoryLoopHardCap ??
+    DEFAULT_DYNAMIC_MEMORY_SETTINGS.recursiveMemoryLoopHardCap,
 });
 
 const ensureAdvancedSettings = (settings: Settings): NonNullable<Settings["advancedSettings"]> => {
@@ -972,6 +977,25 @@ export function DynamicMemoryPage() {
                               }
                             }}
                           />
+
+                          {currentSettings.recursiveMemoryLoops && (
+                            <SettingRow
+                              label="Recursive Loop Hard Cap"
+                              description="Maximum number of recursive memory-manager turns before the system stops even if the model never calls done."
+                              value={currentSettings.recursiveMemoryLoopHardCap}
+                              unit="turns"
+                              min={1}
+                              max={100}
+                              step={1}
+                              onChange={(val) => {
+                                if (activeTab === "direct") {
+                                  handleDirectSettingChange("recursiveMemoryLoopHardCap", val);
+                                } else {
+                                  handleGroupSettingChange("recursiveMemoryLoopHardCap", val);
+                                }
+                              }}
+                            />
+                          )}
                         </div>
                       </motion.div>
                     )}

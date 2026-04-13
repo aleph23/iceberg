@@ -430,6 +430,8 @@ pub struct DynamicMemorySettings {
     pub context_enrichment_enabled: bool,
     #[serde(default)]
     pub recursive_memory_loops: bool,
+    #[serde(default = "default_recursive_memory_loop_hard_cap")]
+    pub recursive_memory_loop_hard_cap: u32,
 }
 
 fn default_min_similarity() -> f32 {
@@ -458,6 +460,10 @@ fn default_cold_threshold() -> f32 {
 
 fn default_delete_confidence() -> f32 {
     0.5 // Omitted confidence should prefer cold storage over hard delete
+}
+
+fn default_recursive_memory_loop_hard_cap() -> u32 {
+    20
 }
 
 fn default_max_hard_delete_ratio_per_cycle() -> f32 {

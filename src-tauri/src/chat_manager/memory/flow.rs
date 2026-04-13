@@ -55,7 +55,6 @@ const ALLOWED_MEMORY_CATEGORIES: &[&str] = &[
     "other",
 ];
 const HARD_DELETE_CONFIDENCE_THRESHOLD: f32 = 0.7;
-const MAX_RECURSIVE_MEMORY_TOOL_LOOPS: usize = 6;
 
 fn response_preview(provider_id: &str, value: &Value) -> String {
     if let Some(text) =
@@ -2016,7 +2015,7 @@ async fn run_memory_tool_update(
     let mut hard_delete_count = 0usize;
     let recursive_loops_enabled = recursive_memory_loops_enabled(dynamic_settings);
     let max_loop_iterations = if recursive_loops_enabled {
-        MAX_RECURSIVE_MEMORY_TOOL_LOOPS
+        dynamic_settings.recursive_memory_loop_hard_cap.max(1) as usize
     } else {
         1
     };

@@ -2086,6 +2086,7 @@ export const DynamicMemorySettingsSchema = z.object({
   maxHardDeleteRatioPerCycle: z.number().min(0.1).max(1).default(0.5),
   contextEnrichmentEnabled: z.boolean().default(true),
   recursiveMemoryLoops: z.boolean().default(false),
+  recursiveMemoryLoopHardCap: z.number().min(1).max(100).default(20),
 });
 export type DynamicMemorySettings = z.infer<typeof DynamicMemorySettingsSchema>;
 

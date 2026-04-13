@@ -85,7 +85,6 @@ const ALLOWED_MEMORY_CATEGORIES: &[&str] = &[
     "other",
 ];
 const HARD_DELETE_CONFIDENCE_THRESHOLD: f32 = 0.7;
-const MAX_RECURSIVE_MEMORY_TOOL_LOOPS: usize = 6;
 fn max_hard_deletes_per_cycle(initial_count: usize, ratio: f32) -> usize {
     if initial_count == 0 {
         return 0;
@@ -2680,7 +2679,7 @@ async fn run_group_memory_tool_update(
     let mut hard_delete_count = 0usize;
     let recursive_loops_enabled = dynamic_settings.recursive_memory_loops;
     let max_loop_iterations = if recursive_loops_enabled {
-        MAX_RECURSIVE_MEMORY_TOOL_LOOPS
+        dynamic_settings.recursive_memory_loop_hard_cap.max(1) as usize
     } else {
         1
     };

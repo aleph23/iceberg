@@ -415,6 +415,7 @@ export function AdvancedPage() {
           maxHardDeleteRatioPerCycle: 0.5,
           contextEnrichmentEnabled: true,
           recursiveMemoryLoops: false,
+          recursiveMemoryLoopHardCap: 20,
         };
       }
 
