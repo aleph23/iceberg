@@ -456,6 +456,12 @@ function getProviderDescription(providerId: string): string {
       return "Qwen3-VL and newer Qwen models";
     case "custom":
       return "Point LettuceAI to any custom model endpoint";
+    case "pollinations-image":
+      return "Free image generation powered by Pollinations.ai";
+    case "automatic1111":
+      return "Local Stable Diffusion models via AUTOMATIC1111 API";
+    case "stability":
+      return "Stable Diffusion 3, Core, and ultra-fast generative models";
     default:
       return "AI model provider";
   }
@@ -494,6 +500,12 @@ function getProviderDescriptionShort(providerId: string): string {
       return "Qwen3-VL models";
     case "custom":
       return "Custom endpoint";
+    case "pollinations-image":
+      return "Free image generator";
+    case "automatic1111":
+      return "Local Stable Diffusion";
+    case "stability":
+      return "Stable Diffusion 3";
     default:
       return "AI provider";
   }
