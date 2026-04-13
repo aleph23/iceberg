@@ -7,9 +7,7 @@ use std::time::Duration;
 use super::legacy::storage_root;
 use crate::migrations;
 use crate::sync::db::LOCAL_SYNC_STATE_VERSION;
-use crate::utils::{
-    log_info, log_info_global, log_warn, log_warn_global, now_millis,
-};
+use crate::utils::{log_info, log_info_global, log_warn, log_warn_global, now_millis};
 
 pub fn db_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(storage_root(app)?.join("app.db"))
@@ -335,8 +333,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         CREATE TABLE IF NOT EXISTS prompt_templates (
           id TEXT PRIMARY KEY,
           name TEXT NOT NULL,
-          scope TEXT NOT NULL,
-          target_ids TEXT NOT NULL, -- JSON array of strings
+          prompt_type TEXT NOT NULL DEFAULT 'undefined',
           content TEXT NOT NULL,
           entries TEXT NOT NULL DEFAULT '[]',
           condense_prompt_entries INTEGER NOT NULL DEFAULT 0,
@@ -369,6 +366,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           fallback_model_id TEXT,
           memory_type TEXT NOT NULL DEFAULT 'manual',
           prompt_template_id TEXT,
+          group_chat_prompt_template_id TEXT,
+          group_chat_roleplay_prompt_template_id TEXT,
           system_prompt TEXT,
           voice_config TEXT,
           voice_autoplay INTEGER NOT NULL DEFAULT 0,
@@ -768,7 +767,6 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         CREATE INDEX IF NOT EXISTS idx_usage_model ON usage_records(model_id);
         CREATE INDEX IF NOT EXISTS idx_usage_character ON usage_records(character_id);
         CREATE INDEX IF NOT EXISTS idx_secrets_service ON secrets(service);
-        CREATE INDEX IF NOT EXISTS idx_prompt_templates_scope ON prompt_templates(scope);
         CREATE INDEX IF NOT EXISTS idx_model_pricing_cached_at ON model_pricing_cache(cached_at);
         CREATE INDEX IF NOT EXISTS idx_openrouter_provider_pricing_cached_at
           ON openrouter_provider_pricing_cache(cached_at);
@@ -1442,6 +1440,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut has_prompt_entries = false;
     let mut has_condense_prompt_entries = false;
+    let mut has_prompt_type = false;
     let mut rows_prompt_templates = stmt_prompt_templates
         .query([])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1458,6 +1457,9 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         if col_name == "condense_prompt_entries" {
             has_condense_prompt_entries = true;
         }
+        if col_name == "prompt_type" {
+            has_prompt_type = true;
+        }
     }
     if !has_prompt_entries {
         let _ = conn.execute(
@@ -1471,6 +1473,17 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             [],
         );
     }
+    if !has_prompt_type {
+        let _ = conn.execute(
+            "ALTER TABLE prompt_templates ADD COLUMN prompt_type TEXT NOT NULL DEFAULT 'undefined'",
+            [],
+        );
+    }
+    let _ = conn.execute("DROP INDEX IF EXISTS idx_prompt_templates_scope", []);
+    let _ = conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_prompt_templates_prompt_type ON prompt_templates(prompt_type)",
+        [],
+    );
 
     let mut stmt_messages = conn
         .prepare("PRAGMA table_info(messages)")
@@ -1596,12 +1609,12 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
     let now = now_ms();
     conn
         .execute(
-            "INSERT OR IGNORE INTO prompt_templates (id, name, scope, target_ids, content, entries, condense_prompt_entries, created_at, updated_at)
-             VALUES (?1, ?2, ?3, '[]', ?4, '[]', 0, ?5, ?5)",
+            "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, condense_prompt_entries, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, '[]', 0, ?5, ?5)",
             params![
                 "prompt_app_default",
                 "App Default",
-                "AppWide",
+                "directChat",
                 default_content,
                 now
             ],

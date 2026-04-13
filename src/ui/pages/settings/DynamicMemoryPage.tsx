@@ -21,7 +21,12 @@ import {
   getEmbeddingModelInfo,
 } from "../../../core/storage/repo";
 import { storageBridge } from "../../../core/storage/files";
-import type { DynamicMemorySettings, Model, Settings } from "../../../core/storage/schemas";
+import type {
+  DynamicMemorySettings,
+  DynamicMemoryStructuredFallbackFormat,
+  Model,
+  Settings,
+} from "../../../core/storage/schemas";
 import { cn, typography, interactive } from "../../design-tokens";
 import { useNavigate } from "react-router-dom";
 import { EmbeddingUpgradePrompt } from "../../components/EmbeddingUpgradePrompt";
@@ -55,6 +60,8 @@ const DEFAULT_DYNAMIC_MEMORY_SETTINGS: DynamicMemorySettings = {
   deleteConfidenceDefault: 0.5,
   maxHardDeleteRatioPerCycle: 0.5,
   contextEnrichmentEnabled: true,
+  recursiveMemoryLoops: false,
+  recursiveMemoryLoopHardCap: 20,
 };
 
 type MemoryPreset = "minimal" | "balanced" | "comprehensive" | "custom";
@@ -65,6 +72,8 @@ const PRESETS: Record<
     DynamicMemorySettings,
     | "enabled"
     | "contextEnrichmentEnabled"
+    | "recursiveMemoryLoops"
+    | "recursiveMemoryLoopHardCap"
     | "deleteConfidenceDefault"
     | "maxHardDeleteRatioPerCycle"
   >
@@ -127,20 +136,32 @@ const hydrateDynamicMemorySettings = (settings?: DynamicMemorySettings): Dynamic
   ...settings,
   contextEnrichmentEnabled:
     settings?.contextEnrichmentEnabled ?? DEFAULT_DYNAMIC_MEMORY_SETTINGS.contextEnrichmentEnabled,
+  recursiveMemoryLoops:
+    settings?.recursiveMemoryLoops ?? DEFAULT_DYNAMIC_MEMORY_SETTINGS.recursiveMemoryLoops,
+  recursiveMemoryLoopHardCap:
+    settings?.recursiveMemoryLoopHardCap ??
+    DEFAULT_DYNAMIC_MEMORY_SETTINGS.recursiveMemoryLoopHardCap,
 });
 
 const ensureAdvancedSettings = (settings: Settings): NonNullable<Settings["advancedSettings"]> => {
   const advanced = settings.advancedSettings ?? {
     creationHelperEnabled: false,
     helpMeReplyEnabled: true,
+    dynamicMemoryStructuredFallbackFormat: "xml",
     dynamicMemoryLlamaSamplerOverwriteEnabled: true,
     dynamicMemory: { ...DEFAULT_DYNAMIC_MEMORY_SETTINGS },
   };
   if (advanced.helpMeReplyEnabled === undefined) {
     advanced.helpMeReplyEnabled = true;
   }
+  if (advanced.dynamicMemoryStructuredFallbackFormat === undefined) {
+    advanced.dynamicMemoryStructuredFallbackFormat = "xml";
+  }
   if (!advanced.dynamicMemory) {
     advanced.dynamicMemory = { ...DEFAULT_DYNAMIC_MEMORY_SETTINGS };
+  }
+  if (advanced.groupDynamicMemory) {
+    advanced.groupDynamicMemory = hydrateDynamicMemorySettings(advanced.groupDynamicMemory);
   }
   if (advanced.dynamicMemoryLlamaSamplerOverwriteEnabled === undefined) {
     advanced.dynamicMemoryLlamaSamplerOverwriteEnabled = true;
@@ -209,6 +230,8 @@ export function DynamicMemoryPage() {
   const [showUpgradePrompt, setShowUpgradePrompt] = useState(false);
   const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const [showModelMenu, setShowModelMenu] = useState(false);
+  const [structuredFallbackFormat, setStructuredFallbackFormat] =
+    useState<DynamicMemoryStructuredFallbackFormat>("xml");
   const [dynamicMemoryLlamaSamplerOverwriteEnabled, setDynamicMemoryLlamaSamplerOverwriteEnabled] =
     useState(true);
 
@@ -240,6 +263,9 @@ export function DynamicMemoryPage() {
           defaultModelIdValue && summarisationModelValue === defaultModelIdValue
             ? null
             : summarisationModelValue,
+        );
+        setStructuredFallbackFormat(
+          settings.advancedSettings?.dynamicMemoryStructuredFallbackFormat ?? "xml",
         );
         setDynamicMemoryLlamaSamplerOverwriteEnabled(
           settings.advancedSettings?.dynamicMemoryLlamaSamplerOverwriteEnabled ?? true,
@@ -365,6 +391,15 @@ export function DynamicMemoryPage() {
     await updateAdvancedSettings((advanced) => {
       advanced.dynamicMemoryLlamaSamplerOverwriteEnabled = enabled;
     }, "Failed to save dynamic memory llama sampler overwrite setting:");
+  };
+
+  const handleStructuredFallbackFormatChange = async (
+    format: DynamicMemoryStructuredFallbackFormat,
+  ) => {
+    setStructuredFallbackFormat(format);
+    await updateAdvancedSettings((advanced) => {
+      advanced.dynamicMemoryStructuredFallbackFormat = format;
+    }, "Failed to save dynamic memory structured fallback format:");
   };
 
   const handleEmbeddingMaxTokensChange = async (val: number) => {
@@ -671,6 +706,39 @@ export function DynamicMemoryPage() {
                   </div>
                 )}
 
+                {currentEnabled && (
+                  <div className={cn("rounded-xl border border-fg/10 bg-fg/5 px-4 py-3")}>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-sm font-medium text-fg">
+                            Recursive Memory Loops
+                          </span>
+                          <span className="rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[10px] font-medium text-info/80">
+                            {t("dynamicMemory.page.experimental")}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-fg/45 leading-relaxed">
+                          When enabled, Dynamic Memory sends tool results back to the model and
+                          keeps looping until it calls <span className="font-mono">done</span>.
+                          This can help weaker models extract multiple memories, but increases
+                          latency and token usage.
+                        </div>
+                      </div>
+                      <Switch
+                        checked={currentSettings.recursiveMemoryLoops}
+                        onChange={(next) => {
+                          if (activeTab === "direct") {
+                            handleDirectSettingChange("recursiveMemoryLoops", next);
+                          } else {
+                            handleGroupSettingChange("recursiveMemoryLoops", next);
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 {/* Advanced Options Collapsible */}
                 <div className="rounded-xl border border-fg/10 bg-fg/5 overflow-hidden">
                   <button
@@ -909,6 +977,25 @@ export function DynamicMemoryPage() {
                               }
                             }}
                           />
+
+                          {currentSettings.recursiveMemoryLoops && (
+                            <SettingRow
+                              label="Recursive Loop Hard Cap"
+                              description="Maximum number of recursive memory-manager turns before the system stops even if the model never calls done."
+                              value={currentSettings.recursiveMemoryLoopHardCap}
+                              unit="turns"
+                              min={1}
+                              max={100}
+                              step={1}
+                              onChange={(val) => {
+                                if (activeTab === "direct") {
+                                  handleDirectSettingChange("recursiveMemoryLoopHardCap", val);
+                                } else {
+                                  handleGroupSettingChange("recursiveMemoryLoopHardCap", val);
+                                }
+                              }}
+                            />
+                          )}
                         </div>
                       </motion.div>
                     )}
@@ -969,6 +1056,36 @@ export function DynamicMemoryPage() {
                   <p className="text-xs text-fg/50">
                     {t("dynamicMemory.page.summarisationModelDescription")}
                   </p>
+
+                  <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3 space-y-3">
+                    <div>
+                      <div className="text-sm font-medium text-fg">Structured Fallback Format</div>
+                      <div className="mt-1 text-[11px] leading-relaxed text-fg/45">
+                        Used when tool calling fails during dynamic memory updates and the model is
+                        asked to return structured output directly.
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(["xml", "json"] as const).map((format) => (
+                        <button
+                          key={format}
+                          onClick={() => handleStructuredFallbackFormatChange(format)}
+                          className={cn(
+                            "rounded-lg border px-3 py-2 text-xs font-medium uppercase transition-colors",
+                            structuredFallbackFormat === format
+                              ? "border-info/50 bg-info/20 text-info"
+                              : "border-fg/10 bg-fg/5 text-fg/60 hover:border-fg/20",
+                          )}
+                        >
+                          {format}
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[11px] text-fg/45">
+                      XML is the default. JSON can be useful for models that follow JSON-only
+                      instructions more reliably than XML.
+                    </p>
+                  </div>
 
                   {isLocalLlamaSummaryModel && (
                     <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3 space-y-3">

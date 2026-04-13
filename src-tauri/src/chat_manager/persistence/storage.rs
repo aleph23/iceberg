@@ -14,8 +14,8 @@ use crate::storage_manager::{
 use crate::chat_manager::prompt_engine;
 use crate::chat_manager::types::{
     AccessibilitySettings, AccessibilitySoundSettings, AdvancedModelSettings, AdvancedSettings,
-    Character, Model, Persona, ProviderCredential, Session, Settings, StoredMessage,
-    SystemPromptEntry,
+    Character, DynamicMemoryStructuredFallbackFormat, Model, Persona, ProviderCredential, Session,
+    Settings, StoredMessage, SystemPromptEntry,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -23,6 +23,7 @@ pub enum PromptType {
     SystemPrompt,
     LocalRoleplayPrompt,
     DynamicMemoryPrompt,
+    DynamicMemoryLocalPrompt,
     DynamicSummaryPrompt,
     HelpMeReplyPrompt,
     HelpMeReplyConversationalPrompt,
@@ -39,6 +40,7 @@ pub fn get_base_prompt(prompt_type: PromptType) -> String {
         PromptType::SystemPrompt => prompt_engine::default_system_prompt_template(),
         PromptType::LocalRoleplayPrompt => prompt_engine::default_local_roleplay_prompt(),
         PromptType::DynamicMemoryPrompt => prompt_engine::default_dynamic_memory_prompt(),
+        PromptType::DynamicMemoryLocalPrompt => prompt_engine::default_dynamic_memory_local_prompt(),
         PromptType::DynamicSummaryPrompt => prompt_engine::default_dynamic_summary_prompt(),
         PromptType::HelpMeReplyPrompt => prompt_engine::default_help_me_reply_prompt(),
         PromptType::HelpMeReplyConversationalPrompt => {
@@ -60,6 +62,7 @@ pub fn get_base_prompt_entries(prompt_type: PromptType) -> Vec<SystemPromptEntry
         PromptType::SystemPrompt => prompt_engine::default_modular_prompt_entries(),
         PromptType::LocalRoleplayPrompt => prompt_engine::default_local_roleplay_entries(),
         PromptType::DynamicMemoryPrompt => prompt_engine::default_dynamic_memory_entries(),
+        PromptType::DynamicMemoryLocalPrompt => prompt_engine::default_dynamic_memory_local_entries(),
         PromptType::DynamicSummaryPrompt => prompt_engine::default_dynamic_summary_entries(),
         PromptType::HelpMeReplyPrompt => prompt_engine::default_help_me_reply_entries(),
         PromptType::HelpMeReplyConversationalPrompt => {
@@ -153,6 +156,10 @@ fn default_settings() -> Settings {
         advanced_model_settings: AdvancedModelSettings::default(),
         advanced_settings: Some(AdvancedSettings {
             summarisation_model_id: None,
+            developer_mode_enabled: Some(false),
+            dynamic_memory_structured_fallback_format: Some(
+                DynamicMemoryStructuredFallbackFormat::Xml,
+            ),
             dynamic_memory_llama_sampler_overwrite_enabled: Some(true),
             avatar_generation_enabled: Some(true),
             avatar_generation_model_id: None,

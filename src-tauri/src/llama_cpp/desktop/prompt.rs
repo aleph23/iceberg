@@ -24,6 +24,7 @@ pub(super) struct BuiltPrompt {
     pub(super) raw_completion_fallback_reason: Option<String>,
     pub(super) prompt_mode: PromptMode,
     pub(super) chat_template_result: Option<llama_cpp_2::model::ChatTemplateResult>,
+    pub(super) native_tool_parse_supported: bool,
     pub(super) additional_stop_sequences: Vec<String>,
     pub(super) tool_template_diagnostics: Option<String>,
 }
@@ -52,26 +53,32 @@ pub(super) fn token_piece_bytes(
     model: &LlamaModel,
     token: llama_cpp_2::token::LlamaToken,
 ) -> Result<Vec<u8>, String> {
-    match model.token_to_piece_bytes(token, 8, false, None) {
+    fn decode_with_special_mode(
+        model: &LlamaModel,
+        token: llama_cpp_2::token::LlamaToken,
+        special: bool,
+    ) -> Result<Vec<u8>, TokenToStringError> {
+        match model.token_to_piece_bytes(token, 8, special, None) {
+            Ok(bytes) => Ok(bytes),
+            Err(TokenToStringError::InsufficientBufferSpace(needed)) => {
+                let required = usize::try_from(-needed)
+                    .map_err(|_| TokenToStringError::InsufficientBufferSpace(needed))?;
+                model.token_to_piece_bytes(token, required, special, None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    match decode_with_special_mode(model, token, false) {
         Ok(bytes) => Ok(bytes),
-        Err(TokenToStringError::InsufficientBufferSpace(needed)) => {
-            let required = usize::try_from(-needed).map_err(|_| {
+        Err(TokenToStringError::UnknownTokenType) => decode_with_special_mode(model, token, true)
+            .map_err(|e| {
                 crate::utils::err_msg(
                     module_path!(),
                     line!(),
-                    format!("Invalid llama token buffer size hint: {needed}"),
+                    format!("Failed to decode token bytes: {e}"),
                 )
-            })?;
-            model
-                .token_to_piece_bytes(token, required, false, None)
-                .map_err(|e| {
-                    crate::utils::err_msg(
-                        module_path!(),
-                        line!(),
-                        format!("Failed to decode token bytes: {e}"),
-                    )
-                })
-        }
+            }),
         Err(e) => Err(crate::utils::err_msg(
             module_path!(),
             line!(),
@@ -176,56 +183,40 @@ fn message_requires_openai_compat(message: &Value) -> bool {
     false
 }
 
+const TOOL_TEMPLATE_MARKERS: &[&str] = &[
+    "<tool_call>",
+    "<tool_calls>",
+    "</tool_calls>",
+    "<tool_response>",
+    "<tools>",
+    "</tools>",
+    "<available_tools>",
+    "<function=",
+    "<parameters>",
+    "<parameter=",
+    "<arg_key>",
+    "<arg_value>",
+    "<|tool_call>",
+    "<tool_call|>",
+    "<|tool_response>",
+    "<tool_response|>",
+    "<|tool_call_start|>",
+    "<|tool_calls_section_begin|>",
+    "<|tool_list_start|>",
+    "<|tools_prefix|>",
+    "<｜tool▁calls▁begin｜>",
+    "tool_declare",
+    "# Tools",
+];
+
 fn template_appears_tool_aware(template: &str) -> bool {
-    [
-        "<tool_call>",
-        "<tool_calls>",
-        "</tool_calls>",
-        "<tool_response>",
-        "<tools>",
-        "</tools>",
-        "<available_tools>",
-        "<function=",
-        "<parameters>",
-        "<parameter=",
-        "<arg_key>",
-        "<arg_value>",
-        "<|tool_call_start|>",
-        "<|tool_calls_section_begin|>",
-        "<|tool_list_start|>",
-        "<|tools_prefix|>",
-        "<｜tool▁calls▁begin｜>",
-        "tool_declare",
-        "# Tools",
-    ]
-    .iter()
-    .any(|marker| template.contains(marker))
+    TOOL_TEMPLATE_MARKERS
+        .iter()
+        .any(|marker| template.contains(marker))
 }
 
 fn summarize_tool_template_detection(template: &str) -> String {
-    let markers = [
-        "<tool_call>",
-        "<tool_calls>",
-        "</tool_calls>",
-        "<tool_response>",
-        "<tools>",
-        "</tools>",
-        "<available_tools>",
-        "<function=",
-        "<parameters>",
-        "<parameter=",
-        "<arg_key>",
-        "<arg_value>",
-        "<|tool_call_start|>",
-        "<|tool_calls_section_begin|>",
-        "<|tool_list_start|>",
-        "<|tools_prefix|>",
-        "<｜tool▁calls▁begin｜>",
-        "tool_declare",
-        "# Tools",
-    ];
-
-    let matched = markers
+    let matched = TOOL_TEMPLATE_MARKERS
         .iter()
         .copied()
         .filter(|marker| template.contains(marker))
@@ -319,8 +310,9 @@ fn build_oaicompat_prompt(
     tool_choice: Option<&Value>,
     options: &OpenAICompatPromptOptions,
 ) -> Result<BuiltPrompt, String> {
-    let tool_template_diagnostics = (!template_appears_tool_aware(&resolved_template.template_text))
-        .then(|| summarize_tool_template_detection(&resolved_template.template_text));
+    let mut tool_template_diagnostics =
+        (!template_appears_tool_aware(&resolved_template.template_text))
+            .then(|| summarize_tool_template_detection(&resolved_template.template_text));
 
     let messages_json = serde_json::to_string(messages).map_err(|e| {
         crate::utils::err_msg(
@@ -386,21 +378,18 @@ fn build_oaicompat_prompt(
             )
         })?;
 
-    if parse_tool_calls && !oaicompat_result_supports_native_tool_calls(&chat_template_result) {
-        return Err(crate::utils::err_msg(
-            module_path!(),
-            line!(),
-            format!(
-                "Resolved llama.cpp oaicompat template did not expose native tool-call parsing metadata (parse_tool_calls={}, parser_present={}, grammar_present={}){}",
-                chat_template_result.parse_tool_calls,
-                chat_template_result.parser.is_some(),
-                chat_template_result.grammar.is_some(),
-                tool_template_diagnostics
-                    .as_ref()
-                    .map(|diag| format!(" ({diag})"))
-                    .unwrap_or_default()
-            ),
-        ));
+    let native_tool_parse_supported = oaicompat_result_supports_native_tool_calls(&chat_template_result);
+    if parse_tool_calls && !native_tool_parse_supported {
+        let parser_diag = format!(
+            "oaicompat template exposed no native tool parser metadata (parse_tool_calls={}, parser_present={}, grammar_present={})",
+            chat_template_result.parse_tool_calls,
+            chat_template_result.parser.is_some(),
+            chat_template_result.grammar.is_some(),
+        );
+        tool_template_diagnostics = Some(match tool_template_diagnostics {
+            Some(existing) => format!("{existing}; {parser_diag}"),
+            None => parser_diag,
+        });
     }
 
     Ok(BuiltPrompt {
@@ -415,6 +404,7 @@ fn build_oaicompat_prompt(
         prompt_mode: PromptMode::OpenAICompatChat,
         additional_stop_sequences: chat_template_result.additional_stops.clone(),
         chat_template_result: Some(chat_template_result),
+        native_tool_parse_supported,
         tool_template_diagnostics,
     })
 }
@@ -451,7 +441,9 @@ fn build_plain_templated_prompt(
         parse_tool_calls: false,
     };
 
-    let chat_template_result = match model.apply_chat_template_oaicompat(&resolved_template.template, &params) {
+    let chat_template_result = match model
+        .apply_chat_template_oaicompat(&resolved_template.template, &params)
+    {
         Ok(result) => result,
         Err(oaicompat_err) => {
             match model.apply_chat_template(&resolved_template.template, chat_messages, true) {
@@ -467,6 +459,7 @@ fn build_plain_templated_prompt(
                         raw_completion_fallback_reason: None,
                         prompt_mode: PromptMode::TemplatedChat,
                         chat_template_result: None,
+                        native_tool_parse_supported: false,
                         additional_stop_sequences: Vec::new(),
                         tool_template_diagnostics: None,
                     });
@@ -496,6 +489,7 @@ fn build_plain_templated_prompt(
         raw_completion_fallback_reason: None,
         prompt_mode: PromptMode::TemplatedChat,
         chat_template_result: None,
+        native_tool_parse_supported: false,
         additional_stop_sequences: chat_template_result.additional_stops.clone(),
         tool_template_diagnostics: None,
     })
@@ -632,6 +626,7 @@ pub(super) fn build_prompt(
                         )),
                         prompt_mode: PromptMode::RawCompletion,
                         chat_template_result: None,
+                        native_tool_parse_supported: false,
                         additional_stop_sequences: Vec::new(),
                         tool_template_diagnostics: None,
                     });
@@ -651,13 +646,8 @@ pub(super) fn build_prompt(
         );
     }
 
-    match build_plain_templated_prompt(
-        model,
-        messages,
-        &chat_messages,
-        &resolved_template,
-        options,
-    ) {
+    match build_plain_templated_prompt(model, messages, &chat_messages, &resolved_template, options)
+    {
         Ok(built_prompt) => Ok(built_prompt),
         Err(err) => {
             if allow_raw_completion_fallback {
@@ -675,6 +665,7 @@ pub(super) fn build_prompt(
                     )),
                     prompt_mode: PromptMode::RawCompletion,
                     chat_template_result: None,
+                    native_tool_parse_supported: false,
                     additional_stop_sequences: Vec::new(),
                     tool_template_diagnostics: None,
                 })
@@ -682,6 +673,18 @@ pub(super) fn build_prompt(
                 Err(err)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::template_appears_tool_aware;
+
+    #[test]
+    fn detects_gemma_style_tool_markers() {
+        assert!(template_appears_tool_aware(
+            "{% if tools %}<|tool_call>{{ tools }}<tool_call|>{% endif %}"
+        ));
     }
 }
 
