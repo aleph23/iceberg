@@ -882,6 +882,8 @@ export async function saveCharacter(c: Partial<Character>): Promise<Character> {
     fallbackModelId: c.fallbackModelId ?? null,
     memoryType: c.memoryType ?? "manual",
     promptTemplateId: c.promptTemplateId ?? null,
+    groupChatPromptTemplateId: c.groupChatPromptTemplateId ?? null,
+    groupChatRoleplayPromptTemplateId: c.groupChatRoleplayPromptTemplateId ?? null,
     disableAvatarGradient: c.disableAvatarGradient ?? false,
     customGradientEnabled: c.customGradientEnabled ?? false,
     customGradientColors: c.customGradientColors,
