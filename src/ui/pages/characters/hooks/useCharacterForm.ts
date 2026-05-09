@@ -6,6 +6,7 @@ import {
   saveLorebookEntry,
   setCharacterLorebooks,
 } from "../../../../core/storage";
+import { uuidv4 } from "../../../../core/storage/repo";
 import { saveAvatar } from "../../../../core/storage/avatars";
 import { convertToImageRef, convertToImageUrl } from "../../../../core/storage/images";
 import type {
@@ -926,7 +927,7 @@ export function useCharacterForm(draftCharacter?: any) {
       );
 
       // Generate character ID first so we can use it for avatar storage
-      const characterId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      const characterId = globalThis.crypto?.randomUUID?.() ?? uuidv4();
       console.log("[CreateCharacter] Generated character ID:", characterId);
 
       // Save avatar using new centralized system

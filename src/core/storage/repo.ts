@@ -282,7 +282,7 @@ type SessionMemoryEmbedding = NonNullable<Session["memoryEmbeddings"]>[number];
 type SessionMemoryToolEvent = NonNullable<Session["memoryToolEvents"]>[number];
 type SessionMemoryToolAction = NonNullable<SessionMemoryToolEvent["actions"]>[number];
 
-function uuidv4(): string {
+export function uuidv4(): string {
   const bytes = new Uint8Array(16);
   (globalThis.crypto || ({} as any)).getRandomValues?.(bytes);
   bytes[6] = (bytes[6] & 0x0f) | 0x40;

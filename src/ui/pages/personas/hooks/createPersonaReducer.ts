@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useReducer, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { savePersona } from "../../../../core/storage/repo";
+import { savePersona, uuidv4 } from "../../../../core/storage/repo";
 import { saveAvatar } from "../../../../core/storage/avatars";
 import { convertToImageRef } from "../../../../core/storage/images";
 import { invalidateAvatarCache } from "../../../hooks/useAvatar";
@@ -231,7 +231,7 @@ export function useCreatePersonaController() {
       dispatch({ type: "set_saving", value: true });
       dispatch({ type: "set_error", value: null });
 
-      const personaId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      const personaId = globalThis.crypto?.randomUUID?.() ?? uuidv4();
 
       let avatarFilename: string | undefined;
       if (state.avatarPath) {
