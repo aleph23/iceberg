@@ -353,7 +353,11 @@ pub(crate) async fn update_external_progress(
     emit_queue(app, &state.queue);
 }
 
-pub(crate) async fn update_external_speed(app: &AppHandle, queue_id: &str, speed_bytes_per_sec: u64) {
+pub(crate) async fn update_external_speed(
+    app: &AppHandle,
+    queue_id: &str,
+    speed_bytes_per_sec: u64,
+) {
     let mut state = HF_DOWNLOAD_QUEUE.lock().await;
     if let Some(item) = state.queue.iter_mut().find(|d| d.id == queue_id) {
         item.speed_bytes_per_sec = speed_bytes_per_sec;

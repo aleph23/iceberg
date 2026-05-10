@@ -266,9 +266,9 @@ fn parse_xml(raw: &str) -> Result<ParsedFallback, String> {
     let mut idx = 0usize;
 
     let commit_call = |out: &mut ParsedFallback,
-                           idx: &mut usize,
-                           name: Option<String>,
-                           args: Map<String, Value>| {
+                       idx: &mut usize,
+                       name: Option<String>,
+                       args: Map<String, Value>| {
         if let Some(n) = name {
             if n.eq_ignore_ascii_case("reply") {
                 if let Some(Value::String(msg)) = args.get("message").cloned() {

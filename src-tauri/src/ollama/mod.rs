@@ -1007,15 +1007,8 @@ async fn run_ollama_pull(
             last_status_label = status_label.clone();
 
             if status_label.eq_ignore_ascii_case("success") {
-                update_pull_progress(
-                    app,
-                    queue_id,
-                    "complete",
-                    last_completed,
-                    last_total,
-                    0,
-                )
-                .await;
+                update_pull_progress(app, queue_id, "complete", last_completed, last_total, 0)
+                    .await;
                 return Ok(());
             }
 
