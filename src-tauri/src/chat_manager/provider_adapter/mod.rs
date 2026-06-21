@@ -326,7 +326,6 @@ pub fn adapter_for(credential: &ProviderCredential) -> Box<dyn ProviderAdapter +
         "qwen" => Box::new(qwen::QwenAdapter),
         "stability" => Box::new(stability::StabilityAdapter),
         "openrouter" => Box::new(openai::OpenRouterAdapter),
-        "pollinations" => Box::new(pollinations::PollinationsAdapter),
         "lettuce-host" => Box::new(openai::OpenAIAdapter),
         "lettuce-engine" => Box::new(lettuce_engine::LettuceEngineAdapter),
         "pollinations" => Box::new(pollinations::PollinationsTextAdapter),
