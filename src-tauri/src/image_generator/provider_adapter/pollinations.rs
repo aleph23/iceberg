@@ -1,14 +1,9 @@
 use serde_json::Value;
-use std::collections::HashMap;
-
 use super::{parse_size_dimensions, ImageProviderAdapter, ImageRequestPayload, ImageResponseData};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use reqwest::multipart::{Form, Part};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use std::collections::HashMap;
-
-use super::{ImageProviderAdapter, ImageRequestPayload, ImageResponseData};
 use crate::image_generator::types::ImageGenerationRequest;
 
 pub struct PollinationsAdapter;
