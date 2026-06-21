@@ -173,30 +173,12 @@ export function useProvidersPageController(): ControllerReturn {
 
     try {
       const isEngineProvider = editorProvider.providerId === "lettuce-engine";
-      const isLocalProvider = [
-        "custom",
-        "custom-anthropic",
-        "ollama",
-        "lmstudio",
-        "intenserp",
-        "automatic1111",
-      ].includes(editorProvider.providerId);
-      const requiresVerification =
-        !isLocalProvider &&
-        !isEngineProvider &&
-        ["openai", "anthropic", "openrouter", "groq", "mistral",  "gemini", "lettuce-host", "pollinations", "pollinations-image"].includes(
-          editorProvider.providerId,
-        );
-        [
-          "openai",
-          "cerebras",
-          "anthropic",
-          "openrouter",
-          "groq",
-          "mistral",
-          "gemini",
-          "lettuce-host",
-        ].includes(editorProvider.providerId);
+      const isLocalProvider = ["custom", "custom-anthropic", "ollama", "lmstudio", "intenserp", "automatic1111", ].includes(editorProvider.providerId);
+      const requiresVerification = !isLocalProvider && !isEngineProvider &&
+        ["openai", "cerebras", "anthropic", "openrouter", "groq", "mistral", "gemini", "lettuce-host", "pollinations", "pollinations-image"]
+        .includes(editorProvider.providerId
+                 );
+      
       const trimmedKey = apiKey.trim();
 
       // Engine requires a base URL
@@ -212,10 +194,7 @@ export function useProvidersPageController(): ControllerReturn {
 
         // Health check
         try {
-          await invoke("engine_health", {
-            baseUrl: engineUrl,
-            apiKey: trimmedKey || null,
-          });
+          await invoke("engine_health", { baseUrl: engineUrl, apiKey: trimmedKey || null, });
         } catch (error) {
           dispatch({
             type: "set_validation_error",
@@ -242,10 +221,7 @@ export function useProvidersPageController(): ControllerReturn {
           });
           dispatch({
             type: "set_engine_setup_result",
-            payload: {
-              credentialId: editorProvider.id,
-              needsSetup: setupStatus.needs_setup,
-            },
+            payload: { credentialId: editorProvider.id, needsSetup: setupStatus.needs_setup, },
           });
         } catch {
           // If setup status fails, still navigate to home (user can retry)
