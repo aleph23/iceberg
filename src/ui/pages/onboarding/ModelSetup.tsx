@@ -493,10 +493,9 @@ function getProviderDisplayName(providerId: string, t: TFunction): string {
     case "anthropic":
       return t("onboarding.model.providerNames.anthropic");
     case "openrouter":
-      return "OpenRouter";
-    case "pollinations":
-      return "Pollinations";
       return t("onboarding.model.providerNames.openrouter");
+    case "pollinations":
+      return t("onboarding.model.providerNames.pollinations");
     case "openai-compatible":
       return t("onboarding.model.providerNames.openaiCompatible");
     case "custom":
