@@ -454,7 +454,6 @@ function getProviderDescription(providerId: string, t: TFunction): string {
     case "featherless":
     case "openrouter":
     case "pollinations":
-      return "Access models like GPT-5, Claude 4.5, Grok-3, Mixtral, and more";
       return t("onboarding.provider.descriptions.aggregator");
     case "openai-compatible":
       return t("onboarding.provider.descriptions.openaiCompatible");
@@ -495,7 +494,6 @@ function getProviderDescriptionShort(providerId: string, t: TFunction): string {
     case "featherless":
     case "openrouter":
     case "pollinations":
-      return "Multi-model aggregator";
       return t("onboarding.provider.descriptionsShort.aggregator");
     case "openai-compatible":
       return t("onboarding.provider.descriptionsShort.openaiCompatible");
