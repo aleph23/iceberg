@@ -24,18 +24,6 @@ pub(crate) fn extract_base_url(base_url: &str) -> String {
     clean.to_string()
 }
 
-fn pollinations_required_auth_headers() -> &'static [&'static str] {
-    &["Authorization"]
-}
-
-fn pollinations_default_headers_template() -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    out.insert("Content-Type".into(), "application/json".into());
-    out.insert("Authorization".into(), "Bearer <apiKey>".into());
-    out.insert("Accept".into(), "text/event-stream".into());
-    out
-}
-
 fn pollinations_headers(
     api_key: &str,
     extra: Option<&HashMap<String, String>>,
@@ -45,7 +33,7 @@ fn pollinations_headers(
     out.insert("Authorization".into(), format!("Bearer {}", api_key));
     out.insert("Accept".into(), "text/event-stream".into());
     out.entry("User-Agent".into())
-        .or_insert_with(|| "LettuceAI/0.1".into());
+        .or_insert_with(|| "iceberg".into());
     if let Some(extra) = extra {
         for (k, v) in extra.iter() {
             out.insert(k.clone(), v.clone());
@@ -165,32 +153,8 @@ impl ProviderAdapter for PollinationsTextAdapter {
         "system".into()
     }
 
-    fn required_auth_headers(&self) -> &'static [&'static str] {
-        pollinations_required_auth_headers()
-    }
-
-    fn default_headers_template(&self) -> HashMap<String, String> {
-        pollinations_default_headers_template()
-    }
-
-    fn headers(
-        &self,
-        api_key: &str,
-        extra: Option<&HashMap<String, String>>,
-    ) -> HashMap<String, String> {
-        pollinations_headers(api_key, extra)
-        let mut out: HashMap<String, String> = HashMap::new();
-        out.insert("Authorization".into(), format!("Bearer {}", api_key));
-        out.insert("Content-Type".into(), "application/json".into());
-        out.insert("Accept".into(), "text/event-stream".into());
-        out.entry("User-Agent".into())
-            .or_insert_with(|| "LettuceAI/0.1".into());
-        if let Some(extra) = extra {
-            for (k, v) in extra.iter() {
-                out.insert(k.clone(), v.clone());
-            }
-        }
-        out
+    fn default_headers(&self) -> HashMap<String, String> {
+        pollinations_headers()
     }
 
     fn body(
@@ -256,33 +220,8 @@ impl ProviderAdapter for PollinationsImageAdapter {
         "system".into()
     }
 
-    fn required_auth_headers(&self) -> &'static [&'static str] {
-        pollinations_required_auth_headers()
-    }
-
-    fn default_headers_template(&self) -> HashMap<String, String> {
-        let mut out = HashMap::new();
-        out.insert("Content-Type".into(), "application/json".into());
-        out.insert("Authorization".into(), "Bearer <apiKey>".into());
-        out
-    }
-
-    fn headers(
-        &self,
-        api_key: &str,
-        extra: Option<&HashMap<String, String>>,
-    ) -> HashMap<String, String> {
-        let mut out = HashMap::new();
-        out.insert("Content-Type".into(), "application/json".into());
-        out.insert("Authorization".into(), format!("Bearer {}", api_key));
-        out.entry("User-Agent".into())
-            .or_insert_with(|| "LettuceAI/0.1".into());
-        if let Some(extra) = extra {
-            for (k, v) in extra.iter() {
-                out.insert(k.clone(), v.clone());
-            }
-        }
-        out
+    fn default_headers(&self) -> HashMap<String, String> {
+        pollinations_headers()
     }
 
     fn body(
