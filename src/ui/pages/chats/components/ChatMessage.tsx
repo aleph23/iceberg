@@ -4,12 +4,13 @@ import { RefreshCw, Pin, User, Bot, ChevronDown, Volume2, Loader2, Square } from
 import { MarkdownRenderer } from "./MarkdownRenderer";
 import type { StoredMessage, Character, Persona } from "../../../../core/storage/schemas";
 import { radius, typography, interactive, cn } from "../../../design-tokens";
+import { BottomMenu } from "../../../components/BottomMenu";
 import type { ThemeColors } from "../../../../core/utils/imageAnalysis";
 import type { ChatAppearanceSettings } from "../../../../core/storage/schemas";
 import { AvatarImage } from "../../../components/AvatarImage";
 import { useAvatar } from "../../../hooks/useAvatar";
 import { useSessionAttachments } from "../../../hooks/useSessionAttachment";
-import { useI18n } from "../../../../core/i18n/context";
+import { useI18n, type TranslationKey, type TranslateParams } from "../../../../core/i18n/context";
 import { replacePlaceholders } from "../../../../core/utils/placeholders";
 
 interface VariantState {
@@ -28,7 +29,7 @@ interface ChatMessageProps {
   eventHandlers: Record<string, any>;
   getVariantState: (message: StoredMessage) => VariantState;
   handleVariantDrag: (messageId: string, offsetX: number) => void;
-  handleRegenerate: (message: StoredMessage) => Promise<void>;
+  handleRegenerate: (message: StoredMessage, options?: { guidance?: string }) => Promise<void>;
   isStartingSceneMessage: boolean;
   theme: ThemeColors;
   chatAppearance?: ChatAppearanceSettings;
@@ -42,6 +43,8 @@ interface ChatMessageProps {
   onCancelAudio?: (message: StoredMessage) => void;
   reasoning?: string;
   swapPlaces?: boolean;
+  modelName?: string;
+  scenePromptStreaming?: boolean;
 }
 
 // CSS class mappings for chat appearance settings
@@ -71,15 +74,67 @@ const BUBBLE_PADDING_MAP = {
   normal: "px-4 py-2.5",
   spacious: "px-5 py-3.5",
 } as const;
-const BUBBLE_BLUR_MAP = {
-  none: "",
-  light: "backdrop-blur-sm",
-  medium: "backdrop-blur-md",
-  heavy: "backdrop-blur-lg",
+const MESSAGE_INFO_SIZE_MAP = {
+  small: "text-[10px]",
+  medium: "text-[11.5px]",
+  large: "text-[13px]",
 } as const;
 const AVATAR_SHAPE_MAP = { circle: "rounded-full", rounded: "rounded-lg", hidden: "" } as const;
 const AVATAR_SIZE_MAP = { small: "h-6 w-6", medium: "h-8 w-8", large: "h-10 w-10" } as const;
 const AVATAR_ICON_SIZE_MAP = { small: 12, medium: 16, large: 20 } as const;
+
+function formatMessageTimestamp(
+  ms: number,
+  format: "relative" | "time" | "datetime",
+  t: (key: TranslationKey, params?: TranslateParams) => string,
+): string {
+  const date = new Date(ms);
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (format === "time") return time;
+  if (format === "datetime") {
+    return `${date.toLocaleDateString()} ${time}`;
+  }
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const dayMs = 86_400_000;
+  if (ms >= startOfToday) return time;
+  if (ms >= startOfToday - dayMs) return t("chats.message.yesterdayAt", { time });
+  return `${date.toLocaleDateString()}, ${time}`;
+}
+
+function BubbleHeaderWrap({
+  above,
+  rightAligned,
+  header,
+  aboveBubble,
+  footer,
+  maxWidthClass,
+  children,
+}: {
+  above: boolean;
+  rightAligned: boolean;
+  header: React.ReactNode;
+  aboveBubble?: React.ReactNode;
+  footer?: React.ReactNode;
+  maxWidthClass: string;
+  children: React.ReactNode;
+}) {
+  if (!above && !aboveBubble && !footer) return <>{children}</>;
+  return (
+    <div
+      className={cn(
+        "flex min-w-0 flex-col",
+        maxWidthClass,
+        rightAligned ? "items-end" : "items-start",
+      )}
+    >
+      {above && header}
+      {aboveBubble && <div className="mb-1 px-1">{aboveBubble}</div>}
+      {children}
+      {footer && <div className="mt-1 px-1">{footer}</div>}
+    </div>
+  );
+}
 
 // Avatar component for user/assistant
 const MessageAvatar = React.memo(function MessageAvatar({
@@ -95,7 +150,7 @@ const MessageAvatar = React.memo(function MessageAvatar({
   avatarShape?: "circle" | "rounded" | "hidden";
   avatarSize?: "small" | "medium" | "large";
 }) {
-  if (avatarShape === "hidden") return null;
+  const { t } = useI18n();
   const characterAvatar = useAvatar(
     "character",
     character?.id ?? "",
@@ -103,6 +158,8 @@ const MessageAvatar = React.memo(function MessageAvatar({
     "round",
   );
   const personaAvatar = useAvatar("persona", persona?.id ?? "", persona?.avatarPath, "round");
+
+  if (avatarShape === "hidden") return null;
 
   const sizeClass = AVATAR_SIZE_MAP[avatarSize];
   const shapeClass = AVATAR_SHAPE_MAP[avatarShape];
@@ -118,7 +175,12 @@ const MessageAvatar = React.memo(function MessageAvatar({
         )}
       >
         {personaAvatar ? (
-          <AvatarImage src={personaAvatar} alt="User" crop={persona?.avatarCrop} applyCrop />
+          <AvatarImage
+            src={personaAvatar}
+            alt={t("chats.message.userAvatarAlt")}
+            crop={persona?.avatarCrop}
+            applyCrop
+          />
         ) : (
           <User size={iconSize} className="text-white/60" />
         )}
@@ -138,13 +200,27 @@ const MessageAvatar = React.memo(function MessageAvatar({
         {characterAvatar ? (
           <AvatarImage
             src={characterAvatar}
-            alt="Assistant"
+            alt={t("chats.message.assistantAvatarAlt")}
             crop={character?.avatarCrop}
             applyCrop
           />
         ) : (
           <Bot size={iconSize} className="text-white/60" />
         )}
+      </div>
+    );
+  }
+
+  if (role === "system") {
+    return (
+      <div
+        className={cn(
+          "relative flex shrink-0 items-center justify-center overflow-hidden border border-white/10 bg-linear-to-br from-white/5 to-white/10",
+          sizeClass,
+          shapeClass,
+        )}
+      >
+        <Bot size={iconSize} className="text-white/60" />
       </div>
     );
   }
@@ -157,48 +233,197 @@ const MessageActions = React.memo(function MessageActions({
   disabled,
   isRegenerating,
   onRegenerate,
+  onGuidedRegenerate,
 }: {
   disabled: boolean;
   isRegenerating: boolean;
   onRegenerate: () => void;
+  onGuidedRegenerate: (guidance: string) => void;
 }) {
   const { t } = useI18n();
+  const [guidedOpen, setGuidedOpen] = useState(false);
+  const [guidance, setGuidance] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
+
+  const clearLongPressTimer = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const openGuidedRegeneration = useCallback(() => {
+    if (disabled) return;
+    longPressTriggeredRef.current = true;
+    setGuidedOpen(true);
+  }, [disabled]);
+
+  const resetGuidedRegeneration = useCallback(() => {
+    setGuidedOpen(false);
+    setGuidance("");
+  }, []);
+
+  const handlePointerDown = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (disabled || event.button !== 0) return;
+      clearLongPressTimer();
+      longPressTriggeredRef.current = false;
+      longPressTimerRef.current = window.setTimeout(openGuidedRegeneration, 450);
+    },
+    [clearLongPressTimer, disabled, openGuidedRegeneration],
+  );
+
+  const handlePointerEnd = useCallback(() => {
+    clearLongPressTimer();
+  }, [clearLongPressTimer]);
+
+  const handleClick = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      clearLongPressTimer();
+      if (longPressTriggeredRef.current) {
+        event.preventDefault();
+        event.stopPropagation();
+        window.setTimeout(() => {
+          longPressTriggeredRef.current = false;
+        }, 0);
+        return;
+      }
+      onRegenerate();
+    },
+    [clearLongPressTimer, onRegenerate],
+  );
+
+  const handleContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      if (disabled) return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearLongPressTimer();
+      openGuidedRegeneration();
+    },
+    [clearLongPressTimer, disabled, openGuidedRegeneration],
+  );
+
+  const submitGuidedRegeneration = useCallback(() => {
+    const trimmed = guidance.trim();
+    if (!trimmed || disabled) return;
+    resetGuidedRegeneration();
+    onGuidedRegenerate(trimmed);
+  }, [disabled, guidance, onGuidedRegenerate, resetGuidedRegeneration]);
+
+  useEffect(() => {
+    if (!guidedOpen) return;
+    const id = window.setTimeout(() => textareaRef.current?.focus(), 150);
+    return () => window.clearTimeout(id);
+  }, [guidedOpen]);
+
+  useEffect(() => clearLongPressTimer, [clearLongPressTimer]);
+
   return (
-    <motion.div
-      className="absolute -bottom-4 right-0 flex items-center gap-2"
-      initial={{ opacity: 0, scale: 0.9 }}
-      animate={{ opacity: 1, scale: 1 }}
-      transition={{
-        type: "tween",
-        duration: 0.15,
-        ease: [0.25, 0.46, 0.45, 0.94],
-        delay: 0.1,
-      }}
-    >
-      <button
-        type="button"
-        data-tour-id="chat-regenerate"
-        onClick={onRegenerate}
-        disabled={disabled}
-        className={cn(
-          "flex items-center px-[0.6em] py-[0.3em] justify-center",
-          radius.full,
-          "border border-fg/15 bg-surface-el/80 text-fg/85",
-          interactive.transition.fast,
-          "hover:border-fg/30 hover:bg-fg/12 hover:text-fg hover:scale-105",
-          interactive.active.scale,
-          "disabled:cursor-not-allowed disabled:opacity-80 disabled:hover:scale-100",
-        )}
-        aria-label={t("chats.message.regenerateResponse")}
-        style={{ willChange: "transform" }}
+    <>
+      <motion.div
+        className="absolute -bottom-4 right-0 flex items-center gap-2"
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        transition={{
+          type: "tween",
+          duration: 0.15,
+          ease: [0.25, 0.46, 0.45, 0.94],
+          delay: 0.1,
+        }}
       >
-        {isRegenerating ? (
-          <RefreshCw size={14} className="animate-spin rounded-full" />
-        ) : (
-          <RefreshCw size={14} />
-        )}
-      </button>
-    </motion.div>
+        <button
+          type="button"
+          data-tour-id="chat-regenerate"
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerEnd}
+          onPointerLeave={handlePointerEnd}
+          onPointerCancel={handlePointerEnd}
+          onClick={handleClick}
+          onContextMenu={handleContextMenu}
+          disabled={disabled}
+          className={cn(
+            "flex items-center px-[0.6em] py-[0.3em] justify-center",
+            radius.full,
+            "border border-fg/15 bg-surface-el/80 text-fg/85",
+            interactive.transition.fast,
+            "hover:border-fg/30 hover:bg-fg/12 hover:text-fg hover:scale-105",
+            interactive.active.scale,
+            "disabled:cursor-not-allowed disabled:opacity-80 disabled:hover:scale-100",
+          )}
+          aria-label={t("chats.message.regenerateResponse")}
+          style={{ willChange: "transform" }}
+        >
+          {isRegenerating ? (
+            <RefreshCw size={14} className="animate-spin rounded-full" />
+          ) : (
+            <RefreshCw size={14} />
+          )}
+        </button>
+      </motion.div>
+
+      <BottomMenu
+        isOpen={guidedOpen}
+        onClose={resetGuidedRegeneration}
+        title={t("chats.message.guidedRegenerationTitle")}
+      >
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitGuidedRegeneration();
+          }}
+        >
+          <div className="space-y-1">
+            <label className="block text-sm font-medium text-fg/90" htmlFor="guided-regeneration">
+              {t("chats.message.guidedRegenerationLabel")}
+            </label>
+            <p className="text-sm leading-5 text-fg/55">
+              {t("chats.message.guidedRegenerationDescription")}
+            </p>
+          </div>
+          <textarea
+            id="guided-regeneration"
+            ref={textareaRef}
+            value={guidance}
+            onChange={(event) => setGuidance(event.target.value)}
+            placeholder={t("chats.message.guidedRegenerationPlaceholder")}
+            rows={4}
+            className={cn(
+              "w-full resize-none border border-fg/12 bg-fg/4 px-3 py-3 text-sm text-fg outline-none",
+              radius.lg,
+              "placeholder:text-fg/35 focus:border-fg/25 focus:bg-fg/6 focus:ring-2 focus:ring-fg/10",
+            )}
+          />
+          <div className="flex gap-3">
+            <button
+              type="button"
+              onClick={resetGuidedRegeneration}
+              className={cn(
+                "flex-1 border border-fg/10 bg-fg/5 py-3 text-sm font-medium text-fg",
+                radius.lg,
+                "transition hover:border-fg/20 hover:bg-fg/10",
+              )}
+            >
+              {t("common.buttons.cancel")}
+            </button>
+            <button
+              type="submit"
+              disabled={!guidance.trim() || disabled}
+              className={cn(
+                "flex-1 border border-emerald-500/30 bg-emerald-500/20 py-3 text-sm font-medium text-emerald-100",
+                radius.lg,
+                "transition hover:bg-emerald-500/30 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-emerald-500/20",
+              )}
+            >
+              {t("chats.message.guidedRegenerationSubmit")}
+            </button>
+          </div>
+        </form>
+      </BottomMenu>
+    </>
   );
 });
 
@@ -312,6 +537,8 @@ function ChatMessageInner({
   onCancelAudio,
   reasoning,
   swapPlaces = false,
+  modelName,
+  scenePromptStreaming = false,
 }: ChatMessageProps) {
   const { t } = useI18n();
   const prevRoleRef = useRef(message.role);
@@ -343,8 +570,9 @@ function ChatMessageInner({
     const isAssistant = message.role === "assistant";
     const isScene = message.role === "scene";
     const isUser = message.role === "user";
+    const isVisibleSystem = message.role === "system" && Boolean(message.visibleInChat);
     const isPlaceholder = message.id.startsWith("placeholder");
-    const actionable = (isAssistant || isUser || isScene) && !isPlaceholder;
+    const actionable = (isAssistant || isUser || isScene || isVisibleSystem) && !isPlaceholder;
     const isLatestAssistant = isAssistant && actionable && index === messagesLength - 1;
     const variantState = getVariantState(message);
     const totalVariants = variantState.total || (isAssistant || isScene ? 1 : 0);
@@ -367,6 +595,7 @@ function ChatMessageInner({
       isAssistant,
       isScene,
       isUser,
+      isVisibleSystem,
       isPlaceholder,
       isLatestAssistant,
       totalVariants,
@@ -378,6 +607,7 @@ function ChatMessageInner({
     };
   }, [
     message.role,
+    message.visibleInChat,
     message.id,
     message.content,
     index,
@@ -401,10 +631,117 @@ function ChatMessageInner({
 
   const effectiveCharName = swapPlaces ? (persona?.title ?? "") : (character?.name ?? "");
   const effectivePersonaName = swapPlaces
-    ? (character?.name ?? "User")
-    : (persona?.title ?? "User");
+    ? (character?.name ?? t("chats.message.userAuthor"))
+    : (persona?.title ?? t("chats.message.userAuthor"));
   const resolvedDisplayContent =
     displayContent ?? replacePlaceholders(message.content, effectiveCharName, effectivePersonaName);
+
+  const messageHeaderPlacement = chatAppearance?.messageHeaderPlacement ?? "inside";
+  const showMessageHeader = !!(
+    chatAppearance?.showMessageAuthor || chatAppearance?.showMessageTimestamp
+  );
+  const headerAuthorName = computed.isUser
+    ? effectivePersonaName
+    : computed.isAssistant || computed.isScene
+      ? effectiveCharName
+      : t("chats.message.systemAuthor");
+  const headerRightAligned = message.role === "user" || computed.isVisibleSystem;
+  const messageHeaderNode = showMessageHeader ? (
+    <div
+      className={cn(
+        "mb-1 flex items-baseline gap-2",
+        headerRightAligned ? "justify-end" : "justify-start",
+      )}
+    >
+      {chatAppearance?.showMessageAuthor && headerAuthorName && (
+        <span className="text-[13px] font-semibold">{headerAuthorName}</span>
+      )}
+      {chatAppearance?.showMessageTimestamp && (
+        <span className="text-[11px] font-normal opacity-50">
+          {formatMessageTimestamp(
+            message.createdAt,
+            chatAppearance?.timestampFormat ?? "relative",
+            t,
+          )}
+        </span>
+      )}
+    </div>
+  ) : null;
+  const headerAbove = messageHeaderPlacement === "above" && !!messageHeaderNode;
+
+  const messageUsage = message.usage;
+  const infoEligible = computed.isAssistant || computed.isScene;
+  const showInfoModel = infoEligible && !!chatAppearance?.showMessageModel && !!modelName;
+  const showInfoInput =
+    infoEligible &&
+    !!chatAppearance?.showMessageInputTokens &&
+    typeof messageUsage?.promptTokens === "number";
+  const showInfoOutput =
+    infoEligible &&
+    !!chatAppearance?.showMessageOutputTokens &&
+    typeof messageUsage?.completionTokens === "number";
+  const showInfoTotal =
+    infoEligible &&
+    !!chatAppearance?.showMessageTotalTokens &&
+    typeof messageUsage?.totalTokens === "number";
+  const showInfoTtft =
+    infoEligible &&
+    !!chatAppearance?.showMessageTtft &&
+    typeof messageUsage?.firstTokenMs === "number";
+  const showInfoTps =
+    infoEligible &&
+    !!chatAppearance?.showMessageTokensPerSecond &&
+    typeof messageUsage?.tokensPerSecond === "number";
+  const hasMessageInfo =
+    showInfoModel ||
+    showInfoInput ||
+    showInfoOutput ||
+    showInfoTotal ||
+    showInfoTtft ||
+    showInfoTps;
+  const messageInfoSize = chatAppearance?.messageInfoSize ?? "small";
+  const messageInfoNode = hasMessageInfo ? (
+    <div
+      className={cn(
+        "flex items-center gap-x-2 tabular-nums text-fg/45",
+        MESSAGE_INFO_SIZE_MAP[messageInfoSize],
+      )}
+    >
+      {showInfoInput && (
+        <span title={t("chats.actions.promptTokens")}>↓&#8202;{messageUsage?.promptTokens}</span>
+      )}
+      {showInfoOutput && (
+        <span title={t("chats.actions.completionTokens")}>↑&#8202;{messageUsage?.completionTokens}</span>
+      )}
+      {showInfoModel && <span className="min-w-0 truncate text-fg/55">{modelName}</span>}
+      {showInfoTtft && (
+        <span className="whitespace-nowrap" title={t("chats.actions.timeToFirstToken")}>
+          TTFT {messageUsage?.firstTokenMs}ms
+        </span>
+      )}
+      {showInfoTps && (
+        <span className="whitespace-nowrap" title={t("chats.actions.completionTokenSpeed")}>
+          {messageUsage?.tokensPerSecond?.toFixed(1)} tok/s
+        </span>
+      )}
+      {showInfoTotal && (
+        <span className="whitespace-nowrap">
+          {(messageUsage?.totalTokens ?? 0).toLocaleString()}
+          <span className="ml-1 opacity-50">{t("chats.actions.total")}</span>
+        </span>
+      )}
+    </div>
+  ) : null;
+  const messageInfoPlacement = chatAppearance?.messageInfoPlacement ?? "belowBubble";
+  const infoBelowHeader = messageInfoPlacement === "belowHeader" ? messageInfoNode : null;
+  const infoBelowHeaderOutside =
+    messageInfoPlacement === "belowHeaderOutside" ? messageInfoNode : null;
+  const infoInsideBubble = messageInfoPlacement === "insideBubble" ? messageInfoNode : null;
+  const infoBelowBubble = messageInfoPlacement === "belowBubble" ? messageInfoNode : null;
+  const bubbleMaxWidthClass = chatAppearance
+    ? BUBBLE_MAX_WIDTH_MAP[chatAppearance.bubbleMaxWidth]
+    : "max-w-[82%]";
+  const bubbleColumnWrapped = headerAbove || !!infoBelowHeaderOutside || !!infoBelowBubble;
   const voiceConfig = character?.voiceConfig;
   const hasVoiceAssignment =
     voiceConfig?.source === "user"
@@ -483,7 +820,7 @@ function ChatMessageInner({
   const bubbleStyle =
     chatAppearance?.bubbleStyle === "minimal"
       ? undefined
-      : message.role === "user"
+      : message.role === "user" || computed.isVisibleSystem
         ? {
             backgroundColor: theme.userBgColor,
             borderColor: theme.userBorderColor,
@@ -507,7 +844,7 @@ function ChatMessageInner({
       }
       className={cn(
         "relative flex gap-2",
-        message.role === "user" ? "justify-end" : "justify-start",
+        message.role === "user" || computed.isVisibleSystem ? "justify-end" : "justify-start",
       )}
     >
       {/* Avatar for assistant/scene messages (left side) */}
@@ -560,19 +897,26 @@ function ChatMessageInner({
           </div>
         )}
 
+      <BubbleHeaderWrap
+        above={headerAbove}
+        rightAligned={headerRightAligned}
+        header={messageHeaderNode}
+        aboveBubble={infoBelowHeaderOutside}
+        footer={infoBelowBubble}
+        maxWidthClass={bubbleMaxWidthClass}
+      >
       <motion.div
         {...(computed.isLatestAssistant ? { "data-tour-id": "chat-message-bubble" } : {})}
         initial={computed.shouldAnimate ? { opacity: 0, y: 4 } : false}
         animate={computed.shouldAnimate ? { opacity: 1, y: 0 } : { opacity: 1, y: 0 }}
         transition={animTransition}
         className={cn(
-          chatAppearance ? BUBBLE_MAX_WIDTH_MAP[chatAppearance.bubbleMaxWidth] : "max-w-[82%]",
+          bubbleColumnWrapped ? "max-w-full" : bubbleMaxWidthClass,
           chatAppearance ? BUBBLE_PADDING_MAP[chatAppearance.bubblePadding] : "px-4 py-2.5",
           chatAppearance ? LINE_SPACING_MAP[chatAppearance.lineSpacing] : "leading-relaxed",
           chatAppearance ? BUBBLE_RADIUS_MAP[chatAppearance.bubbleRadius] : radius.lg,
           chatAppearance ? FONT_SIZE_MAP[chatAppearance.fontSize] : typography.body.size,
-          chatAppearance ? BUBBLE_BLUR_MAP[chatAppearance.bubbleBlur] : "",
-          message.role === "user"
+          message.role === "user" || computed.isVisibleSystem
             ? cn(
                 "ml-auto",
                 chatAppearance?.bubbleStyle === "minimal"
@@ -609,6 +953,10 @@ function ChatMessageInner({
             <Pin size={12} className="text-blue-300" />
           </motion.div>
         )}
+
+        {messageHeaderPlacement === "inside" && messageHeaderNode}
+
+        {infoBelowHeader && <div className="mb-1.5">{infoBelowHeader}</div>}
 
         {/* Thinking/Reasoning section - shown even during typing indicator */}
         {computed.isAssistant && reasoning && (
@@ -726,6 +1074,23 @@ function ChatMessageInner({
           </motion.div>
         )}
 
+        {scenePromptStreaming && (
+          <motion.div
+            className={cn(
+              "mt-2.5 flex items-center gap-1.5 pr-2",
+              typography.caption.size,
+              typography.caption.weight,
+              "uppercase tracking-wider text-emerald-300",
+            )}
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2 }}
+          >
+            <span className="h-3 w-3 animate-spin rounded-full border-2 border-emerald-300/30 border-t-emerald-300" />
+            {t("chats.message.generatingImagePrompt")}
+          </motion.div>
+        )}
+
         {mockVariantMode && computed.totalVariants <= 1 && (
           <motion.div
             data-tour-id="chat-variants"
@@ -744,11 +1109,14 @@ function ChatMessageInner({
             </span>
           </motion.div>
         )}
+        {infoInsideBubble && <div className="mt-2">{infoInsideBubble}</div>}
       </motion.div>
+      </BubbleHeaderWrap>
 
-      {message.role === "user" && chatAppearance?.avatarShape !== "hidden" && (
+      {(message.role === "user" || computed.isVisibleSystem) &&
+        chatAppearance?.avatarShape !== "hidden" && (
         <MessageAvatar
-          role={message.role}
+          role={computed.isVisibleSystem ? "system" : message.role}
           character={character}
           persona={persona}
           avatarShape={chatAppearance?.avatarShape}
@@ -761,6 +1129,7 @@ function ChatMessageInner({
           disabled={regeneratingMessageId === message.id || sending}
           isRegenerating={regeneratingMessageId === message.id}
           onRegenerate={() => void handleRegenerate(message)}
+          onGuidedRegenerate={(guidance) => void handleRegenerate(message, { guidance })}
         />
       )}
     </motion.div>
@@ -796,6 +1165,7 @@ export const ChatMessage = React.memo(ChatMessageInner, (prev, next) => {
   return (
     a.id === b.id &&
     a.role === b.role &&
+    a.visibleInChat === b.visibleInChat &&
     a.content === b.content &&
     a.selectedVariantId === b.selectedVariantId &&
     (a.variants?.length ?? 0) === (b.variants?.length ?? 0) &&
@@ -833,6 +1203,8 @@ export const ChatMessage = React.memo(ChatMessageInner, (prev, next) => {
     prev.persona?.avatarCrop?.y === next.persona?.avatarCrop?.y &&
     prev.persona?.avatarCrop?.scale === next.persona?.avatarCrop?.scale &&
     prev.displayContent === next.displayContent &&
+    prev.modelName === next.modelName &&
+    prev.scenePromptStreaming === next.scenePromptStreaming &&
     prev.swapPlaces === next.swapPlaces &&
     prev.audioStatus === next.audioStatus &&
     a.reasoning === b.reasoning &&

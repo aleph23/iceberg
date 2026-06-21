@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { ComponentType } from "react";
 import { useParams } from "react-router-dom";
+import { useGroupChatLayoutContext } from "./GroupChatLayout";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft,
@@ -73,7 +74,7 @@ function MemoryActionRow({
 
 const MEMORY_PROGRESS_TOTAL = 4;
 const MEMORY_STEP_LABELS: Record<number, string> = {
-  1: "Summarizing conversation",
+  1: "Summarizing conversation", // Will be migrated in next phase
   2: "Analyzing memories",
   3: "Applying changes",
   4: "Organizing memories",
@@ -83,6 +84,7 @@ export function GroupChatMemoriesPage() {
   const { backOrReplace } = useNavigationManager();
   const { t } = useI18n();
   const { groupSessionId } = useParams();
+  const { backgroundImageData } = useGroupChatLayoutContext();
 
   const {
     session,
@@ -126,7 +128,7 @@ export function GroupChatMemoriesPage() {
   const tabs = [
     { id: "memories" as const, icon: Bot, label: t("common.nav.dynamicMemory") },
     { id: "pinned" as const, icon: Pin, label: t("groupChats.memories.tabPinned") },
-    { id: "tools" as const, icon: Clock, label: "Activity" },
+    { id: "tools" as const, icon: Clock, label: t("groupChats.memoriesPageExtra.activityTabLabel") },
   ];
 
   if (loading) {
@@ -145,7 +147,7 @@ export function GroupChatMemoriesPage() {
           colors.surface.base,
         )}
       >
-        <p className={cn("text-sm", colors.text.secondary)}>{error || "Session not found"}</p>
+        <p className={cn("text-sm", colors.text.secondary)}>{error || t("groupChats.memoriesPageExtra.sessionNotFound")}</p>
         <button
           onClick={() => backOrReplace(Routes.groupChats)}
           className={cn(
@@ -161,7 +163,20 @@ export function GroupChatMemoriesPage() {
   }
 
   return (
-    <div className={cn("flex h-full flex-col", colors.surface.base, colors.text.primary)}>
+    <div
+      className={cn(
+        "relative flex h-full flex-col",
+        !backgroundImageData && colors.surface.base,
+        colors.text.primary,
+      )}
+    >
+      {backgroundImageData && (
+        <div
+          className="pointer-events-none absolute inset-0 z-0 bg-surface/70 backdrop-blur-xl"
+          aria-hidden
+        />
+      )}
+      <div className="relative z-10 flex h-full flex-col">
       {/* Header */}
       <header
         className={cn(
@@ -270,8 +285,8 @@ export function GroupChatMemoriesPage() {
                           <span className={cn(typography.body.size, "font-semibold text-info")}>
                             {label ??
                               (ui.retryStatus === "retrying"
-                                ? "Retrying Memory Cycle..."
-                                : "Processing memories...")}
+                                ? t("groupChats.memoriesPageExtra.retryingMemoryCycle")
+                                : t("groupChats.memoriesPageExtra.processingMemories"))}
                           </span>
                         </div>
                         {step && (
@@ -305,7 +320,7 @@ export function GroupChatMemoriesPage() {
               >
                 <Check className="h-5 w-5 text-accent shrink-0" />
                 <div className={cn("flex-1", typography.body.size, "text-accent/80")}>
-                  <p className="font-semibold">Memory cycle processed successfully!</p>
+                  <p className="font-semibold">{t("groupChats.memoriesPageExtra.memoryCycleSuccess")}</p>
                 </div>
                 <button
                   onClick={() => dispatch({ type: "SET_RETRY_STATUS", value: "idle" })}
@@ -323,7 +338,7 @@ export function GroupChatMemoriesPage() {
               >
                 <AlertTriangle className="h-5 w-5 text-danger shrink-0" />
                 <div className={cn("flex-1", typography.body.size, "text-danger")}>
-                  <p className="font-semibold mb-1">Memory System Error</p>
+                  <p className="font-semibold mb-1">{t("groupChats.memoriesPageExtra.memorySystemError")}</p>
                   <p className="opacity-90">{ui.actionError || session.memoryError}</p>
                 </div>
                 <button
@@ -359,11 +374,11 @@ export function GroupChatMemoriesPage() {
                 <div className="flex items-center gap-2 mb-1.5">
                   <Sparkles size={13} className="text-accent/70 shrink-0" />
                   <span className="text-[11px] font-semibold text-accent/60 uppercase tracking-wider">
-                    Context Summary
+                    {t("groupChats.memoriesPageExtra.contextSummaryTitle")}
                   </span>
                   {session?.memorySummaryTokenCount && session.memorySummaryTokenCount > 0 ? (
                     <span className="text-[10px] text-fg/30 ml-auto">
-                      {session.memorySummaryTokenCount.toLocaleString()} tokens
+                      {session.memorySummaryTokenCount.toLocaleString()} {t("groupChats.memoriesPage.tokens")}
                     </span>
                   ) : null}
                 </div>
@@ -374,7 +389,7 @@ export function GroupChatMemoriesPage() {
                     ui.summaryDraft ? "text-accent/70" : "text-accent/25 italic",
                   )}
                 >
-                  {ui.summaryDraft || "Tap to add a context summary..."}
+                  {ui.summaryDraft || t("groupChats.memoriesPage.contextSummaryPrompt")}
                 </p>
               </button>
 
@@ -383,11 +398,12 @@ export function GroupChatMemoriesPage() {
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-[12px] font-semibold uppercase tracking-wider text-fg/50">
                     {ui.searchTerm.trim()
-                      ? `Results (${filteredMemories.length})`
-                      : "Saved Memories"}
+                      ? t("groupChats.memoriesPage.resultsCount", { count: filteredMemories.length })
+                      : t("groupChats.memoriesPage.savedMemories")}
                   </span>
                   <span className="text-[10px] text-fg/30 ml-auto">
-                    {stats.ai} AI · {stats.user} You
+                    {stats.ai} {t("groupChats.memoriesPage.statAi")} · {stats.user}{" "}
+                    {t("groupChats.memoriesPage.statYou")}
                   </span>
                 </div>
 
@@ -404,7 +420,7 @@ export function GroupChatMemoriesPage() {
                       type="text"
                       value={ui.searchTerm}
                       onChange={(e) => dispatch({ type: "SET_SEARCH", value: e.target.value })}
-                      placeholder="Search memories..."
+                      placeholder={t("groupChats.memoriesPage.searchMemoriesPlaceholder")}
                       className={cn(
                         "w-full pl-10 pr-10 py-2.5",
                         components.input.base,
@@ -422,7 +438,7 @@ export function GroupChatMemoriesPage() {
                           "hover:text-fg",
                           interactive.transition.fast,
                         )}
-                        aria-label="Clear search"
+                        aria-label={t("groupChats.memoriesPage.clearSearch")}
                       >
                         <X size={16} />
                       </button>
@@ -438,7 +454,7 @@ export function GroupChatMemoriesPage() {
                       "hover:bg-fg/8 hover:text-fg/70",
                       "transition-all active:scale-95",
                     )}
-                    aria-label="Add memory"
+                    aria-label={t("groupChats.memoriesPage.addMemory")}
                   >
                     <Plus size={18} />
                   </button>
@@ -460,12 +476,14 @@ export function GroupChatMemoriesPage() {
                       )}
                     </div>
                     <h3 className="mb-1 text-base font-semibold text-fg">
-                      {ui.searchTerm ? "No matching memories" : "No memories yet"}
+                      {ui.searchTerm
+                        ? t("groupChats.memoriesPage.noMatchingMemories")
+                        : t("groupChats.memoriesPage.noMemoriesYet")}
                     </h3>
                     <p className="text-center text-sm text-fg/40 max-w-60">
                       {ui.searchTerm
-                        ? "Try a different search term"
-                        : "Tap the Add button above to create one"}
+                        ? t("groupChats.memoriesPage.tryDifferentSearch")
+                        : t("groupChats.memoriesPage.tapAddToCreate")}
                     </p>
                   </motion.div>
                 ) : (
@@ -545,7 +563,7 @@ export function GroupChatMemoriesPage() {
                                     "transition-all hover:bg-fg/5 hover:text-fg/60",
                                     "active:scale-95",
                                   )}
-                                  aria-label="Memory actions"
+                                  aria-label={t("groupChats.memoriesPage.memoryActions")}
                                 >
                                   <EllipsisVertical size={16} />
                                 </button>
@@ -575,12 +593,12 @@ export function GroupChatMemoriesPage() {
                                       )}
                                     >
                                       {item.tokenCount > 0 && (
-                                        <span>{item.tokenCount.toLocaleString()} tokens</span>
+                                        <span>{item.tokenCount.toLocaleString()} {t("groupChats.memoriesPage.tokens")}</span>
                                       )}
-                                      {item.cycle && <span>Cycle {item.cycle}</span>}
+                                      {item.cycle && <span>{t("groupChats.memoriesPage.cycle")} {item.cycle}</span>}
                                       {item.lastAccessedAt > 0 && (
                                         <span>
-                                          Accessed{" "}
+                                          {t("groupChats.memoriesPage.accessed")}{" "}
                                           {new Date(item.lastAccessedAt).toLocaleDateString()}
                                         </span>
                                       )}
@@ -588,8 +606,8 @@ export function GroupChatMemoriesPage() {
                                         className={item.isCold ? "text-info/50" : "text-warning/50"}
                                       >
                                         {item.isCold
-                                          ? "Cold"
-                                          : `Hot ${item.importanceScore.toFixed(1)}`}
+                                          ? t("groupChats.memoriesPage.cold")
+                                          : `${t("groupChats.memoriesPage.hot")} ${item.importanceScore.toFixed(1)}`}
                                       </span>
                                     </div>
                                   </motion.div>
@@ -677,7 +695,7 @@ export function GroupChatMemoriesPage() {
                             } catch (err: any) {
                               dispatch({
                                 type: "SET_ACTION_ERROR",
-                                value: err?.message || "Failed to unpin message",
+                                value: err?.message || t("groupChats.memoriesPage.failedToUnpinMessage"),
                               });
                             }
                           }}
@@ -740,12 +758,13 @@ export function GroupChatMemoriesPage() {
           )}
         </AnimatePresence>
       </main>
+      </div>
 
       {/* Summary Editor BottomMenu */}
       <BottomMenu
         isOpen={showSummaryEditor}
         onClose={() => setShowSummaryEditor(false)}
-        title="Context Summary"
+        title={t("groupChats.memoriesPage.contextSummaryTitle")}
       >
         <div className="space-y-4 text-fg">
           <textarea
@@ -760,7 +779,7 @@ export function GroupChatMemoriesPage() {
               "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-fg/10",
               "placeholder:text-fg/30",
             )}
-            placeholder="Short recap used to keep context consistent across messages..."
+            placeholder={t("groupChats.memoriesPage.contextSummaryPlaceholder")}
             autoFocus
           />
           {session?.memorySummaryTokenCount && session.memorySummaryTokenCount > 0 ? (
@@ -786,7 +805,7 @@ export function GroupChatMemoriesPage() {
                 "active:scale-[0.98]",
               )}
             >
-              Cancel
+              {t("groupChats.memoriesPage.cancel")}
             </button>
             <button
               onClick={async () => {
@@ -804,7 +823,7 @@ export function GroupChatMemoriesPage() {
                 "disabled:opacity-40 disabled:pointer-events-none",
               )}
             >
-              {ui.isSavingSummary ? "Saving..." : "Save"}
+              {ui.isSavingSummary ? t("groupChats.memoriesPage.saving") : t("groupChats.memoriesPage.save")}
             </button>
           </div>
         </div>
@@ -814,7 +833,7 @@ export function GroupChatMemoriesPage() {
       <BottomMenu
         isOpen={showAddMemoryMenu}
         onClose={() => setShowAddMemoryMenu(false)}
-        title="Add Memory"
+        title={t("groupChats.memoriesPage.addMemoryTitle")}
       >
         <div className="space-y-4 text-fg">
           <textarea
@@ -836,7 +855,7 @@ export function GroupChatMemoriesPage() {
               "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-fg/10",
               "placeholder:text-fg/30",
             )}
-            placeholder="What should be remembered?"
+            placeholder={t("groupChats.memoriesPage.memoryPlaceholder")}
             autoFocus
           />
           <button
@@ -860,7 +879,7 @@ export function GroupChatMemoriesPage() {
             ) : (
               <>
                 <Plus size={14} />
-                Save Memory
+                {t("groupChats.memoriesPage.saveMemory")}
               </>
             )}
           </button>
@@ -873,11 +892,13 @@ export function GroupChatMemoriesPage() {
         onClose={() => dispatch({ type: "CLOSE_MEMORY_ACTIONS" })}
         title={
           ui.memoryActionMode === "edit"
-            ? "Edit Memory"
+            ? t("groupChats.memoriesPage.editMemoryTitle")
             : (() => {
                 const mem = memoryItems.find((m) => m.id === ui.selectedMemoryId);
                 const preview = mem?.text ?? "";
-                return preview.length > 60 ? preview.slice(0, 60) + "..." : preview || "Memory";
+                return preview.length > 60
+                  ? preview.slice(0, 60) + "..."
+                  : preview || t("groupChats.memoriesPage.memoryTitle");
               })()
         }
       >
@@ -907,7 +928,7 @@ export function GroupChatMemoriesPage() {
                     "focus:border-fg/20 focus:outline-none focus:ring-1 focus:ring-fg/10",
                     "placeholder:text-fg/30",
                   )}
-                  placeholder="Enter memory content..."
+                  placeholder={t("groupChats.memoriesPage.editMemoryPlaceholder")}
                   autoFocus
                 />
                 <div className="flex gap-2">
@@ -923,7 +944,7 @@ export function GroupChatMemoriesPage() {
                       "active:scale-[0.98]",
                     )}
                   >
-                    Cancel
+                    {t("groupChats.memoriesPage.cancel")}
                   </button>
                   <button
                     type="button"
@@ -938,7 +959,7 @@ export function GroupChatMemoriesPage() {
                     )}
                   >
                     <Check size={14} />
-                    Save
+                    {t("groupChats.memoriesPage.save")}
                   </button>
                 </div>
               </div>
@@ -949,7 +970,7 @@ export function GroupChatMemoriesPage() {
             <div className="space-y-1 text-fg">
               <MemoryActionRow
                 icon={Edit2}
-                label="Edit"
+                label={t("groupChats.memoriesPage.edit")}
                 iconBg="bg-info/20"
                 onClick={() => {
                   startEdit(selectedItem.index, selectedItem.text);
@@ -958,7 +979,7 @@ export function GroupChatMemoriesPage() {
               />
               <MemoryActionRow
                 icon={selectedItem.isPinned ? PinOff : Pin}
-                label={selectedItem.isPinned ? "Unpin" : "Pin"}
+                label={selectedItem.isPinned ? t("groupChats.memoriesPage.unpin") : t("groupChats.memoriesPage.pin")}
                 iconBg="bg-warning/20"
                 onClick={async () => {
                   try {
@@ -967,7 +988,7 @@ export function GroupChatMemoriesPage() {
                   } catch (err: any) {
                     dispatch({
                       type: "SET_ACTION_ERROR",
-                      value: err?.message || "Failed to toggle pin",
+                      value: err?.message || t("groupChats.memoriesPage.failedToToggleMemPin"),
                     });
                   }
                   dispatch({ type: "CLOSE_MEMORY_ACTIONS" });
@@ -975,7 +996,7 @@ export function GroupChatMemoriesPage() {
               />
               <MemoryActionRow
                 icon={selectedItem.isCold ? Flame : Snowflake}
-                label={selectedItem.isCold ? "Set Hot" : "Set Cold"}
+                label={selectedItem.isCold ? t("groupChats.memoriesPage.setHot") : t("groupChats.memoriesPage.setCold")}
                 iconBg={selectedItem.isCold ? "bg-warning/20" : "bg-info/20"}
                 disabled={ui.memoryTempBusy === selectedItem.index}
                 onClick={async () => {
@@ -988,7 +1009,7 @@ export function GroupChatMemoriesPage() {
 
               <MemoryActionRow
                 icon={Trash2}
-                label="Delete"
+                label={t("groupChats.memoriesPage.delete")}
                 variant="danger"
                 onClick={async () => {
                   try {
@@ -998,7 +1019,7 @@ export function GroupChatMemoriesPage() {
                   } catch (err: any) {
                     dispatch({
                       type: "SET_ACTION_ERROR",
-                      value: err?.message || "Failed to remove memory",
+                      value: err?.message || t("groupChats.memoriesPage.failedToRemoveMemory"),
                     });
                   }
                   dispatch({ type: "CLOSE_MEMORY_ACTIONS" });

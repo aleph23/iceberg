@@ -79,13 +79,17 @@ pub async fn verify_provider_api_key(
         }
     };
 
-    let client = Client::builder()
-        .timeout(Duration::from_secs(10))
+    let mut builder = Client::builder().timeout(Duration::from_secs(10));
+    let verify_url = build_verify_url(&pid, &base);
+    if crate::tls::allow_invalid_tls_for_request(&app, Some(provider_id.as_str()), &verify_url) {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+    let client = crate::tls::apply_trusted_certificates(&app, builder)
         .build()
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     let headers = build_headers(&pid, &resolved_key)?;
-    let url = build_verify_url(&pid, &base);
+    let url = verify_url;
 
     let response = match client.get(&url).headers(headers).send().await {
         Ok(resp) => resp,

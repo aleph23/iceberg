@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { Check, ChevronDown, Image, LucideIcon, PenLine, Sparkles } from "lucide-react";
+import { ArrowRight, Check, ChevronDown, Image, LucideIcon, PenLine, Sparkles } from "lucide-react";
 
 import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import {
@@ -221,7 +222,7 @@ function SelectorCard({
           />
         ) : (
           <div className="rounded-[10px] border border-dashed border-fg/12 bg-surface/30 px-3.5 py-3 text-sm text-fg/45">
-            Model selection stays saved, but this flow will not run until you turn it back on.
+            {t("imageGeneration.cardDisabledHint")}
           </div>
         )}
       </div>
@@ -231,6 +232,7 @@ function SelectorCard({
 
 export function ImageGenerationPage() {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const [state, setState] = useState<ImageGenerationState>({
     loading: true,
     error: null,
@@ -275,7 +277,7 @@ export function ImageGenerationPage() {
         setState((prev) => ({
           ...prev,
           loading: false,
-          error: err instanceof Error ? err.message : "Failed to load settings",
+          error: err instanceof Error ? err.message : t("imageGeneration.errors.loadFailed"),
         }));
       }
     };
@@ -319,7 +321,7 @@ export function ImageGenerationPage() {
       console.error("Failed to save image generation settings:", err);
       setState((prev) => ({
         ...prev,
-        error: err instanceof Error ? err.message : "Failed to save image generation settings",
+        error: err instanceof Error ? err.message : t("imageGeneration.errors.saveFailed"),
       }));
     }
   };
@@ -365,7 +367,7 @@ export function ImageGenerationPage() {
       console.error("Failed to save image generation settings:", err);
       setState((prev) => ({
         ...prev,
-        error: err instanceof Error ? err.message : "Failed to save image generation settings",
+        error: err instanceof Error ? err.message : t("imageGeneration.errors.saveFailed"),
       }));
     }
   };
@@ -392,7 +394,7 @@ export function ImageGenerationPage() {
       console.error("Failed to save scene generation mode:", err);
       setState((prev) => ({
         ...prev,
-        error: err instanceof Error ? err.message : "Failed to save scene generation mode",
+        error: err instanceof Error ? err.message : t("imageGeneration.errors.saveSceneModeFailed"),
       }));
     }
   };
@@ -422,10 +424,25 @@ export function ImageGenerationPage() {
           <Image className="h-8 w-8 text-fg/40" />
         </div>
         <h2 className="mb-2 text-lg font-semibold text-fg">{t("imageGeneration.empty.title")}</h2>
-        <p className="text-center text-sm text-fg/50">{t("imageGeneration.empty.description")}</p>
+        <p className="max-w-sm text-center text-sm text-fg/50">
+          {t("imageGeneration.empty.description")}
+        </p>
+        <button
+          type="button"
+          onClick={() => navigate("/settings/models")}
+          className={cn(
+            "mt-6 flex items-center gap-2 rounded-xl border border-accent/40 bg-accent/15 px-4 py-2.5 text-sm font-medium text-accent",
+            "transition-colors hover:bg-accent/25 active:scale-[0.98]",
+          )}
+        >
+          {t("imageGeneration.empty.goToModels")}
+          <ArrowRight size={16} strokeWidth={2.5} />
+        </button>
       </div>
     );
   }
+
+  const hasGenerationModels = state.models.length > 0 || state.writerModels.length > 0;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -442,12 +459,13 @@ export function ImageGenerationPage() {
           )}
 
           <div className="space-y-7">
+            {hasGenerationModels ? (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.22, ease: "easeOut" }}
             >
-              <SettingsSection title="Generation" icon={<Sparkles size={12} />}>
+              <SettingsSection title={t("imageGeneration.sections.generationTitle")} icon={<Sparkles size={12} />}>
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                   <SelectorCard
                     title={t("imageGeneration.sections.avatar.title")}
@@ -475,13 +493,15 @@ export function ImageGenerationPage() {
                 </div>
               </SettingsSection>
             </motion.div>
+            ) : null}
 
+            {hasGenerationModels ? (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.22, delay: 0.06, ease: "easeOut" }}
             >
-              <SettingsSection title="Prompting" icon={<PenLine size={12} />}>
+              <SettingsSection title={t("imageGeneration.sections.promptingTitle")} icon={<PenLine size={12} />}>
                 <div className="space-y-4">
                   <SelectorCard
                     title={t("imageGeneration.sections.writer.title")}
@@ -539,6 +559,7 @@ export function ImageGenerationPage() {
                 </div>
               </SettingsSection>
             </motion.div>
+            ) : null}
           </div>
         </div>
       </main>

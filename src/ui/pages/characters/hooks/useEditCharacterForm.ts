@@ -4,14 +4,22 @@ import { listCharacters, saveCharacter, readSettings } from "../../../../core/st
 import type {
   AvatarCrop,
   ChatTemplate,
+  CharacterCardType,
+  CharacterMode,
   CharacterVoiceConfig,
+  CompanionConfig,
   Model,
   Scene,
   SystemPromptTemplate,
 } from "../../../../core/storage/schemas";
 import { processBackgroundImage } from "../../../../core/utils/image";
-import { convertToImageRef, deleteImageRef } from "../../../../core/storage/images";
-import { saveAvatar, loadAvatar } from "../../../../core/storage/avatars";
+import { convertToImageRef, convertToImageUrl, deleteImageRef } from "../../../../core/storage/images";
+import {
+  AVATAR_BANNER_FILENAME,
+  saveAvatar,
+  loadAvatar,
+  recalculateGradient,
+} from "../../../../core/storage/avatars";
 import { listPromptTemplates } from "../../../../core/prompts/service";
 import { invalidateAvatarCache } from "../../../hooks/useAvatar";
 import {
@@ -22,6 +30,10 @@ import {
 } from "../../../../core/storage/characterTransfer";
 import { APP_DEFAULT_TEMPLATE_ID } from "../../../../core/prompts/constants";
 import { isRenderableImageUrl } from "../../../../core/utils/image";
+import {
+  createDefaultCompanionConfig,
+  withCompanionPromptTemplate,
+} from "../utils/companionDefaults";
 
 type EditCharacterState = {
   loading: boolean;
@@ -41,8 +53,13 @@ type EditCharacterState = {
   avatarPath: string;
   avatarCrop: AvatarCrop | null;
   avatarRoundPath: string | null;
+  avatarBannerPath: string | null;
+  bannerCrop: AvatarCrop | null;
+  cardType: CharacterCardType;
   designDescription: string;
   designReferenceImageIds: string[];
+  loraName: string | null;
+  loraStrength: number | null;
   backgroundImagePath: string;
   scenes: Scene[];
   chatTemplates: ChatTemplate[];
@@ -50,15 +67,21 @@ type EditCharacterState = {
   defaultChatTemplateId: string | null;
   newSceneContent: string;
   newSceneDirection: string;
+  newSceneBackgroundImagePath: string;
   selectedModelId: string | null;
   selectedFallbackModelId: string | null;
   systemPromptTemplateId: string | null;
+  companionPromptTemplateId: string | null;
   groupChatPromptTemplateId: string | null;
   groupChatRoleplayPromptTemplateId: string | null;
+  activeLorebookIds: string[];
   voiceConfig: CharacterVoiceConfig | null;
   voiceAutoplay: boolean;
+  mode: CharacterMode;
+  companion: CompanionConfig | null;
 
   disableAvatarGradient: boolean;
+  avatarGradientSource: "base" | "round";
   customGradientEnabled: boolean;
   customGradientColors: string[];
   customTextColor: string;
@@ -72,6 +95,7 @@ type EditCharacterState = {
   editingSceneId: string | null;
   editingSceneContent: string;
   editingSceneDirection: string;
+  editingSceneBackgroundImagePath: string;
 };
 
 type EditCharacterAction =
@@ -99,8 +123,13 @@ const initialState: EditCharacterState = {
   avatarPath: "",
   avatarCrop: null,
   avatarRoundPath: null,
+  avatarBannerPath: null,
+  bannerCrop: null,
+  cardType: "circle",
   designDescription: "",
   designReferenceImageIds: [],
+  loraName: null,
+  loraStrength: null,
   backgroundImagePath: "",
   scenes: [],
   chatTemplates: [],
@@ -108,15 +137,21 @@ const initialState: EditCharacterState = {
   defaultChatTemplateId: null,
   newSceneContent: "",
   newSceneDirection: "",
+  newSceneBackgroundImagePath: "",
   selectedModelId: null,
   selectedFallbackModelId: null,
   systemPromptTemplateId: null,
+  companionPromptTemplateId: null,
   groupChatPromptTemplateId: null,
   groupChatRoleplayPromptTemplateId: null,
+  activeLorebookIds: [],
   voiceConfig: null,
   voiceAutoplay: false,
+  mode: "roleplay",
+  companion: null,
 
   disableAvatarGradient: false,
+  avatarGradientSource: "base",
   customGradientEnabled: false,
   customGradientColors: [],
   customTextColor: "",
@@ -130,6 +165,7 @@ const initialState: EditCharacterState = {
   editingSceneId: null,
   editingSceneContent: "",
   editingSceneDirection: "",
+  editingSceneBackgroundImagePath: "",
 };
 
 function reducer(state: EditCharacterState, action: EditCharacterAction): EditCharacterState {
@@ -169,8 +205,13 @@ export function useEditCharacterForm(characterId: string | undefined) {
     avatarPath: string;
     avatarCrop: string;
     avatarRoundPath: string;
+    avatarBannerPath: string;
+    bannerCrop: string;
+    cardType: CharacterCardType;
     designDescription: string;
     designReferenceImageIds: string;
+    loraName: string | null;
+    loraStrength: number | null;
     backgroundImagePath: string;
     scenes: string;
     chatTemplates: string;
@@ -179,20 +220,26 @@ export function useEditCharacterForm(characterId: string | undefined) {
     selectedModelId: string | null;
     selectedFallbackModelId: string | null;
     systemPromptTemplateId: string | null;
+    companionPromptTemplateId: string | null;
     groupChatPromptTemplateId: string | null;
     groupChatRoleplayPromptTemplateId: string | null;
+    activeLorebookIds: string;
     disableAvatarGradient: boolean;
+    avatarGradientSource: "base" | "round";
     customGradientEnabled: boolean;
     customGradientColors: string;
     memoryType: string;
     voiceConfig: string;
     voiceAutoplay: boolean;
+    mode: CharacterMode;
+    companion: string;
   } | null>(null);
   const persistedMediaRef = useRef<{
     avatarFilename?: string;
     avatarUrl?: string;
     backgroundImageId?: string;
     backgroundImageUrl?: string;
+    avatarBannerUrl?: string;
   }>({});
 
   const setError = useCallback(
@@ -243,6 +290,7 @@ export function useEditCharacterForm(characterId: string | undefined) {
 
       let loadedAvatarPath = "";
       let loadedAvatarRoundPath: string | null = null;
+      let loadedAvatarBannerPath: string | null = null;
       let backgroundImage = character.backgroundImagePath || "";
 
       if (character.avatarPath) {
@@ -253,12 +301,19 @@ export function useEditCharacterForm(characterId: string | undefined) {
             character.id,
             "avatar_round.webp",
           ).catch(() => undefined);
+          const avatarBannerUrl = await loadAvatar(
+            "character",
+            character.id,
+            AVATAR_BANNER_FILENAME,
+          ).catch(() => undefined);
           loadedAvatarPath = avatarUrl || "";
           loadedAvatarRoundPath = avatarRoundUrl || null;
+          loadedAvatarBannerPath = avatarBannerUrl || null;
         } catch (err) {
           console.warn("Failed to load avatar:", err);
           loadedAvatarPath = "";
           loadedAvatarRoundPath = null;
+          loadedAvatarBannerPath = null;
         }
       } else {
         loadedAvatarPath = "";
@@ -270,7 +325,6 @@ export function useEditCharacterForm(characterId: string | undefined) {
         backgroundImage.length === 36
       ) {
         try {
-          const { convertToImageUrl } = await import("../../../../core/storage/images");
           const assetUrl = await convertToImageUrl(backgroundImage);
           backgroundImage = assetUrl || backgroundImage;
         } catch (err) {
@@ -281,9 +335,12 @@ export function useEditCharacterForm(characterId: string | undefined) {
       persistedMediaRef.current = {
         avatarFilename: character.avatarPath ?? undefined,
         avatarUrl: loadedAvatarPath || undefined,
+        avatarBannerUrl: loadedAvatarBannerPath || undefined,
         backgroundImageId: character.backgroundImagePath ?? undefined,
         backgroundImageUrl: backgroundImage || undefined,
       };
+      const characterMode: CharacterMode = character.mode === "companion" ? "companion" : "roleplay";
+      const companion = character.companion ?? null;
 
       setFields({
         name: character.name,
@@ -301,10 +358,15 @@ export function useEditCharacterForm(characterId: string | undefined) {
         avatarPath: loadedAvatarPath,
         avatarCrop: character.avatarCrop ?? null,
         avatarRoundPath: loadedAvatarRoundPath,
+        avatarBannerPath: loadedAvatarBannerPath,
+        bannerCrop: character.bannerCrop ?? null,
+        cardType: character.cardType === "banner" ? "banner" : "circle",
         designDescription: character.designDescription || "",
         designReferenceImageIds: Array.isArray(character.designReferenceImageIds)
           ? character.designReferenceImageIds
           : [],
+        loraName: character.loraName ?? null,
+        loraStrength: character.loraStrength ?? null,
         backgroundImagePath: backgroundImage,
         scenes: character.scenes || [],
         chatTemplates: character.chatTemplates || [],
@@ -313,13 +375,18 @@ export function useEditCharacterForm(characterId: string | undefined) {
         selectedModelId: character.defaultModelId || null,
         selectedFallbackModelId: character.fallbackModelId || null,
         systemPromptTemplateId: character.promptTemplateId || null,
+        companionPromptTemplateId: companion?.prompting?.promptTemplateId ?? null,
         groupChatPromptTemplateId: character.groupChatPromptTemplateId || null,
         groupChatRoleplayPromptTemplateId:
           character.groupChatRoleplayPromptTemplateId || null,
+        activeLorebookIds: character.activeLorebookIds || [],
         voiceConfig: character.voiceConfig ?? null,
         voiceAutoplay: character.voiceAutoplay ?? false,
+        mode: characterMode,
+        companion,
 
         disableAvatarGradient: character.disableAvatarGradient || false,
+        avatarGradientSource: character.avatarGradientSource ?? "base",
         customGradientEnabled: character.customGradientEnabled || false,
         customGradientColors: character.customGradientColors || [],
         customTextColor: character.customTextColor || "",
@@ -344,8 +411,13 @@ export function useEditCharacterForm(characterId: string | undefined) {
         avatarPath: loadedAvatarPath,
         avatarCrop: JSON.stringify(character.avatarCrop ?? null),
         avatarRoundPath: JSON.stringify(loadedAvatarRoundPath ?? null),
+        avatarBannerPath: JSON.stringify(loadedAvatarBannerPath ?? null),
+        bannerCrop: JSON.stringify(character.bannerCrop ?? null),
+        cardType: character.cardType === "banner" ? "banner" : "circle",
         designDescription: character.designDescription || "",
         designReferenceImageIds: JSON.stringify(character.designReferenceImageIds || []),
+        loraName: character.loraName ?? null,
+        loraStrength: character.loraStrength ?? null,
         backgroundImagePath: backgroundImage,
         scenes: JSON.stringify(character.scenes || []),
         chatTemplates: JSON.stringify(character.chatTemplates || []),
@@ -354,15 +426,20 @@ export function useEditCharacterForm(characterId: string | undefined) {
         selectedModelId: character.defaultModelId || null,
         selectedFallbackModelId: character.fallbackModelId || null,
         systemPromptTemplateId: character.promptTemplateId || null,
+        companionPromptTemplateId: companion?.prompting?.promptTemplateId ?? null,
         groupChatPromptTemplateId: character.groupChatPromptTemplateId || null,
         groupChatRoleplayPromptTemplateId:
           character.groupChatRoleplayPromptTemplateId || null,
+        activeLorebookIds: JSON.stringify(character.activeLorebookIds || []),
         disableAvatarGradient: character.disableAvatarGradient || false,
+        avatarGradientSource: character.avatarGradientSource ?? "base",
         customGradientEnabled: character.customGradientEnabled || false,
         customGradientColors: JSON.stringify(character.customGradientColors || []),
         memoryType: character.memoryType === "dynamic" ? "dynamic" : "manual",
         voiceConfig: JSON.stringify(character.voiceConfig ?? null),
         voiceAutoplay: character.voiceAutoplay ?? false,
+        mode: characterMode,
+        companion: JSON.stringify(companion),
       };
       setError(null);
     } catch (err) {
@@ -450,25 +527,48 @@ export function useEditCharacterForm(characterId: string | undefined) {
 
       // Save avatar using new centralized system if it's a new upload (data URL)
       let avatarFilename: string | undefined = undefined;
-      if (state.avatarPath) {
-        if (state.avatarPath.startsWith("data:")) {
+      const effectiveAvatarPath = state.avatarPath || state.avatarBannerPath || "";
+      const effectiveRoundPath = state.avatarPath ? state.avatarRoundPath : null;
+      if (effectiveAvatarPath) {
+        const hasNewAvatarData = effectiveAvatarPath.startsWith("data:");
+        const hasNewRoundAvatarData = effectiveRoundPath?.startsWith("data:") ?? false;
+        const hasNewBannerAvatarData = state.avatarBannerPath?.startsWith("data:") ?? false;
+        const bannerChanged =
+          (state.avatarBannerPath || null) !== (persistedMediaRef.current.avatarBannerUrl || null);
+        const avatarChanged =
+          (state.avatarPath || null) !== (persistedMediaRef.current.avatarUrl || null);
+        if (
+          hasNewAvatarData ||
+          hasNewRoundAvatarData ||
+          hasNewBannerAvatarData ||
+          bannerChanged ||
+          avatarChanged
+        ) {
           avatarFilename = await saveAvatar(
             "character",
             characterId,
-            state.avatarPath,
-            state.avatarRoundPath,
+            effectiveAvatarPath,
+            effectiveRoundPath,
+            state.avatarBannerPath,
+            state.avatarGradientSource,
           );
           if (!avatarFilename) {
             console.error("[EditCharacter] Failed to save avatar image");
           } else {
             invalidateAvatarCache("character", characterId);
+            if (!state.disableAvatarGradient) {
+              await recalculateGradient("character", characterId, state.avatarGradientSource);
+            }
           }
         } else {
           avatarFilename =
             persistedMediaRef.current.avatarUrl &&
-            state.avatarPath === persistedMediaRef.current.avatarUrl
+            effectiveAvatarPath === persistedMediaRef.current.avatarUrl
               ? persistedMediaRef.current.avatarFilename
-              : state.avatarPath;
+              : persistedMediaRef.current.avatarBannerUrl &&
+                  effectiveAvatarPath === persistedMediaRef.current.avatarBannerUrl
+                ? persistedMediaRef.current.avatarFilename
+                : effectiveAvatarPath;
         }
       } else {
         invalidateAvatarCache("character", characterId);
@@ -495,22 +595,36 @@ export function useEditCharacterForm(characterId: string | undefined) {
           }),
         )
       ).filter((value): value is string => typeof value === "string" && value.length > 0);
+      const companionConfig =
+        state.mode === "companion"
+          ? withCompanionPromptTemplate(
+              state.companion ?? createDefaultCompanionConfig(),
+              state.companionPromptTemplateId,
+            )
+          : null;
 
       await saveCharacter({
         id: characterId,
         name: state.name.trim(),
         definition: state.definition.trim(),
         description: state.description.trim() || undefined,
+        mode: state.mode,
+        companion: companionConfig,
         nickname: state.nickname.trim() || undefined,
         designDescription: state.designDescription.trim() || undefined,
         designReferenceImageIds:
           designReferenceImageIds.length > 0 ? designReferenceImageIds : undefined,
+        loraName: state.loraName ?? undefined,
+        loraStrength: state.loraName ? (state.loraStrength ?? undefined) : undefined,
         creator: state.creator.trim() || undefined,
         creatorNotes: state.creatorNotes.trim() || undefined,
         creatorNotesMultilingual,
         tags: tags.length > 0 ? tags : undefined,
         avatarPath: avatarFilename,
         avatarCrop: avatarFilename ? (state.avatarCrop ?? undefined) : undefined,
+        bannerCrop:
+          avatarFilename && state.avatarBannerPath ? (state.bannerCrop ?? undefined) : undefined,
+        cardType: state.cardType,
         backgroundImagePath: backgroundImageId,
         scenes: state.scenes,
         chatTemplates: state.chatTemplates,
@@ -521,10 +635,12 @@ export function useEditCharacterForm(characterId: string | undefined) {
         promptTemplateId: state.systemPromptTemplateId,
         groupChatPromptTemplateId: state.groupChatPromptTemplateId,
         groupChatRoleplayPromptTemplateId: state.groupChatRoleplayPromptTemplateId,
+        activeLorebookIds: state.activeLorebookIds,
         voiceConfig: state.voiceConfig ?? undefined,
         voiceAutoplay: state.voiceAutoplay,
 
         disableAvatarGradient: state.disableAvatarGradient,
+        avatarGradientSource: state.avatarGradientSource,
         customGradientEnabled: state.customGradientEnabled,
         customGradientColors:
           state.customGradientColors.length > 0 ? state.customGradientColors : undefined,
@@ -542,11 +658,13 @@ export function useEditCharacterForm(characterId: string | undefined) {
         nickname: state.nickname.trim(),
         designDescription: state.designDescription.trim(),
         designReferenceImageIds,
+        companion: companionConfig,
         creator: state.creator.trim(),
         creatorNotes: state.creatorNotes.trim(),
         creatorNotesMultilingualText: state.creatorNotesMultilingualText.trim(),
         sourceText: state.sourceText.trim(),
         tagsText: state.tagsText.trim(),
+        activeLorebookIds: state.activeLorebookIds,
       });
 
       // Update initial state ref to match current state (for change detection)
@@ -564,8 +682,13 @@ export function useEditCharacterForm(characterId: string | undefined) {
         avatarPath: state.avatarPath,
         avatarCrop: JSON.stringify(state.avatarCrop ?? null),
         avatarRoundPath: JSON.stringify(state.avatarRoundPath ?? null),
+        avatarBannerPath: JSON.stringify(state.avatarBannerPath ?? null),
+        bannerCrop: JSON.stringify(state.bannerCrop ?? null),
+        cardType: state.cardType,
         designDescription: state.designDescription.trim(),
         designReferenceImageIds: JSON.stringify(designReferenceImageIds),
+        loraName: state.loraName ?? null,
+        loraStrength: state.loraStrength ?? null,
         backgroundImagePath: state.backgroundImagePath,
         scenes: JSON.stringify(state.scenes),
         chatTemplates: JSON.stringify(state.chatTemplates),
@@ -574,14 +697,19 @@ export function useEditCharacterForm(characterId: string | undefined) {
         selectedModelId: state.selectedModelId,
         selectedFallbackModelId: state.selectedFallbackModelId,
         systemPromptTemplateId: state.systemPromptTemplateId,
+        companionPromptTemplateId: state.companionPromptTemplateId,
         groupChatPromptTemplateId: state.groupChatPromptTemplateId,
         groupChatRoleplayPromptTemplateId: state.groupChatRoleplayPromptTemplateId,
+        activeLorebookIds: JSON.stringify(state.activeLorebookIds),
         disableAvatarGradient: state.disableAvatarGradient,
+        avatarGradientSource: state.avatarGradientSource,
         customGradientEnabled: state.customGradientEnabled,
         customGradientColors: JSON.stringify(state.customGradientColors),
         memoryType: state.dynamicMemoryEnabled ? state.memoryType : "manual",
         voiceConfig: JSON.stringify(state.voiceConfig ?? null),
         voiceAutoplay: state.voiceAutoplay,
+        mode: state.mode,
+        companion: JSON.stringify(companionConfig),
       };
       const removedDesignReferenceImageIds = previousDesignReferenceImageIds.filter(
         (imageId) => !designReferenceImageIds.includes(imageId),
@@ -630,6 +758,7 @@ export function useEditCharacterForm(characterId: string | undefined) {
         id: sceneId,
         content: state.newSceneContent.trim(),
         direction: state.newSceneDirection.trim() || undefined,
+        backgroundImagePath: state.newSceneBackgroundImagePath || undefined,
         createdAt: timestamp,
       },
     ];
@@ -639,10 +768,12 @@ export function useEditCharacterForm(characterId: string | undefined) {
       defaultSceneId: newScenes.length === 1 ? sceneId : state.defaultSceneId,
       newSceneContent: "",
       newSceneDirection: "",
+      newSceneBackgroundImagePath: "",
     });
   }, [
     setFields,
     state.defaultSceneId,
+    state.newSceneBackgroundImagePath,
     state.newSceneContent,
     state.newSceneDirection,
     state.scenes,
@@ -669,6 +800,7 @@ export function useEditCharacterForm(characterId: string | undefined) {
         editingSceneId: scene.id,
         editingSceneContent: scene.content,
         editingSceneDirection: scene.direction || "",
+        editingSceneBackgroundImagePath: scene.backgroundImagePath || "",
       });
     },
     [setFields],
@@ -683,6 +815,7 @@ export function useEditCharacterForm(characterId: string | undefined) {
             ...scene,
             content: state.editingSceneContent.trim(),
             direction: state.editingSceneDirection.trim() || undefined,
+            backgroundImagePath: state.editingSceneBackgroundImagePath || undefined,
           }
         : scene,
     );
@@ -692,10 +825,12 @@ export function useEditCharacterForm(characterId: string | undefined) {
       editingSceneId: null,
       editingSceneContent: "",
       editingSceneDirection: "",
+      editingSceneBackgroundImagePath: "",
     });
   }, [
     setFields,
     state.editingSceneContent,
+    state.editingSceneBackgroundImagePath,
     state.editingSceneDirection,
     state.editingSceneId,
     state.scenes,
@@ -706,6 +841,7 @@ export function useEditCharacterForm(characterId: string | undefined) {
       editingSceneId: null,
       editingSceneContent: "",
       editingSceneDirection: "",
+      editingSceneBackgroundImagePath: "",
     });
   }, [setFields]);
 
@@ -740,6 +876,8 @@ export function useEditCharacterForm(characterId: string | undefined) {
           avatarPath: reader.result as string,
           avatarCrop: null,
           avatarRoundPath: null,
+          avatarBannerPath: null,
+          bannerCrop: null,
         });
       };
       reader.readAsDataURL(file);
@@ -766,6 +904,9 @@ export function useEditCharacterForm(characterId: string | undefined) {
       avatarPath: initial.avatarPath,
       avatarCrop: JSON.parse(initial.avatarCrop) as AvatarCrop | null,
       avatarRoundPath: JSON.parse(initial.avatarRoundPath) as string | null,
+      avatarBannerPath: JSON.parse(initial.avatarBannerPath) as string | null,
+      bannerCrop: JSON.parse(initial.bannerCrop) as AvatarCrop | null,
+      cardType: initial.cardType,
       designDescription: initial.designDescription,
       designReferenceImageIds: JSON.parse(initial.designReferenceImageIds) as string[],
       backgroundImagePath: initial.backgroundImagePath,
@@ -774,19 +915,26 @@ export function useEditCharacterForm(characterId: string | undefined) {
       selectedModelId: initial.selectedModelId,
       selectedFallbackModelId: initial.selectedFallbackModelId,
       systemPromptTemplateId: initial.systemPromptTemplateId,
+      companionPromptTemplateId: initial.companionPromptTemplateId,
       groupChatPromptTemplateId: initial.groupChatPromptTemplateId,
       groupChatRoleplayPromptTemplateId: initial.groupChatRoleplayPromptTemplateId,
+      activeLorebookIds: JSON.parse(initial.activeLorebookIds) as string[],
       disableAvatarGradient: initial.disableAvatarGradient,
+      avatarGradientSource: initial.avatarGradientSource,
       customGradientEnabled: initial.customGradientEnabled,
       customGradientColors: JSON.parse(initial.customGradientColors) as string[],
       memoryType: initial.memoryType === "dynamic" ? "dynamic" : "manual",
       voiceConfig: JSON.parse(initial.voiceConfig) as CharacterVoiceConfig | null,
       voiceAutoplay: initial.voiceAutoplay,
+      mode: initial.mode,
+      companion: JSON.parse(initial.companion) as CompanionConfig | null,
       newSceneContent: "",
       newSceneDirection: "",
+      newSceneBackgroundImagePath: "",
       editingSceneId: null,
       editingSceneContent: "",
       editingSceneDirection: "",
+      editingSceneBackgroundImagePath: "",
     });
     setError(null);
   }, [setError, setFields]);
@@ -833,6 +981,9 @@ export function useEditCharacterForm(characterId: string | undefined) {
           state.avatarPath !== initial.avatarPath ||
           JSON.stringify(state.avatarCrop ?? null) !== initial.avatarCrop ||
           JSON.stringify(state.avatarRoundPath ?? null) !== initial.avatarRoundPath ||
+          JSON.stringify(state.avatarBannerPath ?? null) !== initial.avatarBannerPath ||
+          JSON.stringify(state.bannerCrop ?? null) !== initial.bannerCrop ||
+          state.cardType !== initial.cardType ||
           state.backgroundImagePath !== initial.backgroundImagePath ||
           JSON.stringify(state.scenes) !== initial.scenes ||
           JSON.stringify(state.chatTemplates) !== initial.chatTemplates ||
@@ -841,15 +992,20 @@ export function useEditCharacterForm(characterId: string | undefined) {
           state.selectedModelId !== initial.selectedModelId ||
           state.selectedFallbackModelId !== initial.selectedFallbackModelId ||
           state.systemPromptTemplateId !== initial.systemPromptTemplateId ||
+          state.companionPromptTemplateId !== initial.companionPromptTemplateId ||
           state.groupChatPromptTemplateId !== initial.groupChatPromptTemplateId ||
           state.groupChatRoleplayPromptTemplateId !==
             initial.groupChatRoleplayPromptTemplateId ||
+          JSON.stringify(state.activeLorebookIds) !== initial.activeLorebookIds ||
           state.disableAvatarGradient !== initial.disableAvatarGradient ||
+          state.avatarGradientSource !== initial.avatarGradientSource ||
           state.customGradientEnabled !== initial.customGradientEnabled ||
           JSON.stringify(state.customGradientColors) !== initial.customGradientColors ||
           state.memoryType !== initial.memoryType ||
           JSON.stringify(state.voiceConfig ?? null) !== initial.voiceConfig ||
-          state.voiceAutoplay !== initial.voiceAutoplay;
+          state.voiceAutoplay !== initial.voiceAutoplay ||
+          state.mode !== initial.mode ||
+          JSON.stringify(state.companion ?? null) !== initial.companion;
 
         return hasChanges;
       })(),

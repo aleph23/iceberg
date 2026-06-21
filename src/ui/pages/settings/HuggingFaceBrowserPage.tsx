@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, type ReactNode } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -20,11 +20,19 @@ import {
   Monitor,
   Info,
   ArrowRight,
+  Server,
+  Check,
+  HardDrive,
+  ChevronDown,
+  SlidersHorizontal,
+  Image as ImageIcon,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { cn, typography, interactive } from "../../design-tokens";
-import { useI18n } from "../../../core/i18n/context";
+import { useI18n, type TranslationKey, type TranslateParams } from "../../../core/i18n/context";
+
+type TFn = (key: TranslationKey, params?: TranslateParams) => string;
 import { Switch } from "../../components/Switch";
 import { HfReadmeRenderer } from "./components/HfReadmeRenderer";
 import { InlineDownloadCards } from "./components/DownloadQueueBar";
@@ -41,6 +49,7 @@ import {
   SETTINGS_UPDATED_EVENT,
 } from "../../../core/storage/repo";
 import { createDefaultAdvancedModelSettings } from "../../../core/storage/schemas";
+import type { ProviderCredential } from "../../../core/storage/schemas";
 
 interface HfSearchResult {
   modelId: string;
@@ -58,6 +67,18 @@ interface HfModelFile {
   size: number;
   quantization: string;
   isMmproj: boolean;
+  isMtp: boolean;
+  role?: string | null;
+}
+
+interface SdRunabilityScore {
+  filename: string;
+  score: number;
+  label: "excellent" | "good" | "marginal" | "poor" | "unrunnable";
+  familyGuess: string;
+  fitsInVram: boolean;
+  fitsInRam: boolean;
+  maxComfortableResolution: number;
 }
 
 interface RunabilityScore {
@@ -66,6 +87,7 @@ interface RunabilityScore {
   label: "excellent" | "good" | "marginal" | "poor" | "unrunnable";
   fitsInRam: boolean;
   fitsInVram: boolean;
+  gpuMode: string;
 }
 
 interface FileRecommendation {
@@ -91,6 +113,7 @@ interface BestRecommendation {
 }
 
 interface ModelArchInfo {
+  nextnPredictLayers: number | null;
   architecture: string | null;
   blockCount: number | null;
   embeddingLength: number | null;
@@ -109,6 +132,7 @@ interface ModelArchInfo {
 interface RecommendationData {
   availableRam: number;
   availableVram: number;
+  supportsGpuOffload: boolean;
   unifiedMemory: boolean;
   totalAvailable: number;
   kvBasePerToken: number | null;
@@ -130,6 +154,10 @@ const KV_BPV: Record<string, number> = {
   iq4_nl: 0.5,
 };
 
+function dynamicSafetyReserve(totalSystemMemory: number): number {
+  return Math.min(Math.max(totalSystemMemory * 0.1, 512_000_000), 2_000_000_000);
+}
+
 /** Compute max context for a given file size + KV BPV dynamically */
 function maxContextForBpv(
   fileSize: number,
@@ -137,10 +165,12 @@ function maxContextForBpv(
   bpv: number,
   totalAvailable: number,
   modelMaxCtx: number,
+  sidecarReserveBytes = 0,
 ): number {
   if (!kvBasePerToken || kvBasePerToken <= 0) return modelMaxCtx;
+  const safety = dynamicSafetyReserve(totalAvailable);
   const overhead = computeOverhead(fileSize);
-  const remaining = Math.max(totalAvailable - fileSize - overhead, 0);
+  const remaining = Math.max(totalAvailable - fileSize - overhead - sidecarReserveBytes - safety, 0);
   const bytesPerToken = kvBasePerToken * bpv;
   if (bytesPerToken <= 0) return modelMaxCtx;
   const maxCtx = Math.floor(remaining / bytesPerToken);
@@ -159,9 +189,10 @@ function computeGpuOptimalContext(
   availableVram: number,
   modelMaxCtx: number,
   kvContextCap: number | null,
+  sidecarReserveBytes = 0,
 ): number {
   if (availableVram <= 0 || !kvBasePerToken) return 0;
-  const vramBudget = availableVram * 0.9;
+  const vramBudget = Math.max(availableVram * 0.9 - sidecarReserveBytes, 0);
   const overhead = computeOverhead(fileSize);
   if (fileSize + overhead >= vramBudget) return 0;
   const vramForKv = vramBudget - fileSize - overhead;
@@ -177,10 +208,12 @@ function computeRamMaxContext(
   totalAvailable: number,
   modelMaxCtx: number,
   kvContextCap: number | null,
+  sidecarReserveBytes = 0,
 ): number {
   if (!kvBasePerToken) return 0;
+  const safety = dynamicSafetyReserve(totalAvailable);
   const overhead = computeOverhead(fileSize);
-  const remaining = Math.max(totalAvailable - fileSize - overhead, 0);
+  const remaining = Math.max(totalAvailable - fileSize - overhead - sidecarReserveBytes - safety, 0);
   const rawCtx = Math.floor(remaining / (kvBasePerToken * bpv));
   if (kvContextCap && rawCtx >= kvContextCap) return modelMaxCtx;
   return rawCtx >= 512 ? Math.min(rawCtx, modelMaxCtx) : 0;
@@ -190,11 +223,24 @@ function calcScore(
   modelSize: number,
   quantQuality: number,
   kvCacheBytes: number,
+  availableRam: number,
   totalAvailable: number,
   availableVram: number,
-): { score: number; label: string; fitsVram: boolean; gpuMode: string } {
+  modelOffload: ModelOffload = "auto",
+  kvPlacement: KvPlacement = "auto",
+  sidecarReserveBytes = 0,
+): { score: number; label: string; fitsVram: boolean; gpuMode: string; gpuScore: number } {
   const overhead = computeOverhead(modelSize);
-  const totalNeeded = modelSize + kvCacheBytes + overhead;
+  const totalNeeded = modelSize + kvCacheBytes + overhead + sidecarReserveBytes;
+  const ramBudget = availableRam * 0.9;
+  const vramBudget = availableVram * 0.9;
+  const modelFitsRam = availableRam > 0 && modelSize + overhead <= ramBudget;
+  const kvFitsVram = availableVram > 0 && kvCacheBytes + overhead <= vramBudget;
+  const kvFitsRam = availableRam > 0 && kvCacheBytes + overhead <= ramBudget;
+  const kvOnVramRequested = kvPlacement === "vram";
+  const kvOnRamRequested = kvPlacement === "ram";
+  const effectiveVramNeed =
+    modelSize + overhead + sidecarReserveBytes + (kvOnRamRequested ? 0 : kvCacheBytes);
 
   // Memory fitness (25%)
   let memoryScore: number;
@@ -205,48 +251,121 @@ function calcScore(
     memoryScore = r < 1.2 ? 20 : r < 1.5 ? 50 : r < 2.0 ? 70 : r < 3.0 ? 85 : 100;
   }
 
-  // GPU acceleration (35%)
-  const vramBudget = availableVram * 0.9;
-  let gpuScore: number;
-  let fitsVram: boolean;
-  let gpuMode: string;
-  if (availableVram > 0) {
-    if (totalNeeded <= vramBudget) {
-      // Everything fits in VRAM
-      gpuScore = 100;
-      fitsVram = true;
-      gpuMode = "full";
-    } else if (modelSize === 0) {
-      gpuScore = 10;
-      fitsVram = false;
-      gpuMode = "cpu";
-    } else if (modelSize <= vramBudget) {
-      // Model weights fit, KV/compute spills to RAM
+  const scoreForPlacement = (
+    placement: Exclude<ModelOffload, "auto">,
+  ): { score: number; fitsVram: boolean; gpuMode: string; priority: number } => {
+    if (placement === "cpu") {
+      if (!modelFitsRam) {
+        return {
+          score: 0,
+          fitsVram: false,
+          gpuMode: kvOnVramRequested && availableVram > 0 ? "ramModelVramCtx" : "cpu",
+          priority: 0,
+        };
+      }
+      const ramFitRatio = Math.min(ramBudget / (modelSize + overhead), 1.0);
+      const baseScore = kvOnVramRequested && kvFitsVram && availableVram > 0 ? 82 : 68;
+      return {
+        score: baseScore + ramFitRatio * (kvOnVramRequested ? 10 : 14),
+        fitsVram: false,
+        gpuMode: kvOnVramRequested && availableVram > 0 ? "ramModelVramCtx" : "ramModelRamCtx",
+        priority: 0,
+      };
+    }
+
+    if (availableVram <= 0) {
+      return {
+        score: 0,
+        fitsVram: false,
+        gpuMode: placement === "gpu" ? "gpuUnavailable" : "cpu",
+        priority: placement === "gpu" ? 2 : 1,
+      };
+    }
+
+    if (placement === "gpu") {
+      if (modelSize === 0) {
+        return { score: 10, fitsVram: false, gpuMode: "gpuUnavailable", priority: 2 };
+      }
+      if (modelSize > vramBudget) {
+        return { score: 8, fitsVram: false, gpuMode: "gpuUnavailable", priority: 2 };
+      }
+      if (kvOnRamRequested) {
+        const ramCtxFitRatio =
+          kvCacheBytes + overhead > 0
+            ? Math.min(ramBudget / (kvCacheBytes + overhead), 1.0)
+            : 1.0;
+        return {
+          score: 80 + ramCtxFitRatio * (kvFitsRam ? 12 : 4),
+          fitsVram: false,
+          gpuMode: kvFitsRam ? "kvSpill" : "kvHeavySpill",
+          priority: 2,
+        };
+      }
+      if (effectiveVramNeed <= vramBudget) {
+        return { score: 100, fitsVram: true, gpuMode: "full", priority: 2 };
+      }
       const remaining = vramBudget - modelSize;
       const spill = kvCacheBytes + overhead;
       const fitRatio = spill > 0 ? Math.min(remaining / spill, 1.0) : 1.0;
-      gpuScore = 70 + fitRatio * 25; // 70-95
-      fitsVram = true;
-      gpuMode = fitRatio >= 0.8 ? "nearFull" : fitRatio >= 0.4 ? "kvSpill" : "kvHeavySpill";
-    } else {
-      // Model doesn't fit — partial layer offload
-      const offloadRatio = Math.min(vramBudget / modelSize, 1.0);
-      gpuScore = 10 + offloadRatio * 60; // 10-70
-      fitsVram = false;
-      gpuMode =
+      let adjustedFitRatio = fitRatio;
+      if (kvOnVramRequested && !kvFitsVram) adjustedFitRatio *= 0.55;
+      if (kvOnRamRequested) adjustedFitRatio = Math.max(adjustedFitRatio, 0.7);
+      return {
+        score: 72 + adjustedFitRatio * 23,
+        fitsVram: true,
+        gpuMode:
+          adjustedFitRatio >= 0.8 ? "nearFull" : adjustedFitRatio >= 0.4 ? "kvSpill" : "kvHeavySpill",
+        priority: 2,
+      };
+    }
+
+    if (kvOnRamRequested && modelSize <= vramBudget) {
+      const ramCtxFitRatio =
+        kvCacheBytes + overhead > 0 ? Math.min(ramBudget / (kvCacheBytes + overhead), 1.0) : 1.0;
+      return {
+        score: Math.max(12, 78 + ramCtxFitRatio * (kvFitsRam ? 14 : 6)),
+        fitsVram: false,
+        gpuMode: kvFitsRam ? "kvSpill" : "kvHeavySpill",
+        priority: 1,
+      };
+    }
+    if (effectiveVramNeed <= vramBudget) {
+      return { score: 96, fitsVram: true, gpuMode: "full", priority: 1 };
+    }
+    if (modelSize === 0) {
+      return { score: 10, fitsVram: false, gpuMode: "cpu", priority: 1 };
+    }
+    const offloadRatio = Math.min(vramBudget / modelSize, 1.0);
+    const kvPenalty = kvOnVramRequested && !kvFitsVram ? 12 : 0;
+    const kvBonus = kvOnRamRequested ? 4 : 0;
+    return {
+      score: Math.max(12, 28 + offloadRatio * 54 + kvBonus - kvPenalty),
+      fitsVram: false,
+      gpuMode:
         offloadRatio >= 0.75
           ? "mostLayers"
           : offloadRatio >= 0.5
             ? "halfLayers"
             : offloadRatio >= 0.2
               ? "fewLayers"
-              : "cpu";
-    }
-  } else {
-    gpuScore = 0;
-    fitsVram = false;
-    gpuMode = "cpu";
-  }
+              : "cpu",
+      priority: 1,
+    };
+  };
+
+  const placementResult =
+    modelOffload === "auto"
+      ? (["gpu", "mixed", "cpu"] as const)
+          .map((placement) => {
+            const result = scoreForPlacement(placement);
+            return { ...result, adjustedScore: result.score + result.priority * 4 };
+          })
+          .sort((a, b) => b.adjustedScore - a.adjustedScore)[0]
+      : { ...scoreForPlacement(modelOffload), adjustedScore: 0 };
+
+  const gpuScore = placementResult.score;
+  const fitsVram = placementResult.fitsVram;
+  const gpuMode = placementResult.gpuMode;
 
   // KV headroom (15%)
   let kvScore: number;
@@ -273,7 +392,255 @@ function calcScore(
           : score >= 20
             ? "poor"
             : "unrunnable";
-  return { score, label, fitsVram, gpuMode };
+  return { score, label, fitsVram, gpuMode, gpuScore };
+}
+
+function getRunabilityModeCopy(t: TFn, gpuMode: string): { short: string; long: string } {
+  switch (gpuMode) {
+    case "gpuUnavailable":
+      return {
+        short: t("hfBrowser.runMode.gpuUnavailableShort"),
+        long: t("hfBrowser.runMode.gpuUnavailableLong"),
+      };
+    case "full":
+      return {
+        short: t("hfBrowser.runMode.fullShort"),
+        long: t("hfBrowser.runMode.fullLong"),
+      };
+    case "nearFull":
+      return {
+        short: t("hfBrowser.runMode.nearFullShort"),
+        long: t("hfBrowser.runMode.nearFullLong"),
+      };
+    case "kvSpill":
+      return {
+        short: t("hfBrowser.runMode.kvSpillShort"),
+        long: t("hfBrowser.runMode.kvSpillLong"),
+      };
+    case "kvHeavySpill":
+      return {
+        short: t("hfBrowser.runMode.kvHeavySpillShort"),
+        long: t("hfBrowser.runMode.kvHeavySpillLong"),
+      };
+    case "ramModelVramCtx":
+      return {
+        short: t("hfBrowser.runMode.ramModelVramCtxShort"),
+        long: t("hfBrowser.runMode.ramModelVramCtxLong"),
+      };
+    case "ramModelRamCtx":
+      return {
+        short: t("hfBrowser.runMode.ramModelRamCtxShort"),
+        long: t("hfBrowser.runMode.ramModelRamCtxLong"),
+      };
+    case "mostLayers":
+      return {
+        short: t("hfBrowser.runMode.mostLayersShort"),
+        long: t("hfBrowser.runMode.mostLayersLong"),
+      };
+    case "halfLayers":
+      return {
+        short: t("hfBrowser.runMode.halfLayersShort"),
+        long: t("hfBrowser.runMode.halfLayersLong"),
+      };
+    case "fewLayers":
+      return {
+        short: t("hfBrowser.runMode.fewLayersShort"),
+        long: t("hfBrowser.runMode.fewLayersLong"),
+      };
+    case "cpu":
+    default:
+      return {
+        short: t("hfBrowser.runMode.cpuShort"),
+        long: t("hfBrowser.runMode.cpuLong"),
+      };
+  }
+}
+
+function getKvPlacementCopy(t: TFn, value: KvPlacement): { label: string; description: string } {
+  switch (value) {
+    case "ram":
+      return {
+        label: t("hfBrowser.kvPlacement.ramLabel"),
+        description: t("hfBrowser.kvPlacement.ramDescription"),
+      };
+    case "vram":
+      return {
+        label: t("hfBrowser.kvPlacement.vramLabel"),
+        description: t("hfBrowser.kvPlacement.vramDescription"),
+      };
+    case "auto":
+    default:
+      return {
+        label: t("hfBrowser.kvPlacement.autoLabel"),
+        description: t("hfBrowser.kvPlacement.autoDescription"),
+      };
+  }
+}
+
+function kvPlacementToOffloadKqv(value: KvPlacement): boolean | null {
+  switch (value) {
+    case "ram":
+      return false;
+    case "vram":
+      return true;
+    case "auto":
+    default:
+      return null;
+  }
+}
+
+function getModelOffloadCopy(t: TFn, value: ModelOffload): { label: string; description: string } {
+  switch (value) {
+    case "cpu":
+      return {
+        label: t("hfBrowser.modelOffload.cpuLabel"),
+        description: t("hfBrowser.modelOffload.cpuDescription"),
+      };
+    case "gpu":
+      return {
+        label: t("hfBrowser.modelOffload.gpuLabel"),
+        description: t("hfBrowser.modelOffload.gpuDescription"),
+      };
+    case "mixed":
+      return {
+        label: t("hfBrowser.modelOffload.mixedLabel"),
+        description: t("hfBrowser.modelOffload.mixedDescription"),
+      };
+    case "auto":
+    default:
+      return {
+        label: t("hfBrowser.modelOffload.autoLabel"),
+        description: t("hfBrowser.modelOffload.autoDescription"),
+      };
+  }
+}
+
+function getHeadroomStatus(t: TFn, totalNeeded: number, totalAvailable: number): {
+  label: string;
+  tone: string;
+  description: string;
+} {
+  const remaining = totalAvailable - totalNeeded;
+  if (totalAvailable <= 0 || totalNeeded > totalAvailable) {
+    return {
+      label: t("hfBrowser.headroom.riskyLabel"),
+      tone: "text-red-400",
+      description: t("hfBrowser.headroom.riskyDescription"),
+    };
+  }
+  const headroomRatio = remaining / Math.max(totalAvailable, 1);
+  if (remaining >= 4_000_000_000 || headroomRatio >= 0.25) {
+    return {
+      label: t("hfBrowser.headroom.comfortableLabel"),
+      tone: "text-emerald-400",
+      description: t("hfBrowser.headroom.comfortableDescription"),
+    };
+  }
+  if (remaining >= 1_500_000_000 || headroomRatio >= 0.12) {
+    return {
+      label: t("hfBrowser.headroom.okLabel"),
+      tone: "text-blue-400",
+      description: t("hfBrowser.headroom.okDescription"),
+    };
+  }
+  return {
+    label: t("hfBrowser.headroom.tightLabel"),
+    tone: "text-amber-400",
+    description: t("hfBrowser.headroom.tightDescription"),
+  };
+}
+
+function getRunStatus(t: TFn, score: number): { label: string; tone: string; description: string } {
+  if (score >= 75) {
+    return {
+      label: t("hfBrowser.runStatus.yesLabel"),
+      tone: "text-emerald-400",
+      description: t("hfBrowser.runStatus.yesDescription"),
+    };
+  }
+  if (score >= 55) {
+    return {
+      label: t("hfBrowser.runStatus.borderlineLabel"),
+      tone: "text-amber-400",
+      description: t("hfBrowser.runStatus.borderlineDescription"),
+    };
+  }
+  return {
+    label: t("hfBrowser.runStatus.noLabel"),
+    tone: "text-red-400",
+    description: t("hfBrowser.runStatus.noDescription"),
+  };
+}
+
+function getPerformanceStatus(t: TFn, gpuMode: string): {
+  prefill: { label: string; tone: string };
+  generation: { label: string; tone: string };
+} {
+  const fast = t("hfBrowser.perf.fast");
+  const medium = t("hfBrowser.perf.medium");
+  const slow = t("hfBrowser.perf.slow");
+  switch (gpuMode) {
+    case "full":
+      return {
+        prefill: { label: fast, tone: "text-emerald-400" },
+        generation: { label: fast, tone: "text-emerald-400" },
+      };
+    case "nearFull":
+      return {
+        prefill: { label: fast, tone: "text-emerald-400" },
+        generation: { label: fast, tone: "text-emerald-400" },
+      };
+    case "kvSpill":
+    case "ramModelVramCtx":
+      return {
+        prefill: { label: medium, tone: "text-blue-400" },
+        generation: { label: medium, tone: "text-blue-400" },
+      };
+    case "kvHeavySpill":
+    case "mostLayers":
+    case "halfLayers":
+      return {
+        prefill: { label: slow, tone: "text-amber-400" },
+        generation: { label: medium, tone: "text-blue-400" },
+      };
+    case "fewLayers":
+    case "ramModelRamCtx":
+    case "cpu":
+    case "gpuUnavailable":
+    default:
+      return {
+        prefill: { label: slow, tone: "text-amber-400" },
+        generation: { label: slow, tone: "text-amber-400" },
+      };
+  }
+}
+
+function modelOffloadToGpuLayers(
+  value: ModelOffload,
+  totalLayers: number | null | undefined,
+  mixedLayers: number | null,
+): number | null {
+  switch (value) {
+    case "cpu":
+      return 0;
+    case "gpu":
+      return totalLayers && totalLayers > 0 ? totalLayers : null;
+    case "mixed":
+      return mixedLayers != null && mixedLayers > 0 ? mixedLayers : null;
+    case "auto":
+    default:
+      return null;
+  }
+}
+
+function gpuLayersToModelOffload(
+  llamaGpuLayers: number | null | undefined,
+  totalLayers: number | null | undefined,
+): ModelOffload {
+  if (llamaGpuLayers == null) return "auto";
+  if (llamaGpuLayers <= 0) return "cpu";
+  if (totalLayers != null && totalLayers > 0 && llamaGpuLayers >= totalLayers) return "gpu";
+  return "mixed";
 }
 
 interface HfModelInfo {
@@ -295,15 +662,25 @@ type CompareSelection = {
   filename: string;
   kvType: string;
 };
-type TrackedDownloadRole = "model" | "mmproj";
+type TrackedDownloadRole = "model" | "mmproj" | "mtp";
+type KvPlacement = "auto" | "ram" | "vram";
+type ModelOffload = "auto" | "cpu" | "gpu" | "mixed";
 type QueueDownloadMetadata = {
   createModelWhenFinished?: boolean;
   mmprojFile?: string | false;
+  mtpFile?: string | false;
+  mtpBundled?: boolean | null;
   installId?: string | null;
   displayName?: string | null;
   contextLength?: number | null;
   kvType?: string | null;
+  llamaOffloadKqv?: boolean | null;
+  llamaGpuLayers?: number | null;
+  llamaModelOffloadMode?: ModelOffload | null;
   downloadRole?: TrackedDownloadRole | null;
+  queueKind?: string | null;
+  destinationPath?: string | null;
+  variant?: string | null;
 };
 
 type ViewState = { kind: "search" } | { kind: "model"; modelId: string };
@@ -362,6 +739,35 @@ function extractParamSize(tags: string[], modelId: string): string | null {
   }
   return null;
 }
+
+/** Convert a param size string ("7B", "120M", "1.5K") into a value in billions. */
+function paramSizeToBillions(value: string | null): number | null {
+  if (!value) return null;
+  const match = value.match(/^(\d+(?:\.\d+)?)([KMBT])$/i);
+  if (!match) return null;
+  const numeric = Number(match[1]);
+  const unit = match[2].toUpperCase();
+  const multipliers: Record<string, number> = {
+    K: 1e-6,
+    M: 1e-3,
+    B: 1,
+    T: 1e3,
+  };
+  return numeric * multipliers[unit];
+}
+
+const COMMON_PIPELINE_TAGS = [
+  "text-generation",
+  "text-to-text",
+  "image-text-to-text",
+  "text-to-image",
+  "text-to-video",
+  "image-to-text",
+  "automatic-speech-recognition",
+  "text-to-speech",
+  "feature-extraction",
+  "sentence-similarity",
+];
 
 /** Generate a deterministic color from a string for avatar fallback */
 function authorColor(name: string): string {
@@ -422,14 +828,20 @@ function DetailReportContent({
   recData,
   selectedFile,
   kvType,
+  modelOffload,
+  kvPlacement,
   contextLength,
+  sidecarReserveBytes = 0,
   t,
 }: {
   recData: RecommendationData;
   selectedFile: FileRecommendation;
   kvType: string;
+  modelOffload: ModelOffload;
+  kvPlacement: KvPlacement;
   contextLength: number;
-  t: (key: any, vars?: any) => string;
+  sidecarReserveBytes?: number;
+  t: TFn;
 }) {
   const bpv = KV_BPV[kvType] || 2;
   const totalAvail = recData.totalAvailable;
@@ -440,6 +852,7 @@ function DetailReportContent({
       bpv,
       totalAvail,
       recData.modelMaxContext,
+      sidecarReserveBytes,
     ),
     1024,
   );
@@ -449,15 +862,21 @@ function DetailReportContent({
     : clampedCtx;
   const kvBytes = recData.kvBasePerToken ? recData.kvBasePerToken * bpv * effectiveKvCtx : 0;
   const overhead = computeOverhead(selectedFile.size);
-  const totalNeeded = selectedFile.size + kvBytes + overhead;
+  const totalNeeded = selectedFile.size + kvBytes + overhead + sidecarReserveBytes;
+  const gpuResidentBytes =
+    selectedFile.size + overhead + sidecarReserveBytes + (kvPlacement === "ram" ? 0 : kvBytes);
   const headroom = Math.max(totalAvail - totalNeeded, 0);
-  const vramBudget = recData.availableVram * 0.9;
-  const { score, gpuMode } = calcScore(
+  const vramBudget = Math.max(recData.availableVram * 0.9 - sidecarReserveBytes, 0);
+  const { score, gpuMode, gpuScore } = calcScore(
     selectedFile.size,
     selectedFile.quantQuality,
     kvBytes,
+    recData.availableRam,
     totalAvail,
     recData.availableVram,
+    modelOffload,
+    kvPlacement,
+    sidecarReserveBytes,
   );
 
   const modelMax = recData.modelMaxContext;
@@ -468,6 +887,7 @@ function DetailReportContent({
     recData.availableVram,
     modelMax,
     recData.kvContextCap,
+    sidecarReserveBytes,
   );
   const detailMaxRamCtx = computeRamMaxContext(
     selectedFile.size,
@@ -476,6 +896,7 @@ function DetailReportContent({
     totalAvail,
     modelMax,
     recData.kvContextCap,
+    sidecarReserveBytes,
   );
 
   const memoryScore = (() => {
@@ -484,22 +905,9 @@ function DetailReportContent({
     const r = totalAvail / totalNeeded;
     return r < 1.2 ? 20 : r < 1.5 ? 50 : r < 2.0 ? 70 : r < 3.0 ? 85 : 100;
   })();
-  const gpuScore = (() => {
-    if (recData.availableVram <= 0) return 0;
-    if (totalNeeded <= vramBudget) return 100;
-    if (selectedFile.size === 0) return 10;
-    if (selectedFile.size <= vramBudget) {
-      const remaining = vramBudget - selectedFile.size;
-      const spill = kvBytes + overhead;
-      const fitRatio = spill > 0 ? Math.min(remaining / spill, 1.0) : 1.0;
-      return Math.round(70 + fitRatio * 25);
-    }
-    const offloadRatio = Math.min(vramBudget / selectedFile.size, 1.0);
-    return Math.round(10 + offloadRatio * 60);
-  })();
   const kvScore = (() => {
     if (kvBytes === 0) return 50;
-    const h = Math.max(totalAvail - selectedFile.size - overhead, 0);
+    const h = Math.max(totalAvail - selectedFile.size - overhead - sidecarReserveBytes, 0);
     if (h === 0) return 0;
     if (h >= kvBytes) {
       const r = h / kvBytes;
@@ -507,24 +915,34 @@ function DetailReportContent({
     }
     return Math.round(50 * (h / kvBytes));
   })();
+  const modelOffloadCopy = getModelOffloadCopy(t, modelOffload);
+  const kvPlacementCopy = getKvPlacementCopy(t, kvPlacement);
+  const showGpuPlanning = recData.availableVram > 0 && modelOffload !== "cpu";
 
   const offloadPct = (() => {
-    if (recData.availableVram <= 0 || totalNeeded === 0) return 0;
-    if (totalNeeded <= vramBudget) return 100;
-    return Math.min(Math.round((vramBudget / totalNeeded) * 100), 99);
+    if (recData.availableVram <= 0 || modelOffload === "cpu") return 0;
+    if (modelOffload === "gpu") return selectedFile.size <= vramBudget ? 100 : 0;
+    if (selectedFile.size <= 0) return 0;
+    if (modelOffload === "mixed") {
+      return Math.min(Math.round((vramBudget / selectedFile.size) * 100), 100);
+    }
+    if (gpuResidentBytes <= vramBudget) return 100;
+    return Math.min(Math.round((vramBudget / gpuResidentBytes) * 100), 99);
   })();
 
   const detailTotalLayers = recData.arch?.blockCount;
   const detailRecLayers = (() => {
     if (!detailTotalLayers || detailTotalLayers <= 0) return null;
-    if (totalNeeded <= vramBudget) return detailTotalLayers;
+    if (!showGpuPlanning) return 0;
+    if (gpuResidentBytes <= vramBudget) return detailTotalLayers;
     if (recData.availableVram <= 0) return null;
-    const layers = Math.floor((vramBudget / totalNeeded) * detailTotalLayers);
+    const layers = Math.floor((vramBudget / gpuResidentBytes) * detailTotalLayers);
     return Math.max(Math.min(layers, detailTotalLayers), 0);
   })();
 
   const fullGpuCtx = (() => {
     if (recData.availableVram <= 0 || !recData.kvBasePerToken) return null;
+    if (kvPlacement === "ram") return null;
     if (totalNeeded <= vramBudget) return null;
     if (selectedFile.size + overhead >= vramBudget) return null;
     const vramForKv = vramBudget - selectedFile.size - overhead;
@@ -628,6 +1046,8 @@ function DetailReportContent({
         {row(t("hfBrowser.quantization"), selectedFile.quantization)}
         {row(t("hfBrowser.detailModelSize"), formatBytes(selectedFile.size))}
         {row(t("hfBrowser.contextLength"), clampedCtx.toLocaleString() + " tokens")}
+        {row(t("hfBrowser.detailModelOffload"), modelOffloadCopy.label)}
+        {row(t("hfBrowser.detailKvLocation"), kvPlacementCopy.label)}
         {row(t("hfBrowser.kvCacheType"), kvType.toUpperCase())}
         {recData.kvContextCap &&
           row(
@@ -635,7 +1055,8 @@ function DetailReportContent({
             effectiveKvCtx.toLocaleString() + " tokens",
             "text-white/60",
           )}
-        {detailFullGpuCtx > 0 &&
+        {showGpuPlanning &&
+          detailFullGpuCtx > 0 &&
           row(
             t("hfBrowser.detailOptimalGpuCtx"),
             detailFullGpuCtx.toLocaleString() + " tokens",
@@ -666,26 +1087,17 @@ function DetailReportContent({
         )}
         {recData.availableVram > 0 &&
           row(
-            t("hfBrowser.detailGpuFit"),
-            {
-              full: t("hfBrowser.gpuFull"),
-              nearFull: t("hfBrowser.gpuNearFull"),
-              kvSpill: t("hfBrowser.gpuKvSpill"),
-              kvHeavySpill: t("hfBrowser.gpuKvHeavySpill"),
-              mostLayers: t("hfBrowser.gpuMostLayers"),
-              halfLayers: t("hfBrowser.gpuHalfLayers"),
-              fewLayers: t("hfBrowser.gpuFewLayers"),
-              cpu: t("hfBrowser.gpuCpu"),
-            }[gpuMode] || t("hfBrowser.gpuCpu"),
+            t("hfBrowser.detailMode"),
+            getRunabilityModeCopy(t, gpuMode).long,
             ["full", "nearFull"].includes(gpuMode)
               ? "text-emerald-400"
-              : ["kvSpill", "mostLayers"].includes(gpuMode)
+              : ["kvSpill", "mostLayers", "ramModelVramCtx"].includes(gpuMode)
                 ? "text-blue-400"
-                : ["kvHeavySpill", "halfLayers"].includes(gpuMode)
+                : ["kvHeavySpill", "halfLayers", "ramModelRamCtx"].includes(gpuMode)
                   ? "text-amber-400"
                   : "text-red-400",
           )}
-        {recData.availableVram > 0 &&
+        {showGpuPlanning &&
           row(
             t("hfBrowser.detailOffload"),
             `${offloadPct}%`,
@@ -716,7 +1128,13 @@ function DetailReportContent({
         recData.availableVram > 0 &&
         (() => {
           let kvVramPct: number;
-          if (totalNeeded <= vramBudget) {
+          if (!showGpuPlanning && kvPlacement !== "vram") {
+            kvVramPct = 0;
+          } else if (kvPlacement === "ram") {
+            kvVramPct = 0;
+          } else if (kvPlacement === "vram") {
+            kvVramPct = kvBytes > 0 ? Math.min(Math.round((vramBudget / kvBytes) * 100), 100) : 100;
+          } else if (totalNeeded <= vramBudget) {
             kvVramPct = 100;
           } else if (selectedFile.size >= vramBudget) {
             const layerRatio = Math.min(vramBudget / selectedFile.size, 1.0);
@@ -764,7 +1182,7 @@ function DetailReportContent({
           );
         })()}
 
-      {fullGpuCtx && fullGpuCtx < clampedCtx && (
+      {showGpuPlanning && fullGpuCtx && fullGpuCtx < clampedCtx && (
         <div className="flex items-start gap-2 rounded-xl border border-blue-400/20 bg-blue-400/5 px-3 py-2 mt-1">
           <Info size={12} className="text-blue-400 shrink-0 mt-0.5" />
           <p className="text-[12px] leading-snug text-blue-300/80">
@@ -845,6 +1263,11 @@ export function HuggingFaceBrowserPage() {
     const syncLocalModelState = async () => {
       const settings = await readSettings();
       setHasPersistedLocalModel(settings.models.some((model) => model.providerId === "llamacpp"));
+      const ollama = settings.providerCredentials.filter((p) => p.providerId === "ollama");
+      setOllamaProviders(ollama);
+      setSelectedOllamaProviderId((prev) =>
+        prev && ollama.some((p) => p.id === prev) ? prev : null,
+      );
     };
 
     void syncLocalModelState();
@@ -856,13 +1279,51 @@ export function HuggingFaceBrowserPage() {
     return () => window.removeEventListener(SETTINGS_UPDATED_EVENT, handler);
   }, []);
 
+  const sdModeParam = searchParams.get("mode");
+  const isSdMode = sdModeParam === "sd";
+  const HF_MODE_STORAGE_KEY = "hfBrowser:mode";
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (sdModeParam) {
+      window.localStorage.setItem(HF_MODE_STORAGE_KEY, sdModeParam);
+      return;
+    }
+    const stored = window.localStorage.getItem(HF_MODE_STORAGE_KEY);
+    if (stored === "sd") {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.set("mode", "sd");
+          return next;
+        },
+        { replace: true },
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sdModeParam]);
+
   // Helper to preserve returnTo across param changes
   const preserveParams = useCallback(
     (next: Record<string, string>) => {
       if (returnTo) next.returnTo = returnTo;
+      if (sdModeParam) next.mode = sdModeParam;
       return next;
     },
-    [returnTo],
+    [returnTo, sdModeParam],
+  );
+
+  const setSdMode = useCallback(
+    (enabled: boolean) => {
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(HF_MODE_STORAGE_KEY, enabled ? "sd" : "llm");
+      }
+      const next: Record<string, string> = {};
+      if (returnTo) next.returnTo = returnTo;
+      if (enabled) next.mode = "sd";
+      setSearchParams(next, { replace: true });
+    },
+    [returnTo, setSearchParams],
   );
 
   useEffect(() => {
@@ -891,6 +1352,55 @@ export function HuggingFaceBrowserPage() {
     [setSearchParams, preserveParams],
   );
 
+  const [ollamaProviders, setOllamaProviders] = useState<ProviderCredential[]>([]);
+  const [selectedOllamaProviderId, setSelectedOllamaProviderId] = useState<string | null>(null);
+  const [showOllamaProviderMenu, setShowOllamaProviderMenu] = useState(false);
+
+  // Filter state
+  const [showFilterMenu, setShowFilterMenu] = useState(false);
+  const [filterPipelineTags, setFilterPipelineTags] = useState<Set<string>>(new Set());
+  const [filterParamMin, setFilterParamMin] = useState<string>("");
+  const [filterParamMax, setFilterParamMax] = useState<string>("");
+
+  const filterParamMinNum = filterParamMin ? Number(filterParamMin) : null;
+  const filterParamMaxNum = filterParamMax ? Number(filterParamMax) : null;
+  const activeFilterCount =
+    filterPipelineTags.size +
+    (filterParamMinNum != null && !isNaN(filterParamMinNum) ? 1 : 0) +
+    (filterParamMaxNum != null && !isNaN(filterParamMaxNum) ? 1 : 0);
+
+  type HfBrowserViewMode = "list" | "grid" | "gallery";
+  const HF_VIEW_STORAGE_KEY = "hfBrowser:viewMode";
+  const [browserViewMode, setBrowserViewMode] = useState<HfBrowserViewMode>(() => {
+    if (typeof window === "undefined") return "grid";
+    const stored = window.localStorage.getItem(HF_VIEW_STORAGE_KEY);
+    return stored === "list" || stored === "grid" || stored === "gallery" ? stored : "grid";
+  });
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(HF_VIEW_STORAGE_KEY, browserViewMode);
+    (window as any).__hfBrowserViewMode = browserViewMode;
+    window.dispatchEvent(new CustomEvent("hfBrowser:viewModeChanged"));
+  }, [browserViewMode]);
+
+  useEffect(() => {
+    const handler = () => {
+      setBrowserViewMode((prev) => {
+        const order: HfBrowserViewMode[] = ["list", "grid", "gallery"];
+        return order[(order.indexOf(prev) + 1) % order.length];
+      });
+    };
+    window.addEventListener("hfBrowser:cycleViewMode", handler);
+    return () => window.removeEventListener("hfBrowser:cycleViewMode", handler);
+  }, []);
+
+  const selectedOllamaProvider = useMemo(
+    () => ollamaProviders.find((p) => p.id === selectedOllamaProviderId) ?? null,
+    [ollamaProviders, selectedOllamaProviderId],
+  );
+  const isOllamaMode = !!selectedOllamaProvider;
+
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("trending");
@@ -901,6 +1411,38 @@ export function HuggingFaceBrowserPage() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
+  const displayedResults = useMemo(() => {
+    if (filterPipelineTags.size === 0 && filterParamMinNum == null && filterParamMaxNum == null) {
+      return results;
+    }
+    return results.filter((r) => {
+      if (filterPipelineTags.size > 0) {
+        if (!r.pipelineTag || !filterPipelineTags.has(r.pipelineTag)) return false;
+      }
+      if (filterParamMinNum != null || filterParamMaxNum != null) {
+        const sizeStr = extractParamSize(r.tags, r.modelId);
+        const sizeB = paramSizeToBillions(sizeStr);
+        if (sizeB == null) return false;
+        if (filterParamMinNum != null && !isNaN(filterParamMinNum) && sizeB < filterParamMinNum) {
+          return false;
+        }
+        if (filterParamMaxNum != null && !isNaN(filterParamMaxNum) && sizeB > filterParamMaxNum) {
+          return false;
+        }
+      }
+      return true;
+    });
+  }, [results, filterPipelineTags, filterParamMinNum, filterParamMaxNum]);
+
+  // Pipeline tags present in current results (to surface relevant options)
+  const availablePipelineTags = useMemo(() => {
+    const tags = new Set<string>();
+    for (const r of results) {
+      if (r.pipelineTag) tags.add(r.pipelineTag);
+    }
+    return tags;
+  }, [results]);
+
   const PAGE_SIZE = 30;
 
   const [modelInfo, setModelInfo] = useState<HfModelInfo | null>(null);
@@ -910,6 +1452,16 @@ export function HuggingFaceBrowserPage() {
   const [readme, setReadme] = useState<string | null>(null);
   const [readmeLoading, setReadmeLoading] = useState(false);
   const [runabilityScores, setRunabilityScores] = useState<Record<string, RunabilityScore>>({});
+  const [sdScores, setSdScores] = useState<Record<string, SdRunabilityScore>>({});
+  const [sdModelsDir, setSdModelsDir] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSdMode || sdModelsDir) return;
+    import("../../../core/local-diffusion")
+      .then(({ sdGetStatus }) => sdGetStatus())
+      .then((status) => setSdModelsDir(status.modelsDir))
+      .catch(() => {});
+  }, [isSdMode, sdModelsDir]);
 
   // Recommendation panel state
   const [recData, setRecData] = useState<RecommendationData | null>(null);
@@ -917,8 +1469,12 @@ export function HuggingFaceBrowserPage() {
   const [recFile, setRecFile] = useState(""); // selected file in dropdown
   const [recContext, setRecContext] = useState(4096);
   const [recKvType, setRecKvType] = useState("f16");
+  const [recModelOffload, setRecModelOffload] = useState<ModelOffload>("auto");
+  const [recKvPlacement, setRecKvPlacement] = useState<KvPlacement>("auto");
   const [recImageSupport, setRecImageSupport] = useState(false);
   const [recMmprojFile, setRecMmprojFile] = useState("");
+  const [recMtpSupport, setRecMtpSupport] = useState(false);
+  const [recMtpFile, setRecMtpFile] = useState("");
   const [detailSheetOpen, setDetailSheetOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
   const [compareSelections, setCompareSelections] = useState<CompareSelection[]>([]);
@@ -1019,6 +1575,7 @@ export function HuggingFaceBrowserPage() {
         limit: isDirectLookup ? 5 : PAGE_SIZE,
         sort: sortField(sortMode),
         offset: 0,
+        mode: isSdMode ? "sd" : null,
       });
       if (isDirectLookup) {
         const exact = data.filter((d) => d.modelId.toLowerCase() === debouncedQuery.toLowerCase());
@@ -1036,7 +1593,7 @@ export function HuggingFaceBrowserPage() {
       setSearching(false);
       setHasSearched(true);
     }
-  }, [debouncedQuery, sortMode, sortField, isDirectLookup]);
+  }, [debouncedQuery, sortMode, sortField, isDirectLookup, isSdMode]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !hasMore) return;
@@ -1047,6 +1604,7 @@ export function HuggingFaceBrowserPage() {
         limit: PAGE_SIZE,
         sort: sortField(sortMode),
         offset: results.length,
+        mode: isSdMode ? "sd" : null,
       });
       if (data.length < PAGE_SIZE) setHasMore(false);
       if (data.length > 0) {
@@ -1056,7 +1614,7 @@ export function HuggingFaceBrowserPage() {
     } finally {
       setLoadingMore(false);
     }
-  }, [loadingMore, hasMore, debouncedQuery, sortMode, sortField, results.length]);
+  }, [loadingMore, hasMore, debouncedQuery, sortMode, sortField, results.length, isSdMode]);
 
   useEffect(() => {
     if (view.kind === "search") {
@@ -1092,20 +1650,50 @@ export function HuggingFaceBrowserPage() {
       setReadme(null);
       setReadmeLoading(true);
       setRunabilityScores({});
+      setSdScores({});
       setRecData(null);
-      setRecLoading(true);
-      setFilesPanelTab("recommended");
+      setRecLoading(!isOllamaMode && !isSdMode);
+      setFilesPanelTab(isOllamaMode || isSdMode ? "files" : "recommended");
       setCompareOpen(false);
       setCompareSelections([]);
       setRecImageSupport(false);
       setRecMmprojFile("");
 
-      const filesPromise = invoke<HfModelInfo>("hf_get_model_files", { modelId })
+      const filesPromise = invoke<HfModelInfo>("hf_get_model_files", {
+        modelId,
+        mode: isSdMode ? "sd" : null,
+      })
         .then((info) => {
           setModelInfo(info);
-          // Fetch runability scores in background
-          const runnableFiles = info.files.filter((f) => f.size > 0 && !f.isMmproj);
-          if (runnableFiles.length > 0) {
+          // Fetch runability scores in background (skipped in Ollama mode — host hardware unknown)
+          const runnableFiles = info.files.filter((f) => f.size > 0 && !f.isMmproj && !f.isMtp);
+          if (runnableFiles.length > 0 && isSdMode) {
+            invoke<SdRunabilityScore[]>("hf_compute_sd_runability", {
+              files: runnableFiles.map((f) => ({
+                filename: f.filename,
+                size: f.size,
+                quantization: f.quantization,
+              })),
+            })
+              .then((scores) => {
+                const sdMap: Record<string, SdRunabilityScore> = {};
+                const map: Record<string, RunabilityScore> = {};
+                for (const s of scores) {
+                  sdMap[s.filename] = s;
+                  map[s.filename] = {
+                    filename: s.filename,
+                    score: s.score,
+                    label: s.label,
+                    fitsInRam: s.fitsInRam,
+                    fitsInVram: s.fitsInVram,
+                    gpuMode: s.fitsInVram ? "full" : s.fitsInRam ? "cpu" : "cpu",
+                  };
+                }
+                setSdScores(sdMap);
+                setRunabilityScores(map);
+              })
+              .catch(() => {});
+          } else if (runnableFiles.length > 0 && !isOllamaMode) {
             invoke<RunabilityScore[]>("hf_compute_runability", {
               modelId: info.modelId,
               files: runnableFiles.map((f) => ({
@@ -1142,12 +1730,17 @@ export function HuggingFaceBrowserPage() {
 
       await Promise.allSettled([filesPromise, readmePromise]);
     },
-    [setView],
+    [setView, isOllamaMode, isSdMode],
   );
 
   useEffect(() => {
     if (view.kind !== "model" || !modelInfo) return;
-    const files = modelInfo.files.filter((f) => f.size > 0 && !f.isMmproj);
+    if (isOllamaMode || isSdMode) {
+      setRecLoading(false);
+      setRecData(null);
+      return;
+    }
+    const files = modelInfo.files.filter((f) => f.size > 0 && !f.isMmproj && !f.isMtp);
     if (files.length === 0) {
       setRecLoading(false);
       return;
@@ -1170,6 +1763,10 @@ export function HuggingFaceBrowserPage() {
         setRecFile(data.best?.filename || files[0]?.filename || "");
         setRecContext(data.best?.contextLength || 4096);
         setRecKvType(data.best?.kvType || "q8_0");
+        if (!data.supportsGpuOffload) {
+          setRecModelOffload("auto");
+          setRecKvPlacement("auto");
+        }
       })
       .catch(() => {
         if (cancelled) return;
@@ -1182,17 +1779,89 @@ export function HuggingFaceBrowserPage() {
     return () => {
       cancelled = true;
     };
-  }, [view.kind, modelInfo]);
+  }, [view.kind, modelInfo, isOllamaMode, isSdMode]);
 
   const filesWithSize = modelInfo?.files.filter((f) => f.size > 0) ?? [];
   const runnableFilesWithSize = useMemo(
-    () => filesWithSize.filter((f) => !f.isMmproj),
+    () => filesWithSize.filter((f) => !f.isMmproj && !f.isMtp),
     [filesWithSize],
   );
   const mmprojFilesWithSize = useMemo(
     () => filesWithSize.filter((f) => f.isMmproj),
     [filesWithSize],
   );
+  const mtpFilesWithSize = useMemo(
+    () => filesWithSize.filter((f) => f.isMtp && !f.isMmproj),
+    [filesWithSize],
+  );
+  const selectedRecommendedFile = useMemo(
+    () => recData?.files.find((file) => file.filename === recFile) ?? recData?.files[0] ?? null,
+    [recData, recFile],
+  );
+  const recMtpBundled = (recData?.arch?.nextnPredictLayers ?? 0) > 0;
+  const recMtpAvailable = recMtpBundled || mtpFilesWithSize.length > 0;
+  const selectedRecMmproj = useMemo(
+    () =>
+      recImageSupport && recMmprojFile
+        ? (mmprojFilesWithSize.find((file) => file.filename === recMmprojFile) ?? null)
+        : null,
+    [mmprojFilesWithSize, recImageSupport, recMmprojFile],
+  );
+  const selectedRecMtp = useMemo(
+    () =>
+      recMtpSupport && !recMtpBundled
+        ? (mtpFilesWithSize.find((file) => file.filename === recMtpFile) ??
+          mtpFilesWithSize[0] ??
+          null)
+        : null,
+    [mtpFilesWithSize, recMtpBundled, recMtpFile, recMtpSupport],
+  );
+  const activeSidecarReserveBytes = (selectedRecMmproj?.size ?? 0) + (selectedRecMtp?.size ?? 0);
+  const gpuOptionsEnabled = Boolean(recData?.supportsGpuOffload);
+  const recommendedMixedGpuLayers = useMemo(() => {
+    if (!recData || !selectedRecommendedFile) return null;
+    const totalLayers = recData.arch?.blockCount;
+    if (!totalLayers || totalLayers <= 0 || recData.availableVram <= 0) return null;
+
+    const bpv = KV_BPV[recKvType] || 2;
+    const maxAllowedContext = Math.max(
+      maxContextForBpv(
+        selectedRecommendedFile.size,
+        recData.kvBasePerToken,
+        bpv,
+        recData.totalAvailable,
+        recData.modelMaxContext,
+        activeSidecarReserveBytes,
+      ),
+      1024,
+    );
+    const clampedCtx = Math.min(Math.max(recContext, 1024), maxAllowedContext);
+    const effectiveKvCtx = recData.kvContextCap
+      ? Math.min(clampedCtx, recData.kvContextCap)
+      : clampedCtx;
+    const kvBytes = recData.kvBasePerToken ? recData.kvBasePerToken * bpv * effectiveKvCtx : 0;
+    const overhead = computeOverhead(selectedRecommendedFile.size);
+    const totalNeeded = selectedRecommendedFile.size + kvBytes + overhead + activeSidecarReserveBytes;
+    const vramBudget = Math.max(recData.availableVram * 0.9 - activeSidecarReserveBytes, 0);
+
+    if (selectedRecommendedFile.size <= vramBudget) return totalLayers;
+    if (totalNeeded <= 0) return null;
+
+    const layerBudget =
+      recKvPlacement === "ram"
+        ? Math.max(vramBudget - overhead, 0)
+        : Math.max(vramBudget - Math.min(kvBytes, vramBudget * 0.25), 0);
+    const layers = Math.floor((layerBudget / totalNeeded) * totalLayers);
+    return Math.max(Math.min(layers, totalLayers), 1);
+  }, [
+    activeSidecarReserveBytes,
+    recContext,
+    recData,
+    recFile,
+    recKvPlacement,
+    recKvType,
+    selectedRecommendedFile,
+  ]);
 
   useEffect(() => {
     if (!mmprojFilesWithSize.length) {
@@ -1208,6 +1877,23 @@ export function HuggingFaceBrowserPage() {
       return mmprojFilesWithSize[0]?.filename ?? "";
     });
   }, [mmprojFilesWithSize]);
+
+  useEffect(() => {
+    if (!mtpFilesWithSize.length) {
+      setRecMtpFile("");
+      if (!recMtpBundled) {
+        setRecMtpSupport(false);
+      }
+      return;
+    }
+
+    setRecMtpFile((current) => {
+      if (current && mtpFilesWithSize.some((file) => file.filename === current)) {
+        return current;
+      }
+      return mtpFilesWithSize[0]?.filename ?? "";
+    });
+  }, [mtpFilesWithSize, recMtpBundled]);
 
   const sortedFilesWithSize = useMemo(() => {
     const sortedRunnable = [...runnableFilesWithSize].sort((a, b) => {
@@ -1227,8 +1913,12 @@ export function HuggingFaceBrowserPage() {
       a.filename.localeCompare(b.filename),
     );
 
-    return [...sortedRunnable, ...sortedMmproj];
-  }, [mmprojFilesWithSize, runabilityScores, runnableFilesWithSize]);
+    const sortedMtp = [...mtpFilesWithSize].sort((a, b) =>
+      a.filename.localeCompare(b.filename),
+    );
+
+    return [...sortedRunnable, ...sortedMtp, ...sortedMmproj];
+  }, [mmprojFilesWithSize, mtpFilesWithSize, runabilityScores, runnableFilesWithSize]);
 
   const openCompareModal = useCallback(() => {
     if (!recData || recData.files.length === 0) return;
@@ -1292,8 +1982,29 @@ export function HuggingFaceBrowserPage() {
   );
 
   const queueTrackedDownload = useCallback(
-    async (modelId: string, filename: string, metadata: QueueDownloadMetadata | null = null) => {
+    async (
+      modelId: string,
+      filename: string,
+      metadata: QueueDownloadMetadata | null = null,
+      ollamaContext?: { providerId: string; quantization: string | null } | null,
+    ) => {
       try {
+        if (ollamaContext) {
+          const tag =
+            ollamaContext.quantization && ollamaContext.quantization.trim().length > 0
+              ? `:${ollamaContext.quantization}`
+              : "";
+          const modelRef = `hf.co/${modelId}${tag}`;
+          const augmentedMetadata: QueueDownloadMetadata = {
+            ...(metadata ?? {}),
+            displayName: metadata?.displayName ?? filename,
+          };
+          return await invoke<string>("ollama_pull_model", {
+            credentialId: ollamaContext.providerId,
+            modelRef,
+            metadata: augmentedMetadata,
+          });
+        }
         return await invoke<string>("hf_queue_download", {
           modelId,
           filename,
@@ -1301,22 +2012,29 @@ export function HuggingFaceBrowserPage() {
         });
       } catch (err: any) {
         toast.error(
-          "Download failed",
-          typeof err === "string" ? err : err?.message || "Unknown error",
+          t("hfBrowser.downloadFailedToast"),
+          typeof err === "string" ? err : err?.message || t("hfBrowser.downloadFailedUnknown"),
         );
         return null;
       }
     },
-    [],
+    [t],
   );
 
   const autoCreateModelFromQueuedDownload = useCallback(
-    async (modelItem: QueuedDownload, mmprojItem: QueuedDownload | null) => {
+    async (
+      modelItem: QueuedDownload,
+      mmprojItem: QueuedDownload | null,
+      mtpItem: QueuedDownload | null,
+    ) => {
       if (!modelItem.resultPath) {
         return;
       }
 
       if (typeof modelItem.mmprojFile === "string" && !mmprojItem?.resultPath) {
+        return;
+      }
+      if (typeof modelItem.mtpFile === "string" && !mtpItem?.resultPath) {
         return;
       }
 
@@ -1332,6 +2050,19 @@ export function HuggingFaceBrowserPage() {
       const kvType = modelItem.kvType || "q8_0";
       const mmprojPath = mmprojItem?.resultPath ?? null;
       const hasImageSupport = !!mmprojPath;
+      const mtpPath = mtpItem?.resultPath ?? null;
+      const hasMtpSupport = !!mtpPath || modelItem.mtpBundled === true;
+      const modelOffloadValue =
+        (modelItem.llamaModelOffloadMode as ModelOffload | null | undefined) ??
+        gpuLayersToModelOffload(modelItem.llamaGpuLayers ?? null, null);
+      const modelOffloadCopy = getModelOffloadCopy(t, modelOffloadValue);
+      const placementValue: KvPlacement =
+        modelItem.llamaOffloadKqv === true
+          ? "vram"
+          : modelItem.llamaOffloadKqv === false
+            ? "ram"
+            : "auto";
+      const placementCopy = getKvPlacementCopy(t, placementValue);
 
       try {
         const defaultAdvanced = createDefaultAdvancedModelSettings();
@@ -1346,15 +2077,39 @@ export function HuggingFaceBrowserPage() {
             ...defaultAdvanced,
             contextLength,
             llamaKvType: kvType as NonNullable<typeof defaultAdvanced.llamaKvType>,
+            llamaGpuLayers: modelItem.llamaGpuLayers == null ? null : modelItem.llamaGpuLayers,
+            llamaOffloadKqv:
+              modelItem.llamaOffloadKqv == null ? null : modelItem.llamaOffloadKqv,
             llamaMmprojPath: mmprojPath,
+            llamaMtpEnabled: hasMtpSupport ? true : null,
+            llamaMtpModelPath: mtpPath,
           },
         });
 
+        const featureNotes = [
+          hasImageSupport ? t("hfBrowser.featureImageSupport") : null,
+          hasMtpSupport ? t("hfBrowser.featureMtp") : null,
+        ]
+          .filter(Boolean)
+          .join(t("hfBrowser.featureJoin"));
         toast.success(
-          "Model installed",
-          hasImageSupport
-            ? `${displayName} added with image support, ${contextLength.toLocaleString()} ctx, and ${kvType.toUpperCase()} KV cache.`
-            : `${displayName} added with ${contextLength.toLocaleString()} ctx and ${kvType.toUpperCase()} KV cache.`,
+          t("hfBrowser.modelInstalled"),
+          featureNotes
+            ? t("hfBrowser.modelInstalledWithFeatures", {
+                name: displayName,
+                features: featureNotes,
+                ctx: contextLength.toLocaleString(),
+                kv: kvType.toUpperCase(),
+                offload: modelOffloadCopy.label,
+                placement: placementCopy.label,
+              })
+            : t("hfBrowser.modelInstalledNoFeatures", {
+                name: displayName,
+                ctx: contextLength.toLocaleString(),
+                kv: kvType.toUpperCase(),
+                offload: modelOffloadCopy.label,
+                placement: placementCopy.label,
+              }),
         );
         setHasPersistedLocalModel(true);
 
@@ -1362,27 +2117,33 @@ export function HuggingFaceBrowserPage() {
         if (mmprojItem) {
           await dismissItem(mmprojItem.id);
         }
+        if (mtpItem) {
+          await dismissItem(mtpItem.id);
+        }
       } catch (err: any) {
         processedRecommendedInstallsRef.current.delete(installId);
         toast.error(
-          "Model setup failed",
-          `Downloaded ${displayName}, but auto-add failed: ${err?.message || String(err)}`,
+          t("hfBrowser.modelSetupFailed"),
+          t("hfBrowser.modelSetupFailedBody", {
+            name: displayName,
+            error: err?.message || String(err),
+          }),
         );
       }
     },
-    [dismissItem],
+    [dismissItem, t],
   );
 
   const queueRecommendedDownload = useCallback(async () => {
     if (!modelInfo || !recData) return;
     const selectedFile = recData.files.find((f) => f.filename === recFile) ?? recData.files[0];
     if (!selectedFile) return;
-    const selectedMmproj =
-      recImageSupport && recMmprojFile
-        ? (mmprojFilesWithSize.find((f) => f.filename === recMmprojFile) ?? null)
-        : null;
+    const selectedMmproj = selectedRecMmproj;
     if (recImageSupport && !selectedMmproj) {
-      toast.error("Image support unavailable", "Select a multimodal projector file first.");
+      toast.error(
+        t("hfBrowser.imageSupportUnavailable"),
+        t("hfBrowser.imageSupportUnavailableBody"),
+      );
       return;
     }
 
@@ -1394,6 +2155,7 @@ export function HuggingFaceBrowserPage() {
         bpv,
         recData.totalAvailable,
         recData.modelMaxContext,
+        activeSidecarReserveBytes,
       ),
       1024,
     );
@@ -1402,6 +2164,14 @@ export function HuggingFaceBrowserPage() {
     const installId = crypto.randomUUID();
     const displayName =
       extractFileDisplayName(selectedFile.filename) || extractModelShortName(modelInfo.modelId);
+    const requestedModelOffload = gpuOptionsEnabled ? recModelOffload : "auto";
+    const requestedGpuLayers = modelOffloadToGpuLayers(
+      requestedModelOffload,
+      recData.arch?.blockCount,
+      recommendedMixedGpuLayers,
+    );
+
+    const selectedMtp = selectedRecMtp;
 
     if (selectedMmproj) {
       const mmprojQueueId = await queueTrackedDownload(modelInfo.modelId, selectedMmproj.filename, {
@@ -1416,55 +2186,143 @@ export function HuggingFaceBrowserPage() {
       }
     }
 
+    if (selectedMtp) {
+      const mtpQueueId = await queueTrackedDownload(modelInfo.modelId, selectedMtp.filename, {
+        createModelWhenFinished: false,
+        mmprojFile: false,
+        mtpFile: false,
+        installId,
+        displayName,
+        downloadRole: "mtp",
+      });
+      if (!mtpQueueId) {
+        return;
+      }
+    }
+
     const modelQueueId = await queueTrackedDownload(modelInfo.modelId, selectedFile.filename, {
       createModelWhenFinished: true,
       mmprojFile: selectedMmproj?.filename ?? false,
+      mtpFile: selectedMtp?.filename ?? false,
+      mtpBundled: recMtpSupport && recMtpBundled,
       installId,
       displayName,
       contextLength: requestedContext,
       kvType: recKvType,
+      llamaOffloadKqv: gpuOptionsEnabled ? kvPlacementToOffloadKqv(recKvPlacement) : null,
+      llamaGpuLayers: requestedGpuLayers,
+      llamaModelOffloadMode: requestedModelOffload,
       downloadRole: "model",
     });
     if (!modelQueueId && selectedMmproj) {
       toast.error(
-        "Download partially queued",
-        "The mmproj file was queued, but the main model file could not be queued.",
+        t("hfBrowser.downloadPartiallyQueued"),
+        t("hfBrowser.downloadPartiallyQueuedBody"),
       );
     }
   }, [
     mmprojFilesWithSize,
+    mtpFilesWithSize,
     modelInfo,
     queueTrackedDownload,
     recContext,
     recData,
     recFile,
+    recModelOffload,
     recImageSupport,
     recKvType,
+    recKvPlacement,
     recMmprojFile,
+    recMtpSupport,
+    recMtpFile,
+    recMtpBundled,
+    selectedRecMmproj,
+    selectedRecMtp,
+    activeSidecarReserveBytes,
+    gpuOptionsEnabled,
+    recommendedMixedGpuLayers,
+    t,
   ]);
 
   const queueFilesDownload = useCallback(
     async (file: HfModelFile) => {
       if (!modelInfo) return;
 
-      const shouldCreateModel = Boolean(returnTo) && !file.isMmproj;
+      if (isSdMode) {
+        const family = sdScores[file.filename]?.familyGuess ?? "sd15";
+        const role = file.role ?? "checkpoint";
+        const repoSlug = modelInfo.modelId.replace(/[^A-Za-z0-9._-]+/g, "_");
+        const destinationPath = sdModelsDir
+          ? `${sdModelsDir}/${repoSlug}/${file.filename}`
+          : null;
+        await queueTrackedDownload(modelInfo.modelId, file.filename, {
+          queueKind: "sd",
+          destinationPath,
+          variant: `${family}:${role}`,
+          displayName: extractModelShortName(modelInfo.modelId),
+          installId: crypto.randomUUID(),
+        });
+        return;
+      }
+
+      const fileRecommendation = recData?.files.find((item) => item.filename === file.filename) ?? null;
+      const requestedModelOffload = gpuOptionsEnabled ? recModelOffload : "auto";
+      const requestedGpuLayers = fileRecommendation
+        ? modelOffloadToGpuLayers(
+            requestedModelOffload,
+            recData?.arch?.blockCount,
+            recommendedMixedGpuLayers,
+          )
+        : null;
+
+      const shouldCreateModel = Boolean(returnTo) && !file.isMmproj && !file.isMtp;
       const metadata = shouldCreateModel
         ? {
             createModelWhenFinished: true,
             installId: crypto.randomUUID(),
             displayName: extractFileDisplayName(file.filename) || extractModelShortName(modelInfo.modelId),
+            contextLength: recContext,
+            kvType: recKvType,
+            llamaOffloadKqv: gpuOptionsEnabled ? kvPlacementToOffloadKqv(recKvPlacement) : null,
+            llamaGpuLayers: requestedGpuLayers,
+            llamaModelOffloadMode: requestedModelOffload,
             downloadRole: "model" as const,
           }
         : null;
 
-      await queueTrackedDownload(modelInfo.modelId, file.filename, metadata);
+      const ollamaContext =
+        isOllamaMode && selectedOllamaProviderId
+          ? { providerId: selectedOllamaProviderId, quantization: file.quantization }
+          : null;
+      await queueTrackedDownload(modelInfo.modelId, file.filename, metadata, ollamaContext);
     },
-    [modelInfo, queueTrackedDownload, returnTo],
+    [
+      gpuOptionsEnabled,
+      isOllamaMode,
+      isSdMode,
+      modelInfo,
+      queueTrackedDownload,
+      recContext,
+      recData?.arch?.blockCount,
+      recData?.files,
+      recKvPlacement,
+      recKvType,
+      recModelOffload,
+      recommendedMixedGpuLayers,
+      returnTo,
+      sdModelsDir,
+      sdScores,
+      selectedOllamaProviderId,
+    ],
   );
 
   useEffect(() => {
     for (const modelItem of queue) {
-      if (!modelItem.createModelWhenFinished || modelItem.downloadRole === "mmproj") {
+      if (
+        !modelItem.createModelWhenFinished ||
+        modelItem.downloadRole === "mmproj" ||
+        modelItem.downloadRole === "mtp"
+      ) {
         continue;
       }
       if (modelItem.status !== "complete") {
@@ -1490,8 +2348,22 @@ export function HuggingFaceBrowserPage() {
         }
       }
 
+      let mtpItem: QueuedDownload | null = null;
+      if (typeof modelItem.mtpFile === "string") {
+        mtpItem =
+          queue.find(
+            (item) =>
+              item.installId === modelItem.installId &&
+              item.downloadRole === "mtp" &&
+              item.filename === modelItem.mtpFile,
+          ) ?? null;
+        if (!mtpItem || mtpItem.status !== "complete" || !mtpItem.resultPath) {
+          continue;
+        }
+      }
+
       processedRecommendedInstallsRef.current.add(installId);
-      void autoCreateModelFromQueuedDownload(modelItem, mmprojItem);
+      void autoCreateModelFromQueuedDownload(modelItem, mmprojItem, mtpItem);
     }
   }, [queue, autoCreateModelFromQueuedDownload]);
 
@@ -1506,7 +2378,10 @@ export function HuggingFaceBrowserPage() {
         (!prevItem || prevItem.status !== "cancelled") && item.status === "cancelled";
 
       if (becameComplete && !item.installId) {
-        toast.success("Download complete", `${item.filename} downloaded.`);
+        toast.success(
+          t("hfBrowser.downloadCompleteToast"),
+          t("hfBrowser.downloadCompleteBody", { name: item.filename }),
+        );
         void dismissItem(item.id);
       }
 
@@ -1514,7 +2389,13 @@ export function HuggingFaceBrowserPage() {
         if (item.installId) {
           processedRecommendedInstallsRef.current.delete(item.installId);
         }
-        toast.error("Download failed", `${item.filename}: ${item.error || "Unknown error"}`);
+        toast.error(
+          t("hfBrowser.downloadFailedToast"),
+          t("hfBrowser.downloadFailedFileBody", {
+            name: item.filename,
+            error: item.error || t("hfBrowser.downloadFailedUnknown"),
+          }),
+        );
       }
 
       if (becameCancelled && item.installId) {
@@ -1523,7 +2404,7 @@ export function HuggingFaceBrowserPage() {
     }
 
     prevQueueRef.current = queue;
-  }, [queue, dismissItem]);
+  }, [queue, dismissItem, t]);
 
   return (
     <div className="flex h-full flex-col text-fg">
@@ -1538,36 +2419,118 @@ export function HuggingFaceBrowserPage() {
               transition={{ duration: 0.15 }}
               className="flex flex-col"
             >
-              {/* Search bar */}
-              <div className="sticky top-0 z-10 border-b border-fg/5 bg-surface px-4 py-3 space-y-3">
-                <div className="relative">
-                  <Search
-                    size={16}
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-fg/40"
-                  />
-                  <input
-                    ref={searchInputRef}
-                    type="text"
-                    value={query}
-                    onChange={(e) => setQuery(e.target.value)}
-                    placeholder={t("hfBrowser.searchPlaceholder")}
-                    className={cn(
-                      "w-full rounded-xl border border-fg/10 bg-fg/5 py-2.5 pl-9 pr-9 text-sm text-fg placeholder-fg/40",
-                      "focus:border-fg/25 focus:outline-none transition",
+              {/* Search + filters */}
+              <div className="sticky top-0 z-10 border-b border-fg/5 bg-surface/95 backdrop-blur px-4 py-3 space-y-3">
+                {/* Search bar with inline destination */}
+                <div className="flex items-stretch gap-2">
+                  <div className="relative flex-1">
+                    <Search
+                      size={15}
+                      strokeWidth={2.25}
+                      className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-fg/40"
+                    />
+                    <input
+                      ref={searchInputRef}
+                      type="text"
+                      value={query}
+                      onChange={(e) => setQuery(e.target.value)}
+                      placeholder={t("hfBrowser.searchPlaceholder")}
+                      className={cn(
+                        "h-10 w-full rounded-xl border border-fg/10 bg-fg/4 pl-10 pr-9 text-[13px] text-fg placeholder-fg/35",
+                        "transition focus:border-accent/40 focus:bg-fg/6 focus:outline-none focus:ring-1 focus:ring-accent/20",
+                      )}
+                    />
+                    {query && (
+                      <button
+                        onClick={() => setQuery("")}
+                        className="absolute right-2.5 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md text-fg/40 transition hover:bg-fg/8 hover:text-fg/80"
+                        aria-label={t("hfBrowser.clearSearch")}
+                      >
+                        <X size={13} />
+                      </button>
                     )}
-                  />
-                  {query && (
+                  </div>
+
+                  {/* Filter button */}
+                  <button
+                    onClick={() => setShowFilterMenu(true)}
+                    className={cn(
+                      "relative flex h-10 shrink-0 items-center gap-1.5 rounded-xl border px-3 text-[13px] font-medium transition",
+                      activeFilterCount > 0
+                        ? "border-accent/40 bg-accent/12 text-accent hover:border-accent/55"
+                        : "border-fg/10 bg-fg/4 text-fg/70 hover:border-fg/25 hover:text-fg",
+                    )}
+                    aria-haspopup="menu"
+                    aria-expanded={showFilterMenu}
+                    aria-label={t("hfBrowser.filters")}
+                    title={t("hfBrowser.filters")}
+                  >
+                    <SlidersHorizontal size={14} />
+                    {activeFilterCount > 0 && (
+                      <span className="rounded-full bg-accent/25 px-1.5 text-[10px] font-semibold leading-[1.4] tabular-nums">
+                        {activeFilterCount}
+                      </span>
+                    )}
+                  </button>
+
+                  {/* Destination picker (single-line, search-bar height) */}
+                  <div className="flex h-10 shrink-0 items-center gap-1 rounded-xl border border-fg/10 bg-fg/4 p-1">
                     <button
-                      onClick={() => setQuery("")}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-fg/40 hover:text-fg/70"
+                      type="button"
+                      onClick={() => setSdMode(false)}
+                      className={cn(
+                        "flex h-full items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-medium transition-colors",
+                        !isSdMode ? "bg-accent/15 text-accent" : "text-fg/55 hover:text-fg/85",
+                      )}
                     >
-                      <X size={14} />
+                      <Cpu size={12} />
+                      {t("hfBrowser.modeLlm")}
                     </button>
-                  )}
+                    <button
+                      type="button"
+                      onClick={() => setSdMode(true)}
+                      className={cn(
+                        "flex h-full items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-medium transition-colors",
+                        isSdMode ? "bg-accent/15 text-accent" : "text-fg/55 hover:text-fg/85",
+                      )}
+                    >
+                      <ImageIcon size={12} />
+                      {t("hfBrowser.modeImage")}
+                    </button>
+                  </div>
+                  {!isSdMode ? (
+                  <button
+                    onClick={() => setShowOllamaProviderMenu(true)}
+                    className={cn(
+                      "group flex h-10 shrink-0 items-center gap-2 rounded-xl border px-3 text-[13px] font-medium transition",
+                      isOllamaMode
+                        ? "border-emerald-400/35 bg-emerald-500/10 text-emerald-200 hover:border-emerald-400/55 hover:bg-emerald-500/15"
+                        : "border-fg/10 bg-fg/4 text-fg/70 hover:border-fg/25 hover:text-fg",
+                    )}
+                    aria-haspopup="menu"
+                    aria-expanded={showOllamaProviderMenu}
+                    aria-label={t("hfBrowser.destination")}
+                  >
+                    {isOllamaMode ? (
+                      <Server size={14} className="text-emerald-300" />
+                    ) : (
+                      <HardDrive size={14} className="text-fg/55" />
+                    )}
+                    <span className="max-w-[9rem] truncate">
+                      {isOllamaMode
+                        ? (selectedOllamaProvider?.label ?? t("hfBrowser.destinationOllama"))
+                        : t("hfBrowser.destinationLocal")}
+                    </span>
+                    <ChevronDown
+                      size={13}
+                      className="shrink-0 opacity-50 transition group-hover:opacity-90"
+                    />
+                  </button>
+                  ) : null}
                 </div>
 
-                {/* Sort pills */}
-                <div className="flex gap-2 overflow-x-auto pb-0.5 no-scrollbar">
+                {/* Sort segmented bar with sliding indicator */}
+                <div className="flex gap-1 overflow-x-auto rounded-xl border border-fg/8 bg-fg/3 p-1 no-scrollbar">
                   {(
                     [
                       { key: "trending", icon: TrendingUp, label: t("hfBrowser.sortTrending") },
@@ -1579,27 +2542,37 @@ export function HuggingFaceBrowserPage() {
                       { key: "likes", icon: ThumbsUp, label: t("hfBrowser.sortLikes") },
                       { key: "lastModified", icon: Clock, label: t("hfBrowser.sortRecent") },
                     ] as const
-                  ).map(({ key, icon: Icon, label }) => (
-                    <button
-                      key={key}
-                      onClick={() => setSortMode(key)}
-                      className={cn(
-                        "flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition",
-                        sortMode === key
-                          ? "border-accent/40 bg-accent/15 text-accent"
-                          : "border-fg/10 bg-fg/5 text-fg/60 hover:border-fg/20",
-                      )}
-                    >
-                      <Icon size={12} />
-                      {label}
-                    </button>
-                  ))}
+                  ).map(({ key, icon: Icon, label }) => {
+                    const active = sortMode === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => setSortMode(key)}
+                        className={cn(
+                          "relative flex flex-1 shrink-0 items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium transition-colors",
+                          active ? "text-accent" : "text-fg/55 hover:text-fg/85",
+                        )}
+                      >
+                        {active && (
+                          <motion.span
+                            layoutId="hfSortIndicator"
+                            className="absolute inset-0 rounded-lg bg-accent/15 ring-1 ring-inset ring-accent/30"
+                            transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.6 }}
+                          />
+                        )}
+                        <span className="relative z-10 flex items-center gap-1.5">
+                          <Icon size={12} />
+                          {label}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
               {/* Content area */}
               <div className="px-4 py-3 space-y-2">
-                {/* Inline download cards */}
+{/* Inline download cards */}
                 {hasDownloads && (
                   <InlineDownloadCards
                     showDivider={results.length > 0 || searching}
@@ -1609,23 +2582,20 @@ export function HuggingFaceBrowserPage() {
 
                 {/* Loading state  */}
                 {searching && !hasSearched && (
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3">
                     {Array.from({ length: 12 }).map((_, i) => (
                       <div
                         key={i}
-                        className="rounded-xl border border-fg/5 bg-fg/2 px-3 py-2.5 animate-pulse"
+                        className="flex items-center gap-2.5 rounded-lg border border-fg/8 bg-fg/[0.02] px-2.5 py-2 animate-pulse"
                       >
-                        <div className="flex items-center gap-2">
-                          <div className="h-5 w-5 rounded-full bg-fg/8" />
-                          <div className="h-3 flex-1 rounded bg-fg/8" />
+                        <div className="h-6 w-6 shrink-0 rounded-full bg-fg/8" />
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <div className="h-3 w-3/4 rounded bg-fg/8" />
+                          <div className="h-2 w-1/2 rounded bg-fg/5" />
                         </div>
-                        <div className="mt-2 flex gap-2">
-                          <div className="h-2.5 w-20 rounded bg-fg/5" />
-                          <div className="h-2.5 w-10 rounded bg-fg/5" />
-                        </div>
-                        <div className="mt-1.5 flex gap-2">
-                          <div className="h-2.5 w-10 rounded bg-fg/5" />
+                        <div className="hidden sm:flex shrink-0 gap-2">
                           <div className="h-2.5 w-8 rounded bg-fg/5" />
+                          <div className="h-2.5 w-6 rounded bg-fg/5" />
                         </div>
                       </div>
                     ))}
@@ -1655,22 +2625,44 @@ export function HuggingFaceBrowserPage() {
                   </div>
                 )}
 
-                {!searching && results.length > 0 && (
-                  <div className="grid grid-cols-2 gap-2">
-                    {results.map((model) => {
+                {!searching && results.length > 0 && displayedResults.length === 0 && (
+                  <div className="flex flex-col items-center gap-2 py-12 text-center">
+                    <SlidersHorizontal size={20} className="text-fg/30" />
+                    <p className="text-sm text-fg/60">{t("hfBrowser.noResultsMatchFilters")}</p>
+                    <button
+                      onClick={() => {
+                        setFilterPipelineTags(new Set());
+                        setFilterParamMin("");
+                        setFilterParamMax("");
+                      }}
+                      className="mt-1 rounded-full border border-fg/15 bg-fg/5 px-3 py-1 text-[11px] font-medium text-fg/70 transition hover:border-fg/30"
+                    >
+                      {t("hfBrowser.clearFilters")}
+                    </button>
+                  </div>
+                )}
+
+                {!searching && displayedResults.length > 0 && (
+                  <div
+                    className={cn(
+                      browserViewMode === "list" && "flex flex-col",
+                      browserViewMode === "grid" &&
+                        "grid grid-cols-1 gap-1.5 md:grid-cols-2 xl:grid-cols-3",
+                      browserViewMode === "gallery" &&
+                        "grid grid-cols-1 gap-2.5 md:grid-cols-2",
+                    )}
+                  >
+                    {displayedResults.map((model) => {
                       const paramSize = extractParamSize(model.tags, model.modelId);
                       const avatarUrl = avatars[model.author];
-                      return (
-                        <button
-                          key={model.modelId}
-                          onClick={() => openModel(model.modelId)}
-                          className={cn(
-                            "group rounded-xl border border-fg/10 bg-fg/3 px-3 py-2.5 text-left transition",
-                            "hover:border-fg/20 hover:bg-fg/6 active:scale-[0.98]",
-                          )}
-                        >
-                          {/* Model name with author avatar */}
-                          <div className="flex items-center gap-2 min-w-0">
+
+                      if (browserViewMode === "list") {
+                        return (
+                          <button
+                            key={model.modelId}
+                            onClick={() => openModel(model.modelId)}
+                            className="group flex items-center gap-2.5 border-b border-fg/[0.05] px-1.5 py-2 text-left transition hover:bg-fg/[0.03]"
+                          >
                             {avatarUrl ? (
                               <img
                                 src={avatarUrl}
@@ -1681,50 +2673,171 @@ export function HuggingFaceBrowserPage() {
                             ) : (
                               <div
                                 className={cn(
-                                  "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-fg/70",
+                                  "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[11px] font-bold text-fg/75",
                                   authorColor(model.author),
                                 )}
                               >
                                 {model.author.charAt(0).toUpperCase()}
                               </div>
                             )}
-                            <span className="truncate text-[13px] font-semibold text-fg">
+                            <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-fg">
                               {model.modelId}
                             </span>
-                          </div>
+                            <div className="hidden shrink-0 items-center gap-1.5 text-[10.5px] text-fg/45 md:flex">
+                              {model.pipelineTag && (
+                                <span className="truncate max-w-[8rem]">{model.pipelineTag}</span>
+                              )}
+                              {paramSize && (
+                                <>
+                                  <span className="text-fg/20">·</span>
+                                  <span>{paramSize}</span>
+                                </>
+                              )}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2 text-[10.5px] tabular-nums text-fg/50">
+                              <span className="flex items-center gap-0.5" title={t("hfBrowser.downloadsTitle")}>
+                                <ArrowDownToLine size={10} className="text-fg/35" />
+                                {formatNumber(model.downloads)}
+                              </span>
+                              <span className="flex items-center gap-0.5" title={t("hfBrowser.likesTitle")}>
+                                <Heart size={10} className="text-fg/35" />
+                                {formatNumber(model.likes)}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      }
 
-                          {/* Meta: pipeline tag · param size · updated */}
-                          <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-fg/50 overflow-hidden">
-                            {model.pipelineTag && (
-                              <>
-                                <Cpu size={10} className="shrink-0 text-fg/40" />
-                                <span className="truncate">{model.pipelineTag}</span>
-                              </>
+                      if (browserViewMode === "gallery") {
+                        return (
+                          <button
+                            key={model.modelId}
+                            onClick={() => openModel(model.modelId)}
+                            className={cn(
+                              "group flex items-stretch gap-3 rounded-xl border border-fg/10 bg-fg/[0.025] p-3 text-left transition",
+                              "hover:border-fg/25 hover:bg-fg/[0.05] active:scale-[0.99]",
                             )}
-                            {paramSize && (
-                              <>
-                                <span className="text-fg/20 shrink-0">·</span>
-                                <Layers size={10} className="shrink-0 text-fg/40" />
-                                <span className="shrink-0">{paramSize}</span>
-                              </>
+                          >
+                            {avatarUrl ? (
+                              <img
+                                src={avatarUrl}
+                                alt={model.author}
+                                className="h-12 w-12 shrink-0 self-center rounded-lg object-cover"
+                                loading="lazy"
+                              />
+                            ) : (
+                              <div
+                                className={cn(
+                                  "flex h-12 w-12 shrink-0 self-center items-center justify-center rounded-lg text-[18px] font-bold text-fg/75",
+                                  authorColor(model.author),
+                                )}
+                              >
+                                {model.author.charAt(0).toUpperCase()}
+                              </div>
                             )}
-                            {model.lastModified && (
-                              <>
-                                <span className="text-fg/20 shrink-0">·</span>
-                                <span className="truncate">
-                                  {formatTimeAgo(model.lastModified)}
+
+                            <div className="flex min-w-0 flex-1 flex-col justify-center gap-1">
+                              <div className="flex items-baseline gap-2 min-w-0">
+                                <span className="truncate text-[13px] font-semibold text-fg">
+                                  {model.modelId.split("/").pop()}
                                 </span>
-                              </>
-                            )}
+                                <span className="truncate text-[10.5px] text-fg/40">
+                                  {model.author}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-2 text-[10.5px] text-fg/55">
+                                {model.pipelineTag && (
+                                  <span className="truncate rounded bg-fg/8 px-1.5 py-0.5 font-medium">
+                                    {model.pipelineTag}
+                                  </span>
+                                )}
+                                {paramSize && (
+                                  <span className="shrink-0 rounded bg-fg/8 px-1.5 py-0.5 font-medium">
+                                    {paramSize}
+                                  </span>
+                                )}
+                                {model.lastModified && (
+                                  <span className="shrink-0 text-fg/40">
+                                    {formatTimeAgo(model.lastModified)}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div className="flex items-center gap-3 text-[10.5px] tabular-nums text-fg/50">
+                                <span className="flex items-center gap-1" title={t("hfBrowser.downloadsTitle")}>
+                                  <ArrowDownToLine size={10} className="text-fg/35" />
+                                  {formatNumber(model.downloads)}
+                                </span>
+                                <span className="flex items-center gap-1" title={t("hfBrowser.likesTitle")}>
+                                  <Heart size={10} className="text-fg/35" />
+                                  {formatNumber(model.likes)}
+                                </span>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      }
+
+                      // grid (default compact card)
+                      return (
+                        <button
+                          key={model.modelId}
+                          onClick={() => openModel(model.modelId)}
+                          className={cn(
+                            "group flex items-center gap-2.5 rounded-lg border border-fg/8 bg-fg/[0.02] px-2.5 py-2 text-left transition",
+                            "hover:border-fg/20 hover:bg-fg/[0.05] active:scale-[0.99]",
+                          )}
+                        >
+                          {avatarUrl ? (
+                            <img
+                              src={avatarUrl}
+                              alt={model.author}
+                              className="h-6 w-6 shrink-0 rounded-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : (
+                            <div
+                              className={cn(
+                                "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[12px] font-bold text-fg/75",
+                                authorColor(model.author),
+                              )}
+                            >
+                              {model.author.charAt(0).toUpperCase()}
+                            </div>
+                          )}
+
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[12.5px] font-medium text-fg">
+                              {model.modelId}
+                            </div>
+                            <div className="mt-0.5 flex items-center gap-1 truncate text-[10.5px] text-fg/45">
+                              {model.pipelineTag && (
+                                <span className="truncate">{model.pipelineTag}</span>
+                              )}
+                              {paramSize && (
+                                <>
+                                  <span className="text-fg/20">·</span>
+                                  <span className="shrink-0">{paramSize}</span>
+                                </>
+                              )}
+                              {model.lastModified && (
+                                <>
+                                  <span className="text-fg/20">·</span>
+                                  <span className="shrink-0 truncate">
+                                    {formatTimeAgo(model.lastModified)}
+                                  </span>
+                                </>
+                              )}
+                            </div>
                           </div>
 
-                          {/* Stats: downloads · likes */}
-                          <div className="mt-1.5 flex items-center gap-3 text-[11px] text-fg/45">
-                            <span className="flex items-center gap-1">
+                          <div className="flex shrink-0 items-center gap-2.5 text-[10.5px] tabular-nums text-fg/50">
+                            <span className="flex items-center gap-1" title={t("hfBrowser.downloadsTitle")}>
                               <ArrowDownToLine size={10} className="text-fg/35" />
                               {formatNumber(model.downloads)}
                             </span>
-                            <span className="flex items-center gap-1">
+                            <span className="flex items-center gap-1" title={t("hfBrowser.likesTitle")}>
                               <Heart size={10} className="text-fg/35" />
                               {formatNumber(model.likes)}
                             </span>
@@ -1750,10 +2863,10 @@ export function HuggingFaceBrowserPage() {
                       {loadingMore ? (
                         <>
                           <Loader size={14} className="animate-spin" />
-                          Loading...
+                          {t("hfBrowser.loading")}
                         </>
                       ) : (
-                        "Load more"
+                        t("hfBrowser.loadMore")
                       )}
                     </button>
                   </div>
@@ -1761,7 +2874,7 @@ export function HuggingFaceBrowserPage() {
 
                 {/* End of results indicator (not for direct lookups) */}
                 {!searching && hasSearched && results.length > 0 && !hasMore && !isDirectLookup && (
-                  <p className="py-4 text-center text-[11px] text-fg/25">No more results</p>
+                  <p className="py-4 text-center text-[11px] text-fg/25">{t("hfBrowser.noMoreResults")}</p>
                 )}
               </div>
             </motion.div>
@@ -1780,7 +2893,7 @@ export function HuggingFaceBrowserPage() {
               {loadingFiles && !modelInfo && (
                 <div className="flex items-center justify-center gap-2 py-20 text-fg/50">
                   <Loader size={18} className="animate-spin" />
-                  <span className="text-sm">Loading model info...</span>
+                  <span className="text-sm">{t("hfBrowser.loadingModelInfo")}</span>
                 </div>
               )}
 
@@ -1868,7 +2981,7 @@ export function HuggingFaceBrowserPage() {
                       {readmeLoading && (
                         <div className="flex items-center justify-center gap-2 py-12 text-fg/40">
                           <Loader size={16} className="animate-spin" />
-                          <span className="text-xs">Loading README...</span>
+                          <span className="text-xs">{t("hfBrowser.loadingReadme")}</span>
                         </div>
                       )}
 
@@ -1877,7 +2990,7 @@ export function HuggingFaceBrowserPage() {
                       {!readmeLoading && !readme && (
                         <div className="flex flex-col items-center gap-2 py-12 text-center text-fg/30">
                           <FileText size={32} />
-                          <p className="text-sm">No README available</p>
+                          <p className="text-sm">{t("hfBrowser.noReadme")}</p>
                         </div>
                       )}
                     </div>
@@ -1889,33 +3002,58 @@ export function HuggingFaceBrowserPage() {
                         ref={filesPanelRef}
                         className="flex flex-col overflow-hidden will-change-transform rounded-b-xl"
                       >
-                        <div className="border-b border-fg/10 px-3 py-2">
-                          <div className="grid grid-cols-2 gap-1 rounded-lg border border-fg/10 bg-fg/5 p-1">
-                            <button
-                              type="button"
-                              onClick={() => setFilesPanelTab("recommended")}
-                              className={cn(
-                                "rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors",
-                                filesPanelTab === "recommended"
-                                  ? "bg-emerald-400/15 text-emerald-400"
-                                  : "text-fg/50 hover:text-fg/70",
-                              )}
-                            >
-                              {t("hfBrowser.recommendedSettings")}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setFilesPanelTab("files")}
-                              className={cn(
-                                "rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors",
-                                filesPanelTab === "files"
-                                  ? "bg-emerald-400/15 text-emerald-400"
-                                  : "text-fg/50 hover:text-fg/70",
-                              )}
-                            >
+                        <div className="border-b border-fg/10 px-3 py-2 space-y-2">
+                          {isOllamaMode ? (
+                            <>
+                              <div className="rounded-md border border-amber-400/20 bg-amber-500/5 px-3 py-2 text-[12px] leading-relaxed text-amber-300/95">
+                                <div className="flex items-start gap-2">
+                                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                                  <div className="space-y-0.5">
+                                    <div className="font-medium">
+                                      {t("hfBrowser.ollamaModeNoticeTitle")}
+                                    </div>
+                                    <div className="text-amber-300/80">
+                                      {t("hfBrowser.ollamaModeNoticeBody")}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="rounded-lg border border-fg/10 bg-fg/5 px-3 py-2 text-center text-[12px] font-medium text-fg/60">
+                                {t("hfBrowser.files")} ({filesWithSize.length})
+                              </div>
+                            </>
+                          ) : isSdMode ? (
+                            <div className="rounded-lg border border-fg/10 bg-fg/5 px-3 py-2 text-center text-[12px] font-medium text-fg/60">
                               {t("hfBrowser.files")} ({filesWithSize.length})
-                            </button>
-                          </div>
+                            </div>
+                          ) : (
+                            <div className="grid grid-cols-2 gap-1 rounded-lg border border-fg/10 bg-fg/5 p-1">
+                              <button
+                                type="button"
+                                onClick={() => setFilesPanelTab("recommended")}
+                                className={cn(
+                                  "rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors",
+                                  filesPanelTab === "recommended"
+                                    ? "bg-emerald-400/15 text-emerald-400"
+                                    : "text-fg/50 hover:text-fg/70",
+                                )}
+                              >
+                                {t("hfBrowser.recommendedSettings")}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setFilesPanelTab("files")}
+                                className={cn(
+                                  "rounded-md px-2 py-1.5 text-[11px] font-medium transition-colors",
+                                  filesPanelTab === "files"
+                                    ? "bg-emerald-400/15 text-emerald-400"
+                                    : "text-fg/50 hover:text-fg/70",
+                                )}
+                              >
+                                {t("hfBrowser.files")} ({filesWithSize.length})
+                              </button>
+                            </div>
+                          )}
                         </div>
 
                         {/* Recommended settings tab */}
@@ -1949,6 +3087,7 @@ export function HuggingFaceBrowserPage() {
                                       bpvSel,
                                       totalAvail,
                                       recData.modelMaxContext,
+                                      activeSidecarReserveBytes,
                                     ),
                                     1024,
                                   );
@@ -1960,50 +3099,51 @@ export function HuggingFaceBrowserPage() {
                                   const kvBytes = recData.kvBasePerToken
                                     ? recData.kvBasePerToken * bpvSel * effectiveKvCtx
                                     : 0;
-                                  const { score, label, gpuMode } = calcScore(
+                                  const { score, gpuMode } = calcScore(
                                     selFile.size,
                                     selFile.quantQuality,
                                     kvBytes,
+                                    recData.availableRam,
                                     totalAvail,
                                     recData.availableVram,
+                                    recModelOffload,
+                                    recKvPlacement,
+                                    activeSidecarReserveBytes,
+                                  );
+                                  const modeCopy = getRunabilityModeCopy(t, gpuMode);
+                                  const runStatus = getRunStatus(t, score);
+                                  const totalNeeded =
+                                    selFile.size +
+                                    kvBytes +
+                                    computeOverhead(selFile.size) +
+                                    activeSidecarReserveBytes;
+                                  const remainingHeadroom = Math.max(totalAvail - totalNeeded, 0);
+                                  const headroomStatus = getHeadroomStatus(
+                                    t,
+                                    totalNeeded,
+                                    totalAvail,
+                                  );
+                                  const perfStatus = getPerformanceStatus(t, gpuMode);
+                                  const statusRow = (
+                                    labelText: string,
+                                    value: ReactNode,
+                                    tone?: string,
+                                  ) => (
+                                    <div className="flex items-center justify-between gap-3 py-1.5">
+                                      <span className="text-[12px] text-fg/45">{labelText}</span>
+                                      <span
+                                        className={cn(
+                                          "min-w-0 text-right text-[12px] font-medium",
+                                          tone || "text-fg/75",
+                                        )}
+                                      >
+                                        {value}
+                                      </span>
+                                    </div>
                                   );
 
-                                  const scoreColor =
-                                    label === "excellent"
-                                      ? "text-emerald-500"
-                                      : label === "good"
-                                        ? "text-blue-500"
-                                        : label === "marginal"
-                                          ? "text-amber-500"
-                                          : label === "poor"
-                                            ? "text-orange-500"
-                                            : "text-red-500";
-
-                                  const scoreBg =
-                                    label === "excellent"
-                                      ? "bg-emerald-400/15"
-                                      : label === "good"
-                                        ? "bg-blue-400/15"
-                                        : label === "marginal"
-                                          ? "bg-amber-400/15"
-                                          : label === "poor"
-                                            ? "bg-orange-400/15"
-                                            : "bg-red-400/15";
-
-                                  const gpuLabel =
-                                    {
-                                      full: t("hfBrowser.gpuFull"),
-                                      nearFull: t("hfBrowser.gpuNearFull"),
-                                      kvSpill: t("hfBrowser.gpuKvSpill"),
-                                      kvHeavySpill: t("hfBrowser.gpuKvHeavySpill"),
-                                      mostLayers: t("hfBrowser.gpuMostLayers"),
-                                      halfLayers: t("hfBrowser.gpuHalfLayers"),
-                                      fewLayers: t("hfBrowser.gpuFewLayers"),
-                                      cpu: t("hfBrowser.gpuCpu"),
-                                    }[gpuMode] || t("hfBrowser.gpuCpu");
-
                                   const upgradeSuggestion = (() => {
-                                    if (selFile.quantQuality >= 90) return null; // already top tier
+                                    if (selFile.quantQuality >= 90) return null;
                                     const bpvVal = KV_BPV[recKvType] || 2;
                                     let best: { file: FileRecommendation; score: number } | null =
                                       null;
@@ -2017,6 +3157,7 @@ export function HuggingFaceBrowserPage() {
                                           bpvVal,
                                           totalAvail,
                                           recData.modelMaxContext,
+                                          activeSidecarReserveBytes,
                                         ),
                                         1024,
                                       );
@@ -2032,8 +3173,12 @@ export function HuggingFaceBrowserPage() {
                                         f.size,
                                         f.quantQuality,
                                         fKv,
+                                        recData.availableRam,
                                         totalAvail,
                                         recData.availableVram,
+                                        recModelOffload,
+                                        recKvPlacement,
+                                        activeSidecarReserveBytes,
                                       );
                                       if (fScore < 70) continue;
                                       if (
@@ -2050,41 +3195,47 @@ export function HuggingFaceBrowserPage() {
 
                                   return (
                                     <div className="mt-2 space-y-2.5">
-                                      {/* Score hero */}
-                                      <div
-                                        className={cn(
-                                          "flex items-center justify-between rounded-lg px-3 py-2",
-                                          scoreBg,
-                                        )}
-                                      >
-                                        <div className="flex items-center gap-2">
-                                          <span className={cn("text-xl font-bold", scoreColor)}>
-                                            {score}
-                                          </span>
-                                          <div className="leading-tight">
-                                            <span
-                                              className={cn(
-                                                "text-[13px] font-semibold",
-                                                scoreColor,
-                                              )}
-                                            >
-                                              {(
-                                                {
-                                                  excellent: t("hfBrowser.runabilityExcellent"),
-                                                  good: t("hfBrowser.runabilityGood"),
-                                                  marginal: t("hfBrowser.runabilityMarginal"),
-                                                  poor: t("hfBrowser.runabilityPoor"),
-                                                  unrunnable: t("hfBrowser.runabilityUnrunnable"),
-                                                } as Record<string, string>
-                                              )[label] || label}
-                                            </span>
-                                            <p className="text-[12px] text-fg/40 flex items-center gap-1">
-                                              <Monitor size={9} />
-                                              {gpuLabel}
+                                      <div className="rounded-lg border border-fg/10 bg-fg/[0.035] px-3 py-2.5">
+                                        <div className="flex items-start justify-between gap-3 border-b border-fg/8 pb-2">
+                                          <div className="min-w-0">
+                                            <div className="text-[14px] font-semibold text-fg">
+                                              {modeCopy.short}
+                                            </div>
+                                            <p className="mt-0.5 text-[12px] leading-snug text-fg/50">
+                                              {modeCopy.long}
                                             </p>
                                           </div>
+                                          <div className="text-right shrink-0">
+                                            <div className={cn("text-[13px] font-semibold", runStatus.tone)}>
+                                              {runStatus.label}
+                                            </div>
+                                            <div className="mt-0.5 flex items-center justify-end gap-1 text-[11px] text-fg/35">
+                                              <Monitor size={9} />
+                                              {t("hfBrowser.willRun")}
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="mt-1.5 divide-y divide-fg/6">
+                                          {statusRow(
+                                            t("hfBrowser.statusHeadroom"),
+                                            t("hfBrowser.headroomLeft", {
+                                              label: headroomStatus.label,
+                                              size: formatBytes(remainingHeadroom),
+                                            }),
+                                            headroomStatus.tone,
+                                          )}
+                                          {statusRow(t("hfBrowser.statusPrefill"), perfStatus.prefill.label, perfStatus.prefill.tone)}
+                                          {statusRow(
+                                            t("hfBrowser.statusGeneration"),
+                                            perfStatus.generation.label,
+                                            perfStatus.generation.tone,
+                                          )}
+                                          {statusRow(t("hfBrowser.statusConfidence"), t("hfBrowser.confidenceValue", { score }), runStatus.tone)}
                                         </div>
                                       </div>
+                                      <p className="text-[12px] leading-snug text-fg/45">
+                                        {headroomStatus.description}
+                                      </p>
 
                                       {/* Upgrade suggestion */}
                                       {upgradeSuggestion && (
@@ -2098,6 +3249,7 @@ export function HuggingFaceBrowserPage() {
                                                 bpvSel,
                                                 totalAvail,
                                                 recData.modelMaxContext,
+                                                activeSidecarReserveBytes,
                                               ),
                                               1024,
                                             );
@@ -2141,6 +3293,7 @@ export function HuggingFaceBrowserPage() {
                                                   bpvSel,
                                                   totalAvail,
                                                   recData.modelMaxContext,
+                                                  activeSidecarReserveBytes,
                                                 ),
                                                 1024,
                                               );
@@ -2151,6 +3304,7 @@ export function HuggingFaceBrowserPage() {
                                                 recData.availableVram,
                                                 recData.modelMaxContext,
                                                 recData.kvContextCap,
+                                                activeSidecarReserveBytes,
                                               );
                                               const optimalRamCtx = computeRamMaxContext(
                                                 f.size,
@@ -2159,6 +3313,7 @@ export function HuggingFaceBrowserPage() {
                                                 totalAvail,
                                                 recData.modelMaxContext,
                                                 recData.kvContextCap,
+                                                activeSidecarReserveBytes,
                                               );
                                               const optimal =
                                                 optimalGpuCtx > 0
@@ -2184,15 +3339,15 @@ export function HuggingFaceBrowserPage() {
                                           <div className="flex items-center justify-between gap-3 rounded-lg border border-fg/10 bg-fg/5 px-2.5 py-2">
                                             <div className="min-w-0">
                                               <span className="block text-[11px] font-medium text-fg/85">
-                                                Image support
+                                                {t("hfBrowser.imageSupport")}
                                               </span>
                                               <span className="block whitespace-nowrap text-[11px] text-fg/40">
-                                                Download matching mmproj sidecar
+                                                {t("hfBrowser.imageSupportHint")}
                                               </span>
                                             </div>
                                             <div className="flex items-center gap-2">
                                               <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-fg/35">
-                                                {recImageSupport ? "On" : "Off"}
+                                                {recImageSupport ? t("common.labels.on") : t("common.labels.off")}
                                               </span>
                                               <Switch
                                                 id="hf-image-support-toggle"
@@ -2205,7 +3360,7 @@ export function HuggingFaceBrowserPage() {
                                           {recImageSupport && (
                                             <div>
                                               <label className="text-[9px] font-semibold uppercase tracking-wider text-fg/40">
-                                                MMProj
+                                                {t("hfBrowser.mmproj")}
                                               </label>
                                               <select
                                                 value={recMmprojFile}
@@ -2223,9 +3378,59 @@ export function HuggingFaceBrowserPage() {
                                         </>
                                       )}
 
+                                      {recMtpAvailable && (
+                                        <>
+                                          <div className="flex items-center justify-between gap-3 rounded-lg border border-fg/10 bg-fg/5 px-2.5 py-2">
+                                            <div className="min-w-0">
+                                              <span className="block text-[11px] font-medium text-fg/85">
+                                                {t("hfBrowser.mtpTitle")}
+                                              </span>
+                                              <span className="block whitespace-nowrap text-[11px] text-fg/40">
+                                                {recMtpBundled
+                                                  ? t("hfBrowser.mtpHintBundled")
+                                                  : t("hfBrowser.mtpHintSidecar")}
+                                              </span>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-[10px] font-medium uppercase tracking-[0.12em] text-fg/35">
+                                                {recMtpSupport ? t("common.labels.on") : t("common.labels.off")}
+                                              </span>
+                                              <Switch
+                                                id="hf-mtp-support-toggle"
+                                                checked={recMtpSupport}
+                                                onChange={setRecMtpSupport}
+                                              />
+                                            </div>
+                                          </div>
+
+                                          {recMtpSupport && !recMtpBundled && (
+                                            <div>
+                                              <label className="text-[9px] font-semibold uppercase tracking-wider text-fg/40">
+                                                {t("hfBrowser.mtpFile")}
+                                              </label>
+                                              <select
+                                                value={recMtpFile}
+                                                onChange={(e) => setRecMtpFile(e.target.value)}
+                                                className="mt-1 w-full rounded-md border border-fg/10 bg-fg/5 px-2 py-1.5 text-[11px] text-fg focus:border-fg/25 focus:outline-none"
+                                              >
+                                                {mtpFilesWithSize.map((file) => (
+                                                  <option key={file.filename} value={file.filename}>
+                                                    {file.filename} — {formatBytes(file.size)}
+                                                  </option>
+                                                ))}
+                                              </select>
+                                            </div>
+                                          )}
+                                        </>
+                                      )}
+
                                       {/* Context length */}
                                       {(() => {
                                         const modelMax = recData.modelMaxContext;
+                                        const showGpuGuidance =
+                                          gpuOptionsEnabled && recModelOffload !== "cpu";
+                                        const warnOnGpuCtxOverflow =
+                                          showGpuGuidance && recKvPlacement !== "ram";
                                         // Max context for 100% GPU offload (model+KV+compute all in VRAM)
                                         const fullGpuCtx = computeGpuOptimalContext(
                                           selFile.size,
@@ -2234,6 +3439,7 @@ export function HuggingFaceBrowserPage() {
                                           recData.availableVram,
                                           modelMax,
                                           recData.kvContextCap,
+                                          activeSidecarReserveBytes,
                                         );
                                         // Max context before RAM runs out (dynamic for current KV type)
                                         const ramCtx = computeRamMaxContext(
@@ -2243,6 +3449,7 @@ export function HuggingFaceBrowserPage() {
                                           totalAvail,
                                           modelMax,
                                           recData.kvContextCap,
+                                          activeSidecarReserveBytes,
                                         );
 
                                         return (
@@ -2274,7 +3481,9 @@ export function HuggingFaceBrowserPage() {
                                                     ((v - 1024) / (maxCtx - 1024)) * 100;
                                                   return (
                                                     <>
-                                                      {fullGpuCtx > 1024 && fullGpuCtx < maxCtx && (
+                                                      {showGpuGuidance &&
+                                                        fullGpuCtx > 1024 &&
+                                                        fullGpuCtx < maxCtx && (
                                                         <div
                                                           className="absolute bottom-0 w-0.5 bg-emerald-400 rounded-full pointer-events-none"
                                                           style={{
@@ -2305,9 +3514,11 @@ export function HuggingFaceBrowserPage() {
                                               <span>{maxCtx.toLocaleString()}</span>
                                             </div>
                                             {/* Clickable context presets */}
-                                            {(fullGpuCtx > 0 || ramCtx > 0) && (
+                                            {((showGpuGuidance && fullGpuCtx > 0) || ramCtx > 0) && (
                                               <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1.5">
-                                                {fullGpuCtx > 0 && fullGpuCtx < maxCtx && (
+                                                {showGpuGuidance &&
+                                                  fullGpuCtx > 0 &&
+                                                  fullGpuCtx < maxCtx && (
                                                   <button
                                                     type="button"
                                                     onClick={() =>
@@ -2338,7 +3549,8 @@ export function HuggingFaceBrowserPage() {
                                               </div>
                                             )}
                                             {/* Warning: exceeding GPU-optimal context */}
-                                            {fullGpuCtx > 0 &&
+                                            {warnOnGpuCtxOverflow &&
+                                              fullGpuCtx > 0 &&
                                               fullGpuCtx < maxCtx &&
                                               clampedCtx > fullGpuCtx && (
                                                 <div className="flex items-start gap-2 mt-1.5 rounded-lg border border-amber-400/20 bg-amber-400/5 px-2.5 py-2">
@@ -2354,7 +3566,7 @@ export function HuggingFaceBrowserPage() {
                                                 </div>
                                               )}
                                             {/* State B: Model exceeds VRAM entirely */}
-                                            {fullGpuCtx === 0 && ramCtx > 0 && (
+                                            {showGpuGuidance && fullGpuCtx === 0 && ramCtx > 0 && (
                                               <div className="flex items-start gap-2 mt-1.5 rounded-lg border border-blue-400/20 bg-blue-400/5 px-2.5 py-2">
                                                 <Info
                                                   size={13}
@@ -2386,6 +3598,7 @@ export function HuggingFaceBrowserPage() {
                                                 bpv,
                                                 totalAvail,
                                                 recData.modelMaxContext,
+                                                activeSidecarReserveBytes,
                                               ),
                                               1024,
                                             );
@@ -2393,15 +3606,87 @@ export function HuggingFaceBrowserPage() {
                                           }}
                                           className="mt-1 w-full rounded-md border border-fg/10 bg-fg/5 px-2 py-1.5 text-[11px] text-fg focus:border-fg/25 focus:outline-none"
                                         >
-                                          <option value="f32">F32 (maximum quality)</option>
-                                          <option value="f16">F16 (high quality)</option>
-                                          <option value="q8_0">Q8_0 (balanced)</option>
-                                          <option value="q5_1">Q5_1 (good savings)</option>
-                                          <option value="q5_0">Q5_0 (good savings)</option>
-                                          <option value="q4_1">Q4_1 (memory saver)</option>
-                                          <option value="q4_0">Q4_0 (memory saver)</option>
-                                          <option value="iq4_nl">IQ4_NL (aggressive)</option>
+                                          <option value="f32">{t("hfBrowser.kvF32")}</option>
+                                          <option value="f16">{t("hfBrowser.kvF16")}</option>
+                                          <option value="q8_0">{t("hfBrowser.kvQ80")}</option>
+                                          <option value="q5_1">{t("hfBrowser.kvQ51")}</option>
+                                          <option value="q5_0">{t("hfBrowser.kvQ50")}</option>
+                                          <option value="q4_1">{t("hfBrowser.kvQ41")}</option>
+                                          <option value="q4_0">{t("hfBrowser.kvQ40")}</option>
+                                          <option value="iq4_nl">{t("hfBrowser.kvIq4nl")}</option>
                                         </select>
+                                      </div>
+
+                                      <div>
+                                        <label className="text-[9px] font-semibold uppercase tracking-wider text-fg/40">
+                                          {t("hfBrowser.detailModelOffload")}
+                                        </label>
+                                        <div className="mt-1 grid grid-cols-4 gap-1 rounded-md border border-fg/10 bg-fg/5 p-1">
+                                          {(["auto", "cpu", "gpu", "mixed"] as const).map((value) => {
+                                            const active = recModelOffload === value;
+                                            const copy = getModelOffloadCopy(t, value);
+                                            return (
+                                              <button
+                                                key={value}
+                                                type="button"
+                                                disabled={!gpuOptionsEnabled}
+                                                onClick={() => setRecModelOffload(value)}
+                                                className={cn(
+                                                  "rounded-sm px-2 py-1.5 text-[11px] font-medium transition",
+                                                  !gpuOptionsEnabled
+                                                    ? "cursor-not-allowed text-fg/25"
+                                                    : active
+                                                      ? "bg-accent/15 text-accent"
+                                                      : "text-fg/50 hover:bg-fg/8 hover:text-fg/80",
+                                                )}
+                                                title={copy.description}
+                                              >
+                                                {copy.label}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                        <p className="mt-1 text-[11px] leading-snug text-fg/40">
+                                          {gpuOptionsEnabled
+                                            ? getModelOffloadCopy(t, recModelOffload).description
+                                            : t("hfBrowser.gpuOffloadUnavailable")}
+                                        </p>
+                                      </div>
+
+                                      <div>
+                                        <label className="text-[9px] font-semibold uppercase tracking-wider text-fg/40">
+                                          {t("hfBrowser.kvLocationLabel")}
+                                        </label>
+                                        <div className="mt-1 grid grid-cols-3 gap-1 rounded-md border border-fg/10 bg-fg/5 p-1">
+                                          {(["auto", "ram", "vram"] as const).map((value) => {
+                                            const active = recKvPlacement === value;
+                                            const copy = getKvPlacementCopy(t, value);
+                                            return (
+                                              <button
+                                                key={value}
+                                                type="button"
+                                                disabled={!gpuOptionsEnabled}
+                                                onClick={() => setRecKvPlacement(value)}
+                                                className={cn(
+                                                  "rounded-sm px-2 py-1.5 text-[11px] font-medium transition",
+                                                  !gpuOptionsEnabled
+                                                    ? "cursor-not-allowed text-fg/25"
+                                                    : active
+                                                      ? "bg-accent/15 text-accent"
+                                                      : "text-fg/50 hover:bg-fg/8 hover:text-fg/80",
+                                                )}
+                                                title={copy.description}
+                                              >
+                                                {copy.label}
+                                              </button>
+                                            );
+                                          })}
+                                        </div>
+                                        <p className="mt-1 text-[11px] leading-snug text-fg/40">
+                                          {gpuOptionsEnabled
+                                            ? getKvPlacementCopy(t, recKvPlacement).description
+                                            : t("hfBrowser.kvPlacementUnavailable")}
+                                        </p>
                                       </div>
 
                                       {/* Warning */}
@@ -2436,7 +3721,7 @@ export function HuggingFaceBrowserPage() {
                                         onClick={openCompareModal}
                                         className="flex w-full items-center justify-center gap-1 py-1 text-[12px] text-fg/55 hover:text-fg/75 transition-colors"
                                       >
-                                        Compare
+                                        {t("hfBrowser.compare")}
                                       </button>
 
                                       {/* More details button */}
@@ -2479,24 +3764,53 @@ export function HuggingFaceBrowserPage() {
                                         MMPROJ
                                       </span>
                                     )}
-                                    {rs && (
-                                      <span
-                                        className={cn(
-                                          "rounded-md border px-1.5 py-0.5 text-[9px] font-semibold",
-                                          rs.label === "excellent"
-                                            ? "border-emerald-400/30 bg-emerald-400/15 text-emerald-500"
-                                            : rs.label === "good"
-                                              ? "border-blue-400/30 bg-blue-400/15 text-blue-500"
-                                              : rs.label === "marginal"
-                                                ? "border-amber-400/30 bg-amber-400/15 text-amber-500"
-                                                : rs.label === "poor"
-                                                  ? "border-orange-400/30 bg-orange-400/15 text-orange-500"
-                                                  : "border-red-400/30 bg-red-400/15 text-red-500",
-                                        )}
-                                        title={`Runability: ${rs.score}/100 (${rs.label})${rs.fitsInRam ? " · Fits in RAM" : ""}${rs.fitsInVram ? " · Fits in VRAM" : ""}`}
-                                      >
-                                        {rs.score}
+                                    {file.isMtp && (
+                                      <span className="rounded-md border border-accent/20 bg-accent/10 px-1.5 py-0.5 text-[9px] font-semibold text-accent/80">
+                                        MTP
                                       </span>
+                                    )}
+                                    {isSdMode && file.role && (
+                                      <span className="rounded-md border border-violet-400/20 bg-violet-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-violet-300">
+                                        {file.role}
+                                      </span>
+                                    )}
+                                    {isSdMode && sdScores[file.filename] && (
+                                      <span className="rounded-md border border-fg/15 bg-fg/5 px-1.5 py-0.5 text-[9px] font-semibold uppercase text-fg/55">
+                                        {sdScores[file.filename].familyGuess}
+                                        {sdScores[file.filename].maxComfortableResolution > 0
+                                          ? ` · ${sdScores[file.filename].maxComfortableResolution}px`
+                                          : ""}
+                                      </span>
+                                    )}
+                                    {rs && (
+                                      <div className="flex flex-col gap-0.5">
+                                        <span
+                                          className={cn(
+                                            "rounded-md border px-1.5 py-0.5 text-[9px] font-semibold w-fit",
+                                            rs.label === "excellent"
+                                              ? "border-emerald-400/30 bg-emerald-400/15 text-emerald-500"
+                                              : rs.label === "good"
+                                                ? "border-blue-400/30 bg-blue-400/15 text-blue-500"
+                                                : rs.label === "marginal"
+                                                  ? "border-amber-400/30 bg-amber-400/15 text-amber-500"
+                                                  : rs.label === "poor"
+                                                    ? "border-orange-400/30 bg-orange-400/15 text-orange-500"
+                                                    : "border-red-400/30 bg-red-400/15 text-red-500",
+                                          )}
+                                          title={t("hfBrowser.runabilityTooltip", {
+                                            score: rs.score,
+                                            label: rs.label,
+                                            mode: getRunabilityModeCopy(t, rs.gpuMode).long,
+                                            ram: rs.fitsInRam ? t("hfBrowser.fitsInRam") : "",
+                                            vram: rs.fitsInVram ? t("hfBrowser.fitsInVram") : "",
+                                          })}
+                                        >
+                                          {rs.score}
+                                        </span>
+                                        <span className="max-w-55 text-[10px] leading-tight text-fg/40">
+                                          {getRunabilityModeCopy(t, rs.gpuMode).short}
+                                        </span>
+                                      </div>
                                     )}
                                     <span className="text-[12px] text-fg/45">
                                       {formatBytes(file.size)}
@@ -2510,10 +3824,12 @@ export function HuggingFaceBrowserPage() {
                                       "hover:bg-accent/25 active:scale-[0.97]",
                                     )}
                                   >
-                                    <Download size={12} />
-                                    {returnTo && !file.isMmproj
-                                      ? "Download and Use"
-                                      : t("hfBrowser.download")}
+                                    {isOllamaMode ? <Server size={12} /> : <Download size={12} />}
+                                    {isOllamaMode
+                                      ? `${t("hfBrowser.pullToOllama")} ${selectedOllamaProvider?.label ?? ""}`.trim()
+                                      : returnTo && !file.isMmproj && !file.isMtp
+                                        ? t("hfBrowser.downloadAndUse")
+                                        : t("hfBrowser.download")}
                                   </button>
                                 </div>
                               );
@@ -2541,16 +3857,16 @@ export function HuggingFaceBrowserPage() {
           >
             <div className="flex items-center justify-between border-b border-fg/10 px-4 py-3">
               <div>
-                <h3 className="text-sm font-semibold text-fg">Compare Configurations</h3>
+                <h3 className="text-sm font-semibold text-fg">{t("hfBrowser.compareTitle")}</h3>
                 <p className="text-[11px] text-fg/50">
-                  Compare up to 3 quantizations with independent KV cache types.
+                  {t("hfBrowser.compareSubtitle")}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setCompareOpen(false)}
                 className="rounded-md border border-fg/15 bg-fg/5 p-1.5 text-fg/60 hover:text-fg hover:border-fg/25"
-                aria-label="Close compare modal"
+                aria-label={t("hfBrowser.compareClose")}
               >
                 <X size={14} />
               </button>
@@ -2574,14 +3890,14 @@ export function HuggingFaceBrowserPage() {
                       className="rounded-xl border border-fg/10 bg-fg/3 p-2.5 space-y-2"
                     >
                       <div className="flex items-center justify-between">
-                        <p className="text-[11px] font-semibold text-fg/70">Config {index + 1}</p>
+                        <p className="text-[11px] font-semibold text-fg/70">{t("hfBrowser.compareConfig", { index: index + 1 })}</p>
                         {compareSelections.length > 1 && (
                           <button
                             type="button"
                             onClick={() => removeCompareSelection(selection.id)}
                             className="text-[10px] text-fg/40 hover:text-red-300 transition-colors"
                           >
-                            Remove
+                            {t("hfBrowser.compareRemove")}
                           </button>
                         )}
                       </div>
@@ -2637,7 +3953,7 @@ export function HuggingFaceBrowserPage() {
                   onClick={addCompareSelection}
                   className="mt-2 text-[11px] font-medium text-accent/80 hover:text-accent transition-colors"
                 >
-                  + Add Comparison
+                  {t("hfBrowser.compareAdd")}
                 </button>
               )}
             </div>
@@ -2672,7 +3988,7 @@ export function HuggingFaceBrowserPage() {
                           {selectedFile.quantization} · {formatBytes(selectedFile.size)}
                         </p>
                         <p className="text-[10px] text-fg/45">
-                          KV: {selection.kvType.toUpperCase()}
+                          {t("hfBrowser.compareKvLabel", { kv: selection.kvType.toUpperCase() })}
                         </p>
                       </div>
 
@@ -2687,7 +4003,10 @@ export function HuggingFaceBrowserPage() {
                           recData={recData}
                           selectedFile={selectedFile}
                           kvType={selection.kvType}
+                          modelOffload={recModelOffload}
+                          kvPlacement={recKvPlacement}
                           contextLength={recContext}
+                          sidecarReserveBytes={activeSidecarReserveBytes}
                           t={t}
                         />
                       </div>
@@ -2700,7 +4019,6 @@ export function HuggingFaceBrowserPage() {
         </div>
       )}
 
-      {/* Detailed resource report bottom sheet */}
       <BottomMenu
         isOpen={detailSheetOpen}
         onClose={() => setDetailSheetOpen(false)}
@@ -2716,14 +4034,309 @@ export function HuggingFaceBrowserPage() {
                 recData={recData}
                 selectedFile={selFile}
                 kvType={recKvType}
+                modelOffload={recModelOffload}
+                kvPlacement={recKvPlacement}
                 contextLength={recContext}
+                sidecarReserveBytes={activeSidecarReserveBytes}
                 t={t}
               />
             );
           })()}
       </BottomMenu>
 
-      {/* Continue Setup button when coming from onboarding */}
+      <BottomMenu
+        isOpen={showFilterMenu}
+        onClose={() => setShowFilterMenu(false)}
+        title={t("hfBrowser.filterTitle")}
+      >
+        <div>
+          <p className="mb-4 text-[12.5px] leading-relaxed text-fg/55">
+            {t("hfBrowser.filterSubtitle")}
+          </p>
+
+          {/* Pipeline tags */}
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg/40">
+              {t("hfBrowser.filterPipeline")}
+            </span>
+            <div className="h-px flex-1 bg-fg/8" />
+            {filterPipelineTags.size > 0 && (
+              <button
+                onClick={() => setFilterPipelineTags(new Set())}
+                className="text-[10.5px] text-fg/45 hover:text-fg/75"
+              >
+                {t("hfBrowser.filterClear")}
+              </button>
+            )}
+          </div>
+          <div className="mb-5 flex flex-wrap gap-1.5">
+            {[
+              ...new Set([...availablePipelineTags, ...COMMON_PIPELINE_TAGS]),
+            ].map((tag) => {
+              const active = filterPipelineTags.has(tag);
+              const inResults = availablePipelineTags.has(tag);
+              return (
+                <button
+                  key={tag}
+                  onClick={() => {
+                    setFilterPipelineTags((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(tag)) next.delete(tag);
+                      else next.add(tag);
+                      return next;
+                    });
+                  }}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                    active
+                      ? "border-accent/40 bg-accent/15 text-accent"
+                      : inResults
+                        ? "border-fg/12 bg-fg/4 text-fg/70 hover:border-fg/25"
+                        : "border-fg/8 bg-transparent text-fg/40 hover:border-fg/20 hover:text-fg/65",
+                  )}
+                >
+                  {tag}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Param size */}
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg/40">
+              {t("hfBrowser.filterParamSize")}
+            </span>
+            <div className="h-px flex-1 bg-fg/8" />
+            {(filterParamMin || filterParamMax) && (
+              <button
+                onClick={() => {
+                  setFilterParamMin("");
+                  setFilterParamMax("");
+                }}
+                className="text-[10.5px] text-fg/45 hover:text-fg/75"
+              >
+                {t("hfBrowser.filterClear")}
+              </button>
+            )}
+          </div>
+          <div className="mb-2 grid grid-cols-2 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-[10.5px] text-fg/55">{t("hfBrowser.filterMin")}</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step={0.1}
+                value={filterParamMin}
+                onChange={(e) => setFilterParamMin(e.target.value)}
+                placeholder={t("hfBrowser.filterMinPlaceholder")}
+                className="h-9 rounded-lg border border-fg/10 bg-fg/4 px-2.5 text-[13px] text-fg outline-none transition placeholder:text-fg/35 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[10.5px] text-fg/55">{t("hfBrowser.filterMax")}</span>
+              <input
+                type="number"
+                inputMode="decimal"
+                min={0}
+                step={0.1}
+                value={filterParamMax}
+                onChange={(e) => setFilterParamMax(e.target.value)}
+                placeholder={t("hfBrowser.filterMaxPlaceholder")}
+                className="h-9 rounded-lg border border-fg/10 bg-fg/4 px-2.5 text-[13px] text-fg outline-none transition placeholder:text-fg/35 focus:border-accent/40 focus:ring-1 focus:ring-accent/20"
+              />
+            </label>
+          </div>
+          <p className="mb-5 text-[10.5px] text-fg/40">
+            {t("hfBrowser.filterParamNote")}
+          </p>
+
+          {/* Quick presets */}
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg/40">
+              {t("hfBrowser.filterQuickPresets")}
+            </span>
+            <div className="h-px flex-1 bg-fg/8" />
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              { label: "≤ 3B", min: "", max: "3" },
+              { label: "3–8B", min: "3", max: "8" },
+              { label: "8–14B", min: "8", max: "14" },
+              { label: "14–34B", min: "14", max: "34" },
+              { label: "≥ 34B", min: "34", max: "" },
+            ].map((p) => {
+              const active = filterParamMin === p.min && filterParamMax === p.max;
+              return (
+                <button
+                  key={p.label}
+                  onClick={() => {
+                    setFilterParamMin(p.min);
+                    setFilterParamMax(p.max);
+                  }}
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-[11px] font-medium transition",
+                    active
+                      ? "border-accent/40 bg-accent/15 text-accent"
+                      : "border-fg/12 bg-fg/4 text-fg/70 hover:border-fg/25",
+                  )}
+                >
+                  {p.label}
+                </button>
+              );
+            })}
+          </div>
+
+          {activeFilterCount > 0 && (
+            <button
+              onClick={() => {
+                setFilterPipelineTags(new Set());
+                setFilterParamMin("");
+                setFilterParamMax("");
+              }}
+              className="mt-5 w-full rounded-lg border border-fg/10 bg-fg/4 py-2 text-[12px] font-medium text-fg/75 transition hover:border-fg/20 hover:text-fg"
+            >
+              {t("hfBrowser.filterResetAll")}
+            </button>
+          )}
+        </div>
+      </BottomMenu>
+
+      <BottomMenu
+        isOpen={showOllamaProviderMenu}
+        onClose={() => setShowOllamaProviderMenu(false)}
+        title={t("hfBrowser.destinationPickerTitle")}
+      >
+          <p className="mb-5 text-[12.5px] leading-relaxed text-fg/55">
+            {t("hfBrowser.destinationPickerSubtitle")}
+          </p>
+
+          {/* Local section */}
+          <div className="mb-2 flex items-center gap-2 px-1">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg/35">
+              {t("hfBrowser.destinationLocalSection")}
+            </span>
+            <div className="h-px flex-1 bg-fg/8" />
+          </div>
+          <button
+            onClick={() => {
+              setSelectedOllamaProviderId(null);
+              setShowOllamaProviderMenu(false);
+            }}
+            className={cn(
+              "group relative w-full overflow-hidden rounded-xl border px-3.5 py-3 text-left transition",
+              !isOllamaMode
+                ? "border-accent/35 bg-accent/8"
+                : "border-fg/10 bg-fg/3 hover:border-fg/20 hover:bg-fg/5",
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <span
+                className={cn(
+                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+                  !isOllamaMode ? "bg-accent/15 text-accent" : "bg-fg/8 text-fg/55",
+                )}
+              >
+                <HardDrive size={15} />
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[13px] font-medium text-fg">
+                  {t("hfBrowser.destinationLocal")}
+                </div>
+                <div className="truncate text-[11.5px] text-fg/45">
+                  {t("hfBrowser.destinationLocalHint")}
+                </div>
+              </div>
+              <span
+                className={cn(
+                  "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition",
+                  !isOllamaMode
+                    ? "border-accent/50 bg-accent/15 text-accent"
+                    : "border-fg/15 text-transparent",
+                )}
+              >
+                <Check size={11} strokeWidth={3} />
+              </span>
+            </div>
+          </button>
+
+          {/* Ollama section */}
+          <div className="mb-2 mt-5 flex items-center gap-2 px-1">
+            <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-fg/35">
+              {t("hfBrowser.destinationOllamaSection")}
+            </span>
+            <div className="h-px flex-1 bg-fg/8" />
+            {ollamaProviders.length > 0 && (
+              <span className="text-[10px] font-medium tabular-nums text-fg/40">
+                {ollamaProviders.length}
+              </span>
+            )}
+          </div>
+
+          {ollamaProviders.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-fg/10 bg-fg/2 px-4 py-5 text-center">
+              <Server size={18} className="mx-auto mb-2 text-fg/30" />
+              <p className="text-[12px] leading-snug text-fg/55">
+                {t("hfBrowser.destinationNoOllama")}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {ollamaProviders.map((provider) => {
+                const isSelected = provider.id === selectedOllamaProviderId;
+                return (
+                  <button
+                    key={provider.id}
+                    onClick={() => {
+                      setSelectedOllamaProviderId(provider.id);
+                      setShowOllamaProviderMenu(false);
+                    }}
+                    className={cn(
+                      "group relative w-full overflow-hidden rounded-xl border px-3.5 py-3 text-left transition",
+                      isSelected
+                        ? "border-emerald-400/35 bg-emerald-500/8"
+                        : "border-fg/10 bg-fg/3 hover:border-fg/20 hover:bg-fg/5",
+                    )}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span
+                        className={cn(
+                          "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg",
+                          isSelected
+                            ? "bg-emerald-500/15 text-emerald-300"
+                            : "bg-fg/8 text-fg/55",
+                        )}
+                      >
+                        <Server size={15} />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px] font-medium text-fg">
+                          {provider.label}
+                        </div>
+                        {provider.baseUrl && (
+                          <div className="truncate font-mono text-[11px] text-fg/45">
+                            {provider.baseUrl}
+                          </div>
+                        )}
+                      </div>
+                      <span
+                        className={cn(
+                          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition",
+                          isSelected
+                            ? "border-emerald-400/50 bg-emerald-500/15 text-emerald-300"
+                            : "border-fg/15 text-transparent",
+                        )}
+                      >
+                        <Check size={11} strokeWidth={3} />
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+      </BottomMenu>
+
       {returnTo && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50">
           <button
@@ -2736,7 +4349,7 @@ export function HuggingFaceBrowserPage() {
                 : "border border-white/10 bg-white/10 text-white/40 cursor-not-allowed",
             )}
           >
-            {hasLocalModel ? "Continue Setup" : "Download a model to continue"}
+            {hasLocalModel ? t("hfBrowser.continueSetup") : t("hfBrowser.downloadToContinue")}
             <ArrowRight size={16} />
           </button>
         </div>

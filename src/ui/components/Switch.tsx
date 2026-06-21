@@ -1,4 +1,3 @@
-import { useId } from "react";
 import { cn } from "../design-tokens";
 
 export interface SwitchProps {
@@ -20,22 +19,21 @@ export function Switch({
   "aria-label": ariaLabel,
   "aria-labelledby": ariaLabelledBy,
 }: SwitchProps) {
-  const generatedId = useId();
-  const inputId = id ?? generatedId;
   return (
-    <span className={cn("inline-flex items-center", className)}>
-      <input
-        id={inputId}
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
-        className="peer sr-only"
+    <button
+      type="button"
+      role="switch"
+      id={id}
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cn("inline-flex items-center", className)}
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
+    >
+      <span
         aria-label={ariaLabel}
-        aria-labelledby={ariaLabelledBy}
-      />
-      <label
-        htmlFor={inputId}
+        aria-hidden="true"
         className={cn(
           "relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-all duration-200 ease-in-out",
           checked ? "bg-accent" : "bg-fg/20",
@@ -48,7 +46,7 @@ export function Switch({
             checked ? "translate-x-5" : "translate-x-0",
           )}
         />
-      </label>
-    </span>
+      </span>
+    </button>
   );
 }

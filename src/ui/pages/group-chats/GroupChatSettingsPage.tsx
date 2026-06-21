@@ -15,10 +15,11 @@ import {
   RefreshCw,
   Download,
   Upload,
-  Users,
   Volume2,
   VolumeX,
   BookOpen,
+  NotebookPen,
+  Clapperboard,
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -28,6 +29,8 @@ import { Routes, useNavigationManager } from "../../navigation";
 import { useGroupChatSettingsController } from "./hooks/useGroupChatSettingsController";
 import { useGroupChatLayoutContext } from "./GroupChatLayout";
 import { SectionHeader, CharacterAvatar, QuickChip, PersonaSelector } from "./components/settings";
+import { OptionRow } from "./components/OptionRow";
+import { GroupAuthorNoteBottomMenu } from "./components";
 import { Switch } from "../../components/Switch";
 import { processBackgroundImage } from "../../../core/utils/image";
 import { storageBridge } from "../../../core/storage/files";
@@ -36,12 +39,33 @@ import { AvatarImage } from "../../components/AvatarImage";
 import React, { useState } from "react";
 import { useI18n } from "../../../core/i18n/context";
 
+const PARTICIPATION_COLORS = [
+  "bg-accent",
+  "bg-info",
+  "bg-secondary",
+  "bg-warning",
+  "bg-danger",
+  "bg-lime-400",
+  "bg-cyan-400",
+  "bg-fuchsia-400",
+];
+
 // Main Component
 // ============================================================================
 
-export function GroupChatSettingsPage() {
+export function GroupChatSettingsPage({
+  mode = "page",
+  onClose,
+  groupSessionId: groupSessionIdProp,
+}: {
+  mode?: "page" | "drawer";
+  onClose?: () => void;
+  groupSessionId?: string;
+} = {}) {
   const { t } = useI18n();
-  const { groupSessionId } = useParams<{ groupSessionId: string }>();
+  const params = useParams<{ groupSessionId: string }>();
+  const groupSessionId = groupSessionIdProp ?? params.groupSessionId;
+  const isDrawer = mode === "drawer";
   const navigate = useNavigate();
   const { backOrReplace } = useNavigationManager();
 
@@ -91,9 +115,7 @@ export function GroupChatSettingsPage() {
   const [savingBackground, setSavingBackground] = useState(false);
   const [showCloneOptions, setShowCloneOptions] = useState(false);
   const [showBranchOptions, setShowBranchOptions] = useState(false);
-  const [showChatpkgExportMenu, setShowChatpkgExportMenu] = useState(false);
   const [showChatpkgImportMapMenu, setShowChatpkgImportMapMenu] = useState(false);
-  const [showChatpkgImportConfirmMenu, setShowChatpkgImportConfirmMenu] = useState(false);
   const [pendingChatpkgImport, setPendingChatpkgImport] = useState<{
     path: string;
     info: any;
@@ -160,7 +182,13 @@ export function GroupChatSettingsPage() {
     saving,
   } = ui;
 
+  const [showAuthorNoteMenu, setShowAuthorNoteMenu] = useState(false);
+
   const handleBack = () => {
+    if (isDrawer) {
+      onClose?.();
+      return;
+    }
     if (groupSessionId) {
       backOrReplace(Routes.groupChat(groupSessionId));
     } else {
@@ -200,91 +228,77 @@ export function GroupChatSettingsPage() {
     }
   };
 
-  const handleExportGroupChatpkg = async (includeSnapshots: boolean) => {
+  const handleExportGroupChatpkg = async () => {
     if (!session) return;
     try {
-      const path = await storageBridge.chatpkgExportGroupChat(session.id, includeSnapshots);
-      setShowChatpkgExportMenu(false);
-      alert(`Group chat package exported to:\n${path}`);
+      const path = await storageBridge.jsonlExportGroupChat(session.id);
+      alert(`Group chat exported to:\n${path}`);
     } catch (err) {
-      console.error("Failed to export group chat package:", err);
-      alert(typeof err === "string" ? err : "Failed to export group chat package");
+      console.error("Failed to export group chat:", err);
+      alert(typeof err === "string" ? err : "Failed to export group chat");
     }
   };
 
   const handleOpenImportGroupChatpkg = async () => {
     try {
-      const picked = await storageBridge.chatpkgPickFile();
+      const picked = await storageBridge.jsonlPickFile();
       if (!picked) return;
-      const info = await storageBridge.chatpkgInspect(picked.path);
+      const info = await storageBridge.jsonlInspect(picked.path);
       if (info?.type !== "group_chat") {
-        alert("This package is not a group chat package.");
+        alert("This file is not a group chat (JSONL).");
         return;
       }
 
       const participants = Array.isArray(info?.participants) ? info.participants : [];
       const initialMap: Record<string, string> = {};
       for (const participant of participants) {
-        const participantId =
-          (typeof participant?.id === "string" && participant.id) ||
-          (typeof participant?.characterId === "string" && participant.characterId) ||
-          null;
-        if (!participantId) continue;
-        const participantCharacterId =
-          typeof participant?.characterId === "string" ? participant.characterId : null;
-        if (participant?.resolved && participantCharacterId) {
-          initialMap[participantId] = participantCharacterId;
-          continue;
-        }
-        const displayName =
-          typeof participant?.characterDisplayName === "string"
-            ? participant.characterDisplayName
-            : "Unknown";
+        const speakerName = typeof participant?.name === "string" ? participant.name : null;
+        if (!speakerName) continue;
         const byName = availableCharacters.find(
-          (c) => c.name.trim().toLowerCase() === displayName.trim().toLowerCase(),
+          (c) => c.name.trim().toLowerCase() === speakerName.trim().toLowerCase(),
         );
-        if (byName) initialMap[participantId] = byName.id;
+        if (byName) initialMap[speakerName] = byName.id;
       }
 
       setPendingChatpkgImport({ path: picked.path, info });
       setChatpkgParticipantMap(initialMap);
 
-      const unresolved = participants.some((participant: any) => {
-        const participantId =
-          (typeof participant?.id === "string" && participant.id) ||
-          (typeof participant?.characterId === "string" && participant.characterId) ||
-          null;
-        if (!participantId) return false;
-        return !initialMap[participantId];
-      });
-      if (unresolved) setShowChatpkgImportMapMenu(true);
-      else setShowChatpkgImportConfirmMenu(true);
+      const unresolved = participants.some(
+        (p: any) => typeof p?.name === "string" && !initialMap[p.name],
+      );
+      if (unresolved) {
+        setShowChatpkgImportMapMenu(true);
+      } else {
+        await runGroupImport(picked.path, initialMap);
+      }
     } catch (err) {
-      console.error("Failed to inspect group chat package:", err);
-      alert(typeof err === "string" ? err : "Failed to inspect group chat package");
+      console.error("Failed to inspect group chat:", err);
+      alert(typeof err === "string" ? err : "Failed to inspect group chat");
     }
   };
 
-  const handleImportGroupChatpkg = async () => {
-    if (!pendingChatpkgImport) return;
+  const runGroupImport = async (path: string, map: Record<string, string>) => {
     try {
       setImportingChatpkg(true);
-      const result = await storageBridge.chatpkgImport(pendingChatpkgImport.path, {
-        participantCharacterMap: chatpkgParticipantMap,
-      });
+      const result = await storageBridge.jsonlImport(path, { participantCharacterMap: map });
       setPendingChatpkgImport(null);
       setShowChatpkgImportMapMenu(false);
-      setShowChatpkgImportConfirmMenu(false);
+      setChatpkgParticipantMap({});
       const importedSessionId = result?.sessionId;
       if (typeof importedSessionId === "string" && importedSessionId.length > 0) {
         navigate(Routes.groupChat(importedSessionId));
       }
     } catch (err) {
-      console.error("Failed to import group chat package:", err);
-      alert(typeof err === "string" ? err : "Failed to import group chat package");
+      console.error("Failed to import group chat:", err);
+      alert(typeof err === "string" ? err : "Failed to import group chat");
     } finally {
       setImportingChatpkg(false);
     }
+  };
+
+  const handleImportGroupChatpkg = async () => {
+    if (!pendingChatpkgImport) return;
+    await runGroupImport(pendingChatpkgImport.path, chatpkgParticipantMap);
   };
 
   // Loading state
@@ -334,7 +348,7 @@ export function GroupChatSettingsPage() {
       )}
     >
       {/* Background image + scrim overlay */}
-      {backgroundImagePath && (
+      {backgroundImagePath && !isDrawer && (
         <>
           <div
             className="pointer-events-none fixed inset-0 z-0"
@@ -354,30 +368,32 @@ export function GroupChatSettingsPage() {
       )}
 
       {/* Header */}
-      <header
-        className={cn(
-          "z-20 shrink-0 border-b border-fg/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+12px)] shrink-0",
-          !backgroundImagePath ? "bg-surface" : "",
-        )}
-      >
-        <div className="flex items-center gap-3">
-          <div className="flex flex-1 items-center min-w-0">
-            <button
-              onClick={handleBack}
-              className="flex shrink-0 px-[0.6em] py-[0.3em] items-center justify-center -ml-2 text-fg transition hover:text-fg/80"
-              aria-label="Back"
-            >
-              <ArrowLeft size={14} strokeWidth={2.5} />
-            </button>
-            <div className="min-w-0 flex-1 text-left">
-              <p className="truncate text-xl font-bold text-fg/90">{t("common.nav.settings")}</p>
-              <p className="mt-0.5 truncate text-xs text-fg/50">
-                {t("groupChats.sessionSettings.subtitle")}
-              </p>
+      {!isDrawer && (
+        <header
+          className={cn(
+            "z-20 shrink-0 border-b border-fg/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+12px)] shrink-0",
+            !backgroundImagePath ? "bg-surface" : "",
+          )}
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex flex-1 items-center min-w-0">
+              <button
+                onClick={handleBack}
+                className="flex shrink-0 px-[0.6em] py-[0.3em] items-center justify-center -ml-2 text-fg transition hover:text-fg/80"
+                aria-label={t("groupChats.chatSettingsExtra.backAria")}
+              >
+                <ArrowLeft size={14} strokeWidth={2.5} />
+              </button>
+              <div className="min-w-0 flex-1 text-left">
+                <p className="truncate text-xl font-bold text-fg/90">{t("common.nav.settings")}</p>
+                <p className="mt-0.5 truncate text-xs text-fg/50">
+                  {t("groupChats.sessionSettings.subtitle")}
+                </p>
+              </div>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
+      )}
 
       {/* Content */}
       <main className="relative z-10 flex-1 overflow-y-auto px-3 pt-4 pb-16">
@@ -397,133 +413,174 @@ export function GroupChatSettingsPage() {
             >
               {/* Background Preview */}
               {backgroundImagePath ? (
-                <div className="relative h-24">
+                <div className="relative h-28">
                   <img
                     src={backgroundImagePath}
-                    alt="Background"
+                    alt={t("groupChats.chatSettingsExtra.backgroundAlt")}
                     className="h-full w-full object-cover"
                   />
                   <div className="absolute inset-0 bg-linear-to-t from-surface-el/90 to-transparent" />
-                  <button
-                    onClick={handleRemoveBackground}
-                    disabled={savingBackground}
-                    className={cn(
-                      "absolute top-2 right-2 flex h-6 w-6 items-center justify-center",
-                      radius.full,
-                      "bg-surface-el/60 text-fg/70",
-                      interactive.transition.fast,
-                      "hover:bg-danger/80 hover:text-fg",
-                      "disabled:opacity-50",
-                    )}
-                    aria-label="Remove background"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                  <div className="absolute right-2 top-2 flex items-center gap-1.5">
+                    <label
+                      title={t("groupChats.sessionSettings.changeBackground")}
+                      className={cn(
+                        "flex h-7 w-7 cursor-pointer items-center justify-center",
+                        radius.full,
+                        "bg-surface-el/60 text-fg/70 backdrop-blur-sm",
+                        interactive.transition.fast,
+                        "hover:bg-fg/20 hover:text-fg",
+                        savingBackground && "pointer-events-none opacity-50",
+                      )}
+                    >
+                      <ImageIcon className="h-3.5 w-3.5" />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        onChange={handleBackgroundImageUpload}
+                        disabled={savingBackground}
+                        className="hidden"
+                      />
+                    </label>
+                    <button
+                      onClick={handleRemoveBackground}
+                      disabled={savingBackground}
+                      className={cn(
+                        "flex h-7 w-7 items-center justify-center",
+                        radius.full,
+                        "bg-surface-el/60 text-fg/70 backdrop-blur-sm",
+                        interactive.transition.fast,
+                        "hover:bg-danger/80 hover:text-fg",
+                        "disabled:opacity-50",
+                      )}
+                      aria-label={t("groupChats.sessionSettings.removeBackground")}
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 </div>
               ) : null}
 
               {/* Group Info */}
               <div className="p-4">
-                {editingName ? (
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="text"
-                      value={nameDraft}
-                      onChange={(e) => setNameDraft(e.target.value)}
-                      className={cn(
-                        "flex-1 bg-transparent py-1",
-                        typography.body.size,
-                        typography.body.weight,
-                        "text-fg placeholder-fg/30",
-                        "border-b border-accent/50 focus:border-accent",
-                        "focus:outline-none transition-colors",
-                      )}
-                      placeholder={t("groupChats.sessionSettings.enterGroupName")}
-                      autoFocus
-                    />
-                    <button
-                      onClick={handleSaveName}
-                      disabled={saving || !nameDraft.trim()}
-                      className={cn(
-                        "flex items-center justify-center",
-                        radius.full,
-                        "bg-accent/20 text-accent/80",
-                        interactive.transition.default,
-                        "hover:bg-accent/30 disabled:opacity-50",
-                      )}
-                    >
-                      <Check size={14} />
-                    </button>
-                    <button
-                      onClick={() => {
-                        setNameDraft(session.name);
-                        setEditingName(false);
-                      }}
-                      className={cn(
-                        "flex items-center justify-center",
-                        radius.full,
-                        "bg-fg/10 text-fg/60",
-                        interactive.transition.default,
-                        "hover:bg-fg/20",
-                      )}
-                    >
-                      <X size={14} />
-                    </button>
+                <div className="flex items-center gap-3">
+                  <div className="flex shrink-0 -space-x-2.5">
+                    {groupCharacters.slice(0, 4).map((character) => (
+                      <div key={character.id} className="rounded-full ring-2 ring-surface-el">
+                        <CharacterAvatar character={character} size="sm" />
+                      </div>
+                    ))}
+                    {groupCharacters.length > 4 && (
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-fg/10 text-[10px] font-bold text-fg/60 ring-2 ring-surface-el">
+                        +{groupCharacters.length - 4}
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <button
-                    onClick={() => setEditingName(true)}
-                    className="flex w-full items-center justify-between text-left group"
-                  >
-                    <div className="min-w-0">
-                      <p
-                        className={cn(typography.h3.size, typography.h3.weight, "text-fg truncate")}
+                  <div className="min-w-0 flex-1">
+                    {editingName ? (
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="text"
+                          value={nameDraft}
+                          onChange={(e) => setNameDraft(e.target.value)}
+                          className={cn(
+                            "min-w-0 flex-1 bg-transparent py-1",
+                            typography.body.size,
+                            typography.body.weight,
+                            "text-fg placeholder-fg/30",
+                            "border-b border-accent/50 focus:border-accent",
+                            "focus:outline-none transition-colors",
+                          )}
+                          placeholder={t("groupChats.sessionSettings.enterGroupName")}
+                          autoFocus
+                        />
+                        <button
+                          onClick={handleSaveName}
+                          disabled={saving || !nameDraft.trim()}
+                          className={cn(
+                            "flex items-center justify-center p-1.5",
+                            radius.full,
+                            "bg-accent/20 text-accent/80",
+                            interactive.transition.default,
+                            "hover:bg-accent/30 disabled:opacity-50",
+                          )}
+                        >
+                          <Check size={14} />
+                        </button>
+                        <button
+                          onClick={() => {
+                            setNameDraft(session.name);
+                            setEditingName(false);
+                          }}
+                          className={cn(
+                            "flex items-center justify-center p-1.5",
+                            radius.full,
+                            "bg-fg/10 text-fg/60",
+                            interactive.transition.default,
+                            "hover:bg-fg/20",
+                          )}
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => setEditingName(true)}
+                        className="flex w-full items-center justify-between gap-3 text-left group"
                       >
-                        {session.name}
-                      </p>
-                      <p className={cn(typography.caption.size, "text-fg/45 mt-0.5")}>
-                        {groupCharacters.length}{" "}
-                        {groupCharacters.length === 1
-                          ? t("groupChats.sessionSettings.participant")
-                          : t("groupChats.sessionSettings.participants")}
-                        <span className="opacity-50 mx-1.5">•</span>
-                        {messageCount}{" "}
-                        {messageCount === 1
-                          ? t("groupChats.sessionSettings.message")
-                          : t("groupChats.sessionSettings.messages")}
-                      </p>
-                    </div>
-                    <Edit2 className="h-4 w-4 shrink-0 text-fg/30 transition-colors group-hover:text-fg/60" />
-                  </button>
-                )}
+                        <div className="min-w-0">
+                          <p
+                            className={cn(
+                              typography.h3.size,
+                              typography.h3.weight,
+                              "text-fg truncate",
+                            )}
+                          >
+                            {session.name}
+                          </p>
+                          <p className={cn(typography.caption.size, "text-fg/45 mt-0.5")}>
+                            {groupCharacters.length}{" "}
+                            {groupCharacters.length === 1
+                              ? t("groupChats.sessionSettings.participant")
+                              : t("groupChats.sessionSettings.participants")}
+                            <span className="opacity-50 mx-1.5">•</span>
+                            {messageCount}{" "}
+                            {messageCount === 1
+                              ? t("groupChats.sessionSettings.message")
+                              : t("groupChats.sessionSettings.messages")}
+                          </p>
+                        </div>
+                        <Edit2 className="h-4 w-4 shrink-0 text-fg/30 transition-colors group-hover:text-fg/60" />
+                      </button>
+                    )}
+                  </div>
+                </div>
 
-                {/* Background action */}
-                <label
-                  className={cn(
-                    "flex cursor-pointer items-center gap-2 mt-3 py-2 px-3",
-                    radius.md,
-                    "border border-dashed border-fg/15 text-fg/50",
-                    interactive.transition.default,
-                    "hover:border-fg/25 hover:bg-fg/5 hover:text-fg/70",
-                    savingBackground && "opacity-50 cursor-not-allowed",
-                  )}
-                >
-                  <ImageIcon className="h-4 w-4" />
-                  <span className={cn(typography.caption.size)}>
-                    {savingBackground
-                      ? t("groupChats.sessionSettings.uploading")
-                      : backgroundImagePath
-                        ? t("groupChats.sessionSettings.changeBackground")
+                {!backgroundImagePath && (
+                  <label
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2 mt-3 py-2 px-3",
+                      radius.md,
+                      "border border-dashed border-fg/15 text-fg/50",
+                      interactive.transition.default,
+                      "hover:border-fg/25 hover:bg-fg/5 hover:text-fg/70",
+                      savingBackground && "opacity-50 cursor-not-allowed",
+                    )}
+                  >
+                    <ImageIcon className="h-4 w-4" />
+                    <span className={cn(typography.caption.size)}>
+                      {savingBackground
+                        ? t("groupChats.sessionSettings.uploading")
                         : t("groupChats.sessionSettings.addBackgroundImage")}
-                  </span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleBackgroundImageUpload}
-                    disabled={savingBackground}
-                    className="hidden"
-                  />
-                </label>
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleBackgroundImageUpload}
+                      disabled={savingBackground}
+                      className="hidden"
+                    />
+                  </label>
+                )}
               </div>
             </div>
           </section>
@@ -575,31 +632,70 @@ export function GroupChatSettingsPage() {
             </div>
           </section>*/}
 
-          {/* Persona Section */}
+          {/* Quick Settings */}
           <section className={spacing.item}>
             <SectionHeader
-              title={t("groupChats.sessionSettings.persona")}
-              subtitle={t("groupChats.sessionSettings.personaSubtitle")}
+              title={t("chats.settings.quickSettings")}
+              subtitle={t("chats.settings.quickSettingsDesc")}
             />
-            <QuickChip
-              icon={
-                personaAvatarUrl ? (
-                  <div className="h-full w-full overflow-hidden rounded-full">
-                    <AvatarImage
-                      src={personaAvatarUrl}
-                      alt={currentPersona?.title ?? "Persona"}
-                      crop={currentPersona?.avatarCrop}
-                      applyCrop
-                    />
-                  </div>
-                ) : (
-                  <User className="h-4 w-4" />
-                )
-              }
-              label={t("groupChats.sessionSettings.personaLabel")}
-              value={currentPersonaDisplay}
-              onClick={() => setShowPersonaSelector(true)}
-            />
+            <div className="grid grid-cols-1 gap-2">
+              <QuickChip
+                icon={
+                  personaAvatarUrl ? (
+                    <div className="h-full w-full overflow-hidden rounded-full">
+                      <AvatarImage
+                        src={personaAvatarUrl}
+                        alt={currentPersona?.title ?? "Persona"}
+                        crop={currentPersona?.avatarCrop}
+                        applyCrop
+                      />
+                    </div>
+                  ) : (
+                    <User className="h-4 w-4" />
+                  )
+                }
+                label={t("groupChats.sessionSettings.personaLabel")}
+                value={currentPersonaDisplay}
+                onClick={() => setShowPersonaSelector(true)}
+              />
+              <QuickChip
+                icon={<BookOpen className="h-4 w-4" />}
+                label={t("groupChats.settingsPageExtra.manageLorebooks")}
+                value={t("groupChats.sessionSettings.lorebooksAttached", {
+                  count: String(session.lorebookIds?.length ?? 0),
+                })}
+                onClick={() => navigate(Routes.groupChatLorebook(session.id))}
+              />
+              <QuickChip
+                icon={<NotebookPen className="h-4 w-4" />}
+                label={t("chats.authorNote.title")}
+                value={
+                  session.authorNote?.trim()
+                    ? session.authorNote.trim().split("\n")[0]
+                    : t("groupChats.sessionSettings.authorNoteEmpty")
+                }
+                onClick={() => setShowAuthorNoteMenu(true)}
+              />
+            </div>
+            <div
+              className={cn(
+                "flex w-full items-center justify-between gap-3 rounded-xl border border-fg/10 bg-surface-el/85 px-4 py-3 text-left",
+                interactive.transition.default,
+              )}
+            >
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-fg">
+                  {t("groupChats.sessionSettings.disableCharacterLorebooks")}
+                </div>
+                <div className="mt-0.5 text-xs text-fg/50">
+                  {t("groupChats.sessionSettings.disableCharacterLorebooksDesc")}
+                </div>
+              </div>
+              <Switch
+                checked={!!session.disableCharacterLorebooks}
+                onChange={(next) => void handleSetDisableCharacterLorebooks(next)}
+              />
+            </div>
           </section>
 
           {/* Speaker Selection Method */}
@@ -608,102 +704,96 @@ export function GroupChatSettingsPage() {
               title={t("groupChats.sessionSettings.speakerSelection")}
               subtitle={t("groupChats.sessionSettings.speakerSubtitle")}
             />
-            <div className="grid grid-cols-3 gap-2">
-              {(
-                [
-                  {
-                    value: "llm" as const,
-                    label: t("groupChats.sessionSettings.llm"),
-                    desc: t("groupChats.sessionSettings.aiPicks"),
-                    icon: Brain,
-                  },
-                  {
-                    value: "heuristic" as const,
-                    label: t("groupChats.sessionSettings.heuristic"),
-                    desc: t("groupChats.sessionSettings.scoreBased"),
-                    icon: BarChart3,
-                  },
-                  {
-                    value: "round_robin" as const,
-                    label: t("groupChats.sessionSettings.roundRobin"),
-                    desc: t("groupChats.sessionSettings.takeTurns"),
-                    icon: RefreshCw,
-                  },
-                ] as const
-              ).map((option) => (
-                <button
-                  key={option.value}
-                  onClick={() => handleChangeSpeakerSelectionMethod(option.value)}
-                  disabled={saving}
-                  className={cn(
-                    "relative flex flex-col items-center gap-1.5 p-3",
-                    radius.lg,
-                    "border text-center",
-                    interactive.transition.fast,
-                    session.speakerSelectionMethod === option.value
-                      ? "border-accent/40 bg-accent/10"
-                      : "border-fg/10 bg-surface-el/85 hover:border-fg/20",
-                    saving && "opacity-50",
-                  )}
-                >
-                  <option.icon
-                    className={cn(
-                      "h-5 w-5",
-                      session.speakerSelectionMethod === option.value
-                        ? "text-accent/80"
-                        : "text-fg/50",
-                    )}
-                  />
-                  <div
-                    className={cn(
-                      "text-xs font-semibold",
-                      session.speakerSelectionMethod === option.value
-                        ? "text-accent"
-                        : "text-fg/80",
-                    )}
-                  >
-                    {option.label}
-                  </div>
-                  <div className="text-[10px] text-fg/40">{option.desc}</div>
-                </button>
-              ))}
-            </div>
-            <p className={cn(typography.caption.size, "mt-2 text-fg/40")}>
-              {session.speakerSelectionMethod === "llm"
-                ? t("groupChats.sessionSettings.llmDesc")
-                : session.speakerSelectionMethod === "heuristic"
-                  ? t("groupChats.sessionSettings.heuristicDesc")
-                  : t("groupChats.sessionSettings.roundRobinDesc")}
-            </p>
-          </section>
-
-          <section className={spacing.item}>
-            <SectionHeader
-              title="Lorebooks"
-              subtitle="Attach session lorebooks and optionally ignore each character's own lorebooks."
-            />
-            <QuickChip
-              icon={<BookOpen className="h-4 w-4" />}
-              label="Manage lorebooks"
-              value={`${session.lorebookIds?.length ?? 0} attached`}
-              onClick={() => navigate(Routes.groupChatLorebook(session.id))}
-            />
-            <div
-              className={cn(
-                "mt-2 flex w-full items-center justify-between rounded-xl border border-fg/10 bg-surface-el/85 p-3 text-left",
-                interactive.transition.default,
-              )}
-            >
-              <div>
-                <div className="text-sm font-medium text-fg">Disable character lorebooks</div>
-                <div className="text-xs text-fg/50">
-                  Group replies will use only the lorebooks attached to this session.
-                </div>
-              </div>
-              <Switch
-                checked={!!session.disableCharacterLorebooks}
-                onChange={(next) => void handleSetDisableCharacterLorebooks(next)}
+            <div className="space-y-2">
+              <OptionRow
+                selected={session.speakerSelectionMethod === "llm"}
+                onSelect={() => handleChangeSpeakerSelectionMethod("llm")}
+                icon={Brain}
+                label={t("groupChats.sessionSettings.llm")}
+                description={t("groupChats.sessionSettings.llmDesc")}
+                disabled={saving}
               />
+              <OptionRow
+                selected={session.speakerSelectionMethod === "heuristic"}
+                onSelect={() => handleChangeSpeakerSelectionMethod("heuristic")}
+                icon={BarChart3}
+                label={t("groupChats.sessionSettings.heuristic")}
+                description={t("groupChats.sessionSettings.heuristicDesc")}
+                disabled={saving}
+              />
+              <OptionRow
+                selected={session.speakerSelectionMethod === "round_robin"}
+                onSelect={() => handleChangeSpeakerSelectionMethod("round_robin")}
+                icon={RefreshCw}
+                label={t("groupChats.sessionSettings.roundRobin")}
+                description={t("groupChats.sessionSettings.roundRobinDesc")}
+                disabled={saving}
+              />
+              <OptionRow
+                selected={
+                  session.speakerSelectionMethod === "director" ||
+                  session.speakerSelectionMethod === "director_action"
+                }
+                onSelect={() => {
+                  if (
+                    session.speakerSelectionMethod !== "director" &&
+                    session.speakerSelectionMethod !== "director_action"
+                  ) {
+                    handleChangeSpeakerSelectionMethod("director");
+                  }
+                }}
+                icon={Clapperboard}
+                label={t("groupChats.sessionSettings.director")}
+                description={t("groupChats.create.groupSetup.directorRowDesc")}
+                disabled={saving}
+              />
+              {(session.speakerSelectionMethod === "director" ||
+                session.speakerSelectionMethod === "director_action") && (
+                <div className="grid grid-cols-2 gap-2 pl-4">
+                  {(
+                    [
+                      {
+                        value: "director" as const,
+                        label: t("groupChats.sessionSettings.directorCue"),
+                        desc: t("groupChats.sessionSettings.directorCueShort"),
+                      },
+                      {
+                        value: "director_action" as const,
+                        label: t("groupChats.sessionSettings.directorAction"),
+                        desc: t("groupChats.sessionSettings.directorActionShort"),
+                      },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.value}
+                      onClick={() => handleChangeSpeakerSelectionMethod(option.value)}
+                      disabled={saving}
+                      className={cn(
+                        "flex flex-col items-center gap-0.5 px-3 py-2",
+                        radius.lg,
+                        "border text-center",
+                        interactive.transition.fast,
+                        session.speakerSelectionMethod === option.value
+                          ? "border-accent/40 bg-accent/10"
+                          : "border-fg/10 bg-surface-el/85 hover:border-fg/20",
+                        saving && "opacity-50",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "text-xs font-semibold",
+                          session.speakerSelectionMethod === option.value
+                            ? "text-accent"
+                            : "text-fg/80",
+                        )}
+                      >
+                        {option.label}
+                      </div>
+                      <div className="text-[10px] text-fg/40">{option.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
 
@@ -736,9 +826,28 @@ export function GroupChatSettingsPage() {
               </button>
             </div>
 
+            {participationStats.length > 0 && (
+              <div className="mb-2 flex h-2.5 overflow-hidden rounded-full bg-fg/5">
+                {groupCharacters.map((char, index) => {
+                  const percent = getParticipationPercent(char.id);
+                  return (
+                    <div
+                      key={char.id}
+                      className={cn(
+                        PARTICIPATION_COLORS[index % PARTICIPATION_COLORS.length],
+                        "transition-all duration-300",
+                      )}
+                      style={{ width: `${percent}%` }}
+                      title={`${char.name}: ${percent}%`}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
             <div className="space-y-2">
               <AnimatePresence mode="popLayout">
-                {groupCharacters.map((character) => {
+                {groupCharacters.map((character, index) => {
                   const percent = getParticipationPercent(character.id);
                   const isMuted = mutedCharacterIds.has(character.id);
 
@@ -755,9 +864,16 @@ export function GroupChatSettingsPage() {
                         "border border-fg/10 bg-surface-el/85",
                       )}
                     >
-                      <CharacterAvatar character={character} size="md" />
+                      <div className={cn(isMuted && "opacity-40 grayscale")}>
+                        <CharacterAvatar character={character} size="md" />
+                      </div>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium text-fg truncate">
+                        <p
+                          className={cn(
+                            "text-sm font-medium truncate",
+                            isMuted ? "text-fg/50" : "text-fg",
+                          )}
+                        >
                           {character.name}
                           {isMuted && (
                             <span className="ml-2 text-[10px] text-fg/40">
@@ -765,16 +881,18 @@ export function GroupChatSettingsPage() {
                             </span>
                           )}
                         </p>
-                        <div className="flex items-center gap-2 mt-1">
-                          <div className="flex-1 h-1.5 rounded-full bg-fg/10 overflow-hidden">
-                            <div
-                              className="h-full bg-accent/60 rounded-full transition-all duration-300"
-                              style={{ width: `${percent}%` }}
-                            />
-                          </div>
-                          <span className="text-[10px] text-fg/50 tabular-nums">{percent}%</span>
-                        </div>
                       </div>
+                      {participationStats.length > 0 && (
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          <span
+                            className={cn(
+                              "h-2 w-2 rounded-full",
+                              PARTICIPATION_COLORS[index % PARTICIPATION_COLORS.length],
+                            )}
+                          />
+                          <span className="text-xs text-fg/50 tabular-nums">{percent}%</span>
+                        </span>
+                      )}
                       <button
                         onClick={() => handleSetCharacterMuted(character.id, !isMuted)}
                         className={cn(
@@ -824,256 +942,42 @@ export function GroupChatSettingsPage() {
             </p>
           </section>
 
-          {/* Session Management */}
+          {/* Session Actions */}
           <section className={spacing.item}>
             <SectionHeader
-              title={t("groupChats.sessionSettings.data")}
-              subtitle={t("groupChats.sessionSettings.dataSubtitle")}
+              title={t("chats.settings.session")}
+              subtitle={t("groupChats.sessionSettings.sessionActionsSubtitle")}
             />
             <div className={spacing.field}>
-              <button
-                onClick={() => setShowChatpkgExportMenu(true)}
-                className={cn(
-                  "group flex w-full min-h-14 items-center justify-between",
-                  radius.md,
-                  "border p-4 text-left",
-                  interactive.transition.default,
-                  interactive.active.scale,
-                  "border-fg/10 bg-surface-el/85 backdrop-blur-sm hover:border-fg/20 hover:bg-fg/10",
-                )}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className={cn(
-                      "flex h-10 w-10 items-center justify-center",
-                      radius.full,
-                      "border border-fg/15 bg-fg/10 text-fg/80",
-                    )}
-                  >
-                    <Download className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div
-                      className={cn(
-                        typography.overline.size,
-                        typography.overline.weight,
-                        typography.overline.tracking,
-                        typography.overline.transform,
-                        "text-fg/50",
-                      )}
-                    >
-                      {t("groupChats.sessionSettings.export")}
-                    </div>
-                    <div className={cn(typography.bodySmall.size, "text-fg truncate")}>
-                      {t("groupChats.sessionSettings.exportDesc")}
-                    </div>
-                  </div>
-                </div>
-                <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 transition-colors group-hover:text-fg/60" />
-              </button>
-
-              <button
+              <QuickChip
+                icon={<Download className="h-4 w-4" />}
+                label={t("groupChats.sessionSettings.export")}
+                value={t("groupChats.sessionSettings.exportDesc")}
+                onClick={() => void handleExportGroupChatpkg()}
+              />
+              <QuickChip
+                icon={<Upload className="h-4 w-4" />}
+                label={t("groupChats.sessionSettings.import")}
+                value={t("groupChats.sessionSettings.importDesc")}
                 onClick={() => {
                   void handleOpenImportGroupChatpkg();
                 }}
                 disabled={importingChatpkg}
-                className={cn(
-                  "group flex w-full min-h-14 items-center justify-between",
-                  radius.md,
-                  "border p-4 text-left",
-                  interactive.transition.default,
-                  interactive.active.scale,
-                  "border-fg/10 bg-surface-el/85 backdrop-blur-sm hover:border-fg/20 hover:bg-fg/10",
-                  importingChatpkg && "opacity-50",
-                )}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className={cn(
-                      "flex h-10 w-10 items-center justify-center",
-                      radius.full,
-                      "border border-fg/15 bg-fg/10 text-fg/80",
-                    )}
-                  >
-                    <Upload className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div
-                      className={cn(
-                        typography.overline.size,
-                        typography.overline.weight,
-                        typography.overline.tracking,
-                        typography.overline.transform,
-                        "text-fg/50",
-                      )}
-                    >
-                      {t("groupChats.sessionSettings.import")}
-                    </div>
-                    <div className={cn(typography.bodySmall.size, "text-fg truncate")}>
-                      {t("groupChats.sessionSettings.importDesc")}
-                    </div>
-                  </div>
-                </div>
-                <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 transition-colors group-hover:text-fg/60" />
-              </button>
-            </div>
-          </section>
-
-          {/* Session Management */}
-          <section className={spacing.item}>
-            <SectionHeader
-              title={t("groupChats.sessionSettings.conversation")}
-              subtitle={t("groupChats.sessionSettings.conversationSubtitle")}
-            />
-            <div className={spacing.field}>
-              <button
-                onClick={() => setShowCloneOptions(true)}
-                className={cn(
-                  "group flex w-full min-h-14 items-center justify-between",
-                  radius.md,
-                  "border p-4 text-left",
-                  interactive.transition.default,
-                  interactive.active.scale,
-                  "border-fg/10 bg-surface-el/85 backdrop-blur-sm hover:border-fg/20 hover:bg-fg/10",
-                )}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className={cn(
-                      "flex h-10 w-10 items-center justify-center",
-                      radius.full,
-                      "border border-fg/15 bg-fg/10 text-fg/80",
-                    )}
-                  >
-                    <Copy className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div
-                      className={cn(
-                        typography.overline.size,
-                        typography.overline.weight,
-                        typography.overline.tracking,
-                        typography.overline.transform,
-                        "text-fg/50",
-                      )}
-                    >
-                      {t("groupChats.sessionSettings.duplicate")}
-                    </div>
-                    <div className={cn(typography.bodySmall.size, "text-fg truncate")}>
-                      {t("groupChats.sessionSettings.duplicateDesc")}
-                    </div>
-                  </div>
-                </div>
-                <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 transition-colors group-hover:text-fg/60" />
-              </button>
-
-              <button
-                onClick={() => setShowBranchOptions(true)}
-                className={cn(
-                  "group flex w-full min-h-14 items-center justify-between",
-                  radius.md,
-                  "border p-4 text-left",
-                  interactive.transition.default,
-                  interactive.active.scale,
-                  "border-fg/10 bg-surface-el/85 backdrop-blur-sm hover:border-fg/20 hover:bg-fg/10",
-                )}
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div
-                    className={cn(
-                      "flex h-10 w-10 items-center justify-center",
-                      radius.full,
-                      "border border-fg/15 bg-fg/10 text-fg/80",
-                    )}
-                  >
-                    <GitBranch className="h-4 w-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div
-                      className={cn(
-                        typography.overline.size,
-                        typography.overline.weight,
-                        typography.overline.tracking,
-                        typography.overline.transform,
-                        "text-fg/50",
-                      )}
-                    >
-                      {t("groupChats.sessionSettings.branchTo1on1")}
-                    </div>
-                    <div className={cn(typography.bodySmall.size, "text-fg truncate")}>
-                      {t("groupChats.sessionSettings.branchTo1on1Desc")}
-                    </div>
-                  </div>
-                </div>
-                <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 transition-colors group-hover:text-fg/60" />
-              </button>
-            </div>
-          </section>
-
-          {/* Participation Stats */}
-          {participationStats.length > 0 && (
-            <section className={spacing.item}>
-              <SectionHeader
-                title={t("groupChats.sessionSettings.participation")}
-                subtitle={t("groupChats.sessionSettings.participationSubtitle")}
               />
-              <div className={cn(radius.lg, "border border-fg/10 bg-surface-el/85 p-4")}>
-                {/* Visual bar */}
-                <div className="h-3 rounded-full overflow-hidden flex bg-fg/5 mb-4">
-                  {groupCharacters.map((char, index) => {
-                    const percent = getParticipationPercent(char.id);
-                    const colors = [
-                      "bg-accent",
-                      "bg-info",
-                      "bg-secondary",
-                      "bg-warning",
-                      "bg-danger",
-                      "bg-info",
-                      "bg-warning",
-                      "bg-lime-400",
-                    ];
-                    return (
-                      <div
-                        key={char.id}
-                        className={cn(colors[index % colors.length])}
-                        style={{ width: `${percent}%` }}
-                        title={`${char.name}: ${percent}%`}
-                      />
-                    );
-                  })}
-                </div>
-
-                {/* Legend */}
-                <div className="flex flex-wrap gap-3">
-                  {groupCharacters.map((char, index) => {
-                    const percent = getParticipationPercent(char.id);
-                    const colorDots = [
-                      "bg-accent",
-                      "bg-info",
-                      "bg-secondary",
-                      "bg-warning",
-                      "bg-danger",
-                      "bg-info",
-                      "bg-warning",
-                      "bg-lime-400",
-                    ];
-                    return (
-                      <div key={char.id} className="flex items-center gap-1.5">
-                        <div
-                          className={cn(
-                            "h-2 w-2 rounded-full",
-                            colorDots[index % colorDots.length],
-                          )}
-                        />
-                        <span className="text-xs text-fg/70">{char.name}</span>
-                        <span className="text-xs text-fg/40 tabular-nums">({percent}%)</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </section>
-          )}
+              <QuickChip
+                icon={<Copy className="h-4 w-4" />}
+                label={t("groupChats.sessionSettings.duplicate")}
+                value={t("groupChats.sessionSettings.duplicateDesc")}
+                onClick={() => setShowCloneOptions(true)}
+              />
+              <QuickChip
+                icon={<GitBranch className="h-4 w-4" />}
+                label={t("groupChats.sessionSettings.branchTo1on1")}
+                value={t("groupChats.sessionSettings.branchTo1on1Desc")}
+                onClick={() => setShowBranchOptions(true)}
+              />
+            </div>
+          </section>
         </motion.div>
       </main>
 
@@ -1084,6 +988,14 @@ export function GroupChatSettingsPage() {
         personas={personas}
         selectedPersonaId={session.personaId}
         onSelect={handleChangePersona}
+      />
+
+      {/* Author Note Menu */}
+      <GroupAuthorNoteBottomMenu
+        isOpen={showAuthorNoteMenu}
+        onClose={() => setShowAuthorNoteMenu(false)}
+        session={session}
+        onSaved={(updated) => updateSession(updated)}
       />
 
       {/* Add Character Modal */}
@@ -1294,85 +1206,7 @@ export function GroupChatSettingsPage() {
         </MenuSection>
       </BottomMenu>
 
-      <BottomMenu
-        isOpen={showChatpkgExportMenu}
-        onClose={() => setShowChatpkgExportMenu(false)}
-        title={t("groupChats.sessionSettings.exportChatPackageTitle")}
-      >
-        <MenuSection>
-          <div className={spacing.field}>
-            <button
-              onClick={() => {
-                void handleExportGroupChatpkg(true);
-              }}
-              className={cn(
-                "group flex w-full items-center justify-between p-4",
-                radius.md,
-                "border text-left",
-                interactive.transition.default,
-                interactive.active.scale,
-                "border-fg/10 bg-surface-el/85 hover:border-fg/20 hover:bg-fg/10",
-              )}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div
-                  className={cn(
-                    "flex h-10 w-10 items-center justify-center",
-                    radius.full,
-                    "border border-fg/15 bg-fg/10 text-fg/80",
-                  )}
-                >
-                  <Users className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className={cn(typography.body.size, typography.body.weight, "text-fg")}>
-                    {t("groupChats.sessionSettings.includeCharacterSnapshots")}
-                  </p>
-                  <p className={cn(typography.caption.size, "text-fg/50 mt-0.5")}>
-                    {t("groupChats.sessionSettings.includeCharacterSnapshotsDesc")}
-                  </p>
-                </div>
-              </div>
-            </button>
-
-            <button
-              onClick={() => {
-                void handleExportGroupChatpkg(false);
-              }}
-              className={cn(
-                "group flex w-full items-center justify-between p-4",
-                radius.md,
-                "border text-left",
-                interactive.transition.default,
-                interactive.active.scale,
-                "border-fg/10 bg-surface-el/85 hover:border-fg/20 hover:bg-fg/10",
-              )}
-            >
-              <div className="flex items-center gap-3 min-w-0">
-                <div
-                  className={cn(
-                    "flex h-10 w-10 items-center justify-center",
-                    radius.full,
-                    "border border-fg/15 bg-fg/10 text-fg/80",
-                  )}
-                >
-                  <Download className="h-4 w-4" />
-                </div>
-                <div className="min-w-0">
-                  <p className={cn(typography.body.size, typography.body.weight, "text-fg")}>
-                    {t("groupChats.sessionSettings.sessionOnly")}
-                  </p>
-                  <p className={cn(typography.caption.size, "text-fg/50 mt-0.5")}>
-                    {t("groupChats.sessionSettings.sessionOnlyDesc")}
-                  </p>
-                </div>
-              </div>
-            </button>
-          </div>
-        </MenuSection>
-      </BottomMenu>
-
-      <BottomMenu
+<BottomMenu
         isOpen={showChatpkgImportMapMenu}
         onClose={() => {
           if (importingChatpkg) return;
@@ -1389,15 +1223,8 @@ export function GroupChatSettingsPage() {
               : []
             ).map((participant: any, idx: number) => {
               const participantKey =
-                (typeof participant?.id === "string" && participant.id) ||
-                (typeof participant?.characterId === "string" && participant.characterId) ||
-                `${idx}`;
-              const displayName =
-                typeof participant?.characterDisplayName === "string"
-                  ? participant.characterDisplayName
-                  : typeof participant?.displayName === "string"
-                    ? participant.displayName
-                    : "Unknown";
+                (typeof participant?.name === "string" && participant.name) || `${idx}`;
+              const displayName = participantKey;
               const currentValue = chatpkgParticipantMap[participantKey] || "";
               return (
                 <div key={participantKey} className="rounded-xl border border-fg/10 bg-fg/5 p-3">
@@ -1437,43 +1264,15 @@ export function GroupChatSettingsPage() {
           </div>
           <button
             onClick={() => {
-              setShowChatpkgImportMapMenu(false);
-              setShowChatpkgImportConfirmMenu(true);
+              void handleImportGroupChatpkg();
             }}
-            className="mt-4 w-full rounded-xl border border-emerald-500/30 bg-emerald-500/20 py-3 text-sm font-medium text-emerald-200 hover:bg-emerald-500/30"
+            disabled={importingChatpkg}
+            className="mt-4 w-full rounded-xl border border-emerald-500/30 bg-emerald-500/20 py-3 text-sm font-medium text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-50"
           >
-            {t("groupChats.sessionSettings.continue")}
+            {importingChatpkg
+              ? t("groupChats.sessionSettings.importing")
+              : t("common.buttons.import")}
           </button>
-        </MenuSection>
-      </BottomMenu>
-
-      <BottomMenu
-        isOpen={showChatpkgImportConfirmMenu}
-        onClose={() => {
-          if (importingChatpkg) return;
-          setShowChatpkgImportConfirmMenu(false);
-          setPendingChatpkgImport(null);
-          setChatpkgParticipantMap({});
-        }}
-        title={t("groupChats.sessionSettings.importChatPackageTitle")}
-      >
-        <MenuSection>
-          <div className="space-y-4">
-            <div className="rounded-xl border border-fg/10 bg-fg/5 p-3 text-sm text-fg/80">
-              {t("groupChats.sessionSettings.importChatPackageDesc")}
-            </div>
-            <button
-              onClick={() => {
-                void handleImportGroupChatpkg();
-              }}
-              disabled={importingChatpkg}
-              className="w-full rounded-xl border border-emerald-500/30 bg-emerald-500/20 py-3 text-sm font-medium text-emerald-200 transition hover:bg-emerald-500/30 disabled:opacity-50"
-            >
-              {importingChatpkg
-                ? t("groupChats.sessionSettings.importing")
-                : t("common.buttons.import")}
-            </button>
-          </div>
         </MenuSection>
       </BottomMenu>
     </div>

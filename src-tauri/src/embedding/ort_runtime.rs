@@ -119,7 +119,7 @@ pub(super) async fn ensure_ort_init(app: &AppHandle) -> Result<(), String> {
         }
     })
     .map_err(|panic_payload| {
-        let panic_msg = panic_payload_to_string(&*panic_payload);
+        let panic_msg = super::util::panic_payload_to_string(&*panic_payload);
         crate::utils::log_error(
             app,
             "embedding_debug",
@@ -607,7 +607,6 @@ fn log_missing_macos_provider_dylibs(app: &AppHandle, ort_dir: &Path, dylib_path
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, ort_dir, dylib_path);
-        return;
     }
 
     #[cfg(target_os = "macos")]

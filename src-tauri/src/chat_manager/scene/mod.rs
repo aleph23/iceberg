@@ -11,7 +11,7 @@ use crate::chat_manager::prompting::entry_conditions::{
 };
 use crate::chat_manager::prompts;
 use crate::chat_manager::provider_adapter::adapter_for;
-use crate::chat_manager::request::extract_text;
+use crate::chat_manager::request::{extract_text, message_text_for_api};
 use crate::chat_manager::service::{require_api_key, ChatContext};
 use crate::chat_manager::storage::{
     get_base_prompt_entries, resolve_credential_for_model, PromptType,
@@ -22,8 +22,8 @@ use crate::chat_manager::turn_builder::{
 use crate::chat_manager::types::{
     Character, ChatGenerateDesignReferenceDescriptionArgs, ChatGenerateSceneImageArgs,
     ChatGenerateScenePromptArgs, ImageAttachment, Model, Persona, PromptEntryChatMode,
-    PromptEntryImageSlot, PromptEntryPayload, PromptEntryPosition, ProviderCredential, Session,
-    Settings, StoredMessage, SystemPromptEntry,
+    PromptEntryImageSlot, PromptEntryInfoSource, PromptEntryPayload, PromptEntryPosition,
+    ProviderCredential, Session, Settings, StoredMessage, SystemPromptEntry,
 };
 use crate::image_generator::types::ImageGenerationRequest;
 use crate::storage_manager::media::{storage_load_avatar, storage_read_image_data};
@@ -221,13 +221,29 @@ fn resolve_chat_background_image(
 
 fn build_scene_reference_images(
     app: &AppHandle,
+    session: &Session,
     character: &Character,
     persona: Option<&Persona>,
 ) -> SceneReferenceImages {
     let character_design_images =
         resolve_design_reference_images(app, &character.design_reference_image_ids);
-    let chat_background_images =
-        resolve_chat_background_image(app, character.background_image_path.as_deref());
+    let selected_scene_background = session
+        .selected_scene_id
+        .as_ref()
+        .or(character.default_scene_id.as_ref())
+        .and_then(|scene_id| {
+            character
+                .scenes
+                .iter()
+                .find(|scene| &scene.id == scene_id)
+                .and_then(|scene| scene.background_image_path.as_deref())
+        });
+    let effective_background_path = session
+        .background_image_path
+        .as_deref()
+        .or(selected_scene_background)
+        .or(character.background_image_path.as_deref());
+    let chat_background_images = resolve_chat_background_image(app, effective_background_path);
     let (character_images, character_reference_count, character_reference_source) =
         if !character_design_images.is_empty() {
             let count = character_design_images.len();
@@ -410,10 +426,10 @@ fn legacy_prompt_entry_image_slot(content: &str) -> Option<PromptEntryImageSlot>
 }
 
 fn prompt_entry_image_slot(entry: &SystemPromptEntry) -> Option<PromptEntryImageSlot> {
-    match &entry.prompt_entry_payload {
-        Some(PromptEntryPayload::ImageSlot { slot }) => Some(slot.clone()),
-        None => None,
-    }
+    entry
+        .prompt_entry_payload
+        .as_ref()
+        .map(|PromptEntryPayload::ImageSlot { slot }| slot.clone())
 }
 
 fn prompt_entry_has_image_binding(entry: &SystemPromptEntry) -> bool {
@@ -502,6 +518,7 @@ fn build_scene_generation_request(
     character: &Character,
     persona: Option<&Persona>,
     reference_images: SceneReferenceImages,
+    default_size: Option<String>,
 ) -> ImageGenerationRequest {
     let SceneReferenceImages {
         character_images,
@@ -626,6 +643,39 @@ fn build_scene_generation_request(
 
     prompt_sections.push(scene_prompt.trim().to_string());
 
+    if model.provider_id == crate::local_diffusion::PROVIDER_ID {
+        let mut lora_tags = Vec::new();
+        if let Some(name) = character
+            .lora_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            lora_tags.push(format!(
+                "<lora:{}:{}>",
+                name,
+                character.lora_strength.unwrap_or(0.8)
+            ));
+        }
+        if let Some(persona) = persona {
+            if let Some(name) = persona
+                .lora_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lora_tags.push(format!(
+                    "<lora:{}:{}>",
+                    name,
+                    persona.lora_strength.unwrap_or(0.8)
+                ));
+            }
+        }
+        if !lora_tags.is_empty() {
+            prompt_sections.insert(0, lora_tags.join(" "));
+        }
+    }
+
     ImageGenerationRequest {
         prompt: prompt_sections.join("\n\n"),
         model: model.name.clone(),
@@ -637,14 +687,20 @@ fn build_scene_generation_request(
         } else {
             Some(input_images)
         },
+        output_modalities: Some(model.output_scopes.clone()),
         size: model
             .advanced_model_settings
             .as_ref()
             .and_then(|settings| settings.sd_size.clone())
+            .or(default_size)
             .or_else(|| Some("1024x1024".to_string())),
         quality: None,
         style: None,
         n: Some(1),
+        session_id: None,
+        character_id: None,
+        character_name: None,
+        usage_source: Some("scene".to_string()),
     }
 }
 
@@ -692,17 +748,21 @@ fn build_scene_prompt_context_messages(
 
     let context = context_slice
         .iter()
-        .filter(|message| {
-            matches!(message.role.as_str(), "user" | "assistant" | "scene")
-                && !message.content.trim().is_empty()
-        })
-        .map(|message| {
+        .filter_map(|message| {
+            if !matches!(message.role.as_str(), "user" | "assistant" | "scene") {
+                return None;
+            }
+            let content = message_text_for_api(message);
+            let content = content.trim();
+            if content.is_empty() {
+                return None;
+            }
             let role = match message.role.as_str() {
                 "assistant" => "Assistant",
                 "scene" => "Scene",
                 _ => "User",
             };
-            format!("{}: {}", role, message.content.trim())
+            Some(format!("{}: {}", role, content))
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -728,6 +788,7 @@ fn render_scene_generation_prompt_content(
     persona: Option<&Persona>,
     recent_messages_text: &str,
     has_chat_background: bool,
+    image_model_instructions: &str,
 ) -> String {
     let mut prompt = template_content.to_string();
     let char_name = character.name.as_str();
@@ -750,7 +811,7 @@ fn render_scene_generation_prompt_content(
         char_desc_parts.push(format!("Visual design notes: {}", value));
     }
     let char_desc = char_desc_parts.join("\n\n");
-    let persona_name = persona.map(|value| value.title.as_str()).unwrap_or("User");
+    let persona_name = persona.map(|value| value.title.as_str()).unwrap_or("user");
     let mut persona_desc_parts = Vec::new();
     if let Some(value) = persona
         .map(|value| value.description.as_str())
@@ -808,6 +869,7 @@ fn render_scene_generation_prompt_content(
     prompt = prompt.replace("{{persona.name}}", persona_name);
     prompt = prompt.replace("{{persona.desc}}", &persona_desc);
     prompt = prompt.replace("{{recent_messages}}", recent_messages_text);
+    prompt = prompt.replace("{{image_model_instructions}}", image_model_instructions);
     let scene_request = if let Some(persona) = persona {
         format!(
             "Create one polished scene image prompt for the visual moment described by the recent messages. Focus on the currently active beat involving {} and {}. Keep {} and {} visually distinct, and make the result immediately usable for image generation.",
@@ -986,6 +1048,7 @@ fn render_design_reference_prompt_entries(
     .join("\n");
     let condition_context = PromptEntryConditionContext {
         chat_mode: PromptEntryChatMode::Direct,
+        info_source: PromptEntryInfoSource::Messages,
         scene_generation_enabled: scene_generation_enabled(settings),
         avatar_generation_enabled: avatar_generation_enabled(settings),
         has_scene: false,
@@ -998,6 +1061,8 @@ fn render_design_reference_prompt_entries(
         has_memory_summary: false,
         has_key_memories: false,
         has_lorebook_content: false,
+        does_author_note_exists: false,
+        has_active_scheduled_note: false,
         has_subject_description: subject_description.is_some(),
         has_current_description: current_description.is_some(),
         has_character_reference_images: false,
@@ -1014,6 +1079,8 @@ fn render_design_reference_prompt_entries(
             .and_then(|cfg| cfg.reasoning_enabled)
             .unwrap_or(false),
         vision_enabled: model_supports_vision(model),
+        time_awareness_enabled: false,
+        companion_mode_enabled: false,
     };
 
     for entry in template_entries {
@@ -1049,8 +1116,8 @@ fn build_design_reference_prompt_content_with_images(
     if let Some(slot) = entry
         .prompt_entry_payload
         .as_ref()
-        .and_then(|payload| match payload {
-            PromptEntryPayload::ImageSlot { slot } => Some(slot.clone()),
+        .map(|payload| match payload {
+            PromptEntryPayload::ImageSlot { slot } => slot.clone(),
         })
     {
         let parts = match slot {
@@ -1120,8 +1187,8 @@ fn design_reference_prompt_entry_to_message(
     Some(json!({ "role": role, "content": trimmed }))
 }
 
-fn load_scene_generation_prompt_entries(app: &AppHandle) -> (Vec<SystemPromptEntry>, bool) {
-    match prompts::get_template(app, prompts::APP_SCENE_GENERATION_TEMPLATE_ID) {
+fn load_scene_prompt_writer_entries(app: &AppHandle) -> (Vec<SystemPromptEntry>, bool) {
+    match prompts::get_template(app, prompts::APP_SCENE_PROMPT_WRITER_TEMPLATE_ID) {
         Ok(Some(template)) => {
             if !template.entries.is_empty() {
                 (template.entries, template.condense_prompt_entries)
@@ -1145,13 +1212,13 @@ fn load_scene_generation_prompt_entries(app: &AppHandle) -> (Vec<SystemPromptEnt
                 )
             } else {
                 (
-                    get_base_prompt_entries(PromptType::SceneGenerationPrompt),
+                    get_base_prompt_entries(PromptType::ScenePromptWriterPrompt),
                     false,
                 )
             }
         }
         _ => (
-            get_base_prompt_entries(PromptType::SceneGenerationPrompt),
+            get_base_prompt_entries(PromptType::ScenePromptWriterPrompt),
             false,
         ),
     }
@@ -1167,7 +1234,23 @@ fn render_scene_generation_prompt_entries(
     recent_messages_text: &str,
     reference_images: &SceneReferenceImages,
 ) -> Vec<SystemPromptEntry> {
-    let (template_entries, condense_prompt_entries) = load_scene_generation_prompt_entries(app);
+    let (template_entries, condense_prompt_entries) = load_scene_prompt_writer_entries(app);
+    let image_model_instructions = resolve_image_generation_target(
+        settings,
+        settings
+            .advanced_settings
+            .as_ref()
+            .and_then(|advanced| advanced.scene_generation_model_id.as_deref()),
+    )
+    .ok()
+    .and_then(|(image_model, _)| {
+        image_model
+            .advanced_model_settings
+            .as_ref()
+            .and_then(|advanced| advanced.sd_prompt_writer_instructions.clone())
+    })
+    .map(|value| value.trim().to_string())
+    .unwrap_or_default();
     let mut rendered_entries = Vec::new();
     let has_scene = session.selected_scene_id.is_some() || character.default_scene_id.is_some();
     let has_scene_direction = if let Some(scene_id) = session
@@ -1207,6 +1290,7 @@ fn render_scene_generation_prompt_entries(
     };
     let condition_context = PromptEntryConditionContext {
         chat_mode: PromptEntryChatMode::Direct,
+        info_source: PromptEntryInfoSource::Messages,
         scene_generation_enabled: scene_generation_enabled(settings),
         avatar_generation_enabled: avatar_generation_enabled(settings),
         has_scene,
@@ -1219,6 +1303,12 @@ fn render_scene_generation_prompt_entries(
         has_memory_summary: false,
         has_key_memories: false,
         has_lorebook_content: false,
+        does_author_note_exists: session
+            .author_note
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+        has_active_scheduled_note: false,
         has_subject_description: false,
         has_current_description: false,
         has_character_reference_images: !reference_images.character_images.is_empty(),
@@ -1235,6 +1325,8 @@ fn render_scene_generation_prompt_entries(
             .and_then(|cfg| cfg.reasoning_enabled)
             .unwrap_or(false),
         vision_enabled: model_supports_vision(model),
+        time_awareness_enabled: false,
+        companion_mode_enabled: false,
     };
 
     for entry in template_entries {
@@ -1247,6 +1339,7 @@ fn render_scene_generation_prompt_entries(
             persona,
             recent_messages_text,
             !reference_images.chat_background_images.is_empty(),
+            &image_model_instructions,
         );
         if rendered.trim().is_empty() && entry.prompt_entry_payload.is_none() {
             continue;
@@ -1330,8 +1423,8 @@ fn content_with_scene_image_hints(
     match entry
         .prompt_entry_payload
         .as_ref()
-        .and_then(|payload| match payload {
-            PromptEntryPayload::ImageSlot { slot } => Some(slot.clone()),
+        .map(|payload| match payload {
+            PromptEntryPayload::ImageSlot { slot } => slot.clone(),
         }) {
         Some(PromptEntryImageSlot::Character) => {
             let replaced = entry
@@ -1471,15 +1564,23 @@ pub async fn chat_generate_scene_image(
             .and_then(|persona_id| personas.iter().find(|value| value.id == persona_id))
     };
 
-    let reference_images = build_scene_reference_images(&app, character, persona);
-    let request = build_scene_generation_request(
+    let reference_images = build_scene_reference_images(&app, &session, character, persona);
+    let default_size = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.sd_default_size.clone());
+    let mut request = build_scene_generation_request(
         &scene_prompt,
         model,
         credential,
         character,
         persona,
         reference_images,
+        default_size,
     );
+    request.session_id = Some(session.id.clone());
+    request.character_id = Some(character.id.clone());
+    request.character_name = Some(character.name.clone());
     let response = generate_scene_image_with_retry(&app, request, 3).await?;
     let generated = response
         .images
@@ -1581,7 +1682,7 @@ pub async fn chat_generate_scene_prompt(
     let api_key = require_api_key(&app, credential, "scene_prompt")?;
 
     let recent_messages_text = build_scene_prompt_context_messages(&session, &message_id)?;
-    let reference_images = build_scene_reference_images(&app, &character, persona);
+    let reference_images = build_scene_reference_images(&app, &session, &character, persona);
     let prompt_entries = render_scene_generation_prompt_entries(
         &app,
         settings,
@@ -1762,8 +1863,15 @@ pub async fn chat_generate_design_reference_description(
     }
 
     let system_role = adapter_for(credential).system_role().into_owned();
-    let streaming_enabled =
-        super::request_builder::effective_streaming_enabled(credential, stream.unwrap_or(true));
+    let streaming_enabled = super::request_builder::effective_streaming_enabled_with_override(
+        credential,
+        stream.unwrap_or(true),
+        model
+            .advanced_model_settings
+            .as_ref()
+            .and_then(|cfg| cfg.llama_streaming_enabled)
+            .or(settings.advanced_model_settings.llama_streaming_enabled),
+    );
     let prompt_entries = render_design_reference_prompt_entries(
         &app,
         settings,
@@ -1796,12 +1904,16 @@ pub async fn chat_generate_design_reference_description(
         title: "Scene writer preview".to_string(),
         background_image_path: None,
         system_prompt: None,
+        mode: "roleplay".to_string(),
         selected_scene_id: None,
         prompt_template_id: None,
+        lorebook_ids_override: None,
+        author_note: None,
         persona_id: None,
         persona_disabled: false,
         voice_autoplay: None,
         advanced_model_settings: None,
+        companion_state: None,
         memories: Vec::new(),
         memory_embeddings: Vec::new(),
         memory_summary: None,

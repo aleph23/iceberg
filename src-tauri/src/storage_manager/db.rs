@@ -319,6 +319,123 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           system_prompt TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS asr_vocabulary_terms (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          term TEXT NOT NULL,
+          normalized_term TEXT NOT NULL,
+          language TEXT,
+          category TEXT,
+          scope TEXT NOT NULL DEFAULT 'global',
+          priority INTEGER NOT NULL DEFAULT 50,
+          use_count INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asr_vocabulary_scope_language
+          ON asr_vocabulary_terms(scope, language, priority DESC, use_count DESC);
+        CREATE INDEX IF NOT EXISTS idx_asr_vocabulary_normalized
+          ON asr_vocabulary_terms(normalized_term);
+
+        CREATE TABLE IF NOT EXISTS asr_corrections (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          wrong TEXT NOT NULL,
+          normalized_wrong TEXT NOT NULL,
+          correct TEXT NOT NULL,
+          normalized_correct TEXT NOT NULL,
+          language TEXT,
+          scope TEXT NOT NULL DEFAULT 'global',
+          confidence REAL NOT NULL DEFAULT 0.75,
+          use_count INTEGER NOT NULL DEFAULT 1,
+          accepted_count INTEGER NOT NULL DEFAULT 0,
+          rejected_count INTEGER NOT NULL DEFAULT 0,
+          seen_count INTEGER NOT NULL DEFAULT 0,
+          last_seen_at TEXT,
+          user_approved INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asr_corrections_scope_language
+          ON asr_corrections(scope, language, user_approved, confidence DESC, use_count DESC);
+        CREATE INDEX IF NOT EXISTS idx_asr_corrections_normalized_wrong
+          ON asr_corrections(normalized_wrong);
+
+        CREATE TABLE IF NOT EXISTS asr_ignored_suggestions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          wrong TEXT NOT NULL,
+          normalized_wrong TEXT NOT NULL,
+          correct TEXT NOT NULL,
+          normalized_correct TEXT NOT NULL,
+          language TEXT,
+          scope TEXT NOT NULL DEFAULT 'global',
+          ignored_count INTEGER NOT NULL DEFAULT 1,
+          last_ignored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_asr_ignored_suggestions_lookup
+          ON asr_ignored_suggestions(normalized_wrong, normalized_correct, language, scope);
+
+        CREATE TABLE IF NOT EXISTS asr_voice_examples (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          audio_path TEXT NOT NULL,
+          expected_text TEXT NOT NULL,
+          normalized_expected_text TEXT NOT NULL,
+          whisper_output TEXT,
+          normalized_whisper_output TEXT,
+          language TEXT,
+          scope TEXT NOT NULL DEFAULT 'global',
+          term_id INTEGER,
+          correction_id INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(term_id) REFERENCES asr_vocabulary_terms(id) ON DELETE SET NULL,
+          FOREIGN KEY(correction_id) REFERENCES asr_corrections(id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_asr_voice_examples_scope_language
+          ON asr_voice_examples(scope, language, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS memory_embeddings (
+          session_id          TEXT NOT NULL,
+          session_kind        TEXT NOT NULL CHECK (session_kind IN ('session', 'group_session', 'companion_shared')),
+          memory_id           TEXT NOT NULL,
+          embedding           BLOB NOT NULL,
+          embedding_dim       INTEGER NOT NULL,
+          embedding_model     TEXT,
+          text                TEXT NOT NULL,
+          token_count         INTEGER NOT NULL DEFAULT 0,
+          category            TEXT,
+          importance_score    REAL NOT NULL DEFAULT 1.0,
+          persistence_importance REAL NOT NULL DEFAULT 1.0,
+          prompt_importance   REAL NOT NULL DEFAULT 1.0,
+          volatility          REAL NOT NULL DEFAULT 0.4,
+          is_cold             INTEGER NOT NULL DEFAULT 0,
+          is_pinned           INTEGER NOT NULL DEFAULT 0,
+          access_count        INTEGER NOT NULL DEFAULT 0,
+          fact_signature      TEXT,
+          fact_polarity       INTEGER,
+          source_role         TEXT,
+          source_message_id   TEXT,
+          superseded_by       TEXT,
+          superseded_at       INTEGER,
+          supersedes_json     TEXT,
+          canonical_entities_json TEXT,
+          observed_at         INTEGER,
+          observed_time_precision TEXT,
+          created_at          INTEGER NOT NULL,
+          last_accessed_at    INTEGER NOT NULL,
+          updated_at          INTEGER NOT NULL,
+          PRIMARY KEY (session_id, session_kind, memory_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_memory_embeddings_session
+          ON memory_embeddings (session_id, session_kind);
+
+        CREATE INDEX IF NOT EXISTS idx_memory_embeddings_session_cold
+          ON memory_embeddings (session_id, session_kind, is_cold);
+
         -- Secrets (API keys and similar), stored in DB instead of JSON
         CREATE TABLE IF NOT EXISTS secrets (
           service TEXT NOT NULL,
@@ -349,6 +466,10 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           avatar_crop_x REAL,
           avatar_crop_y REAL,
           avatar_crop_scale REAL,
+          banner_crop_x REAL,
+          banner_crop_y REAL,
+          banner_crop_scale REAL,
+          card_type TEXT NOT NULL DEFAULT 'circle',
           design_description TEXT,
           design_reference_image_ids TEXT,
           background_image_path TEXT,
@@ -364,7 +485,10 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           default_scene_id TEXT,
           default_model_id TEXT,
           fallback_model_id TEXT,
+          mode TEXT NOT NULL DEFAULT 'roleplay',
+          companion TEXT,
           memory_type TEXT NOT NULL DEFAULT 'manual',
+          active_lorebook_ids TEXT NOT NULL DEFAULT '[]',
           prompt_template_id TEXT,
           group_chat_prompt_template_id TEXT,
           group_chat_roleplay_prompt_template_id TEXT,
@@ -372,6 +496,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           voice_config TEXT,
           voice_autoplay INTEGER NOT NULL DEFAULT 0,
           disable_avatar_gradient INTEGER NOT NULL DEFAULT 0,
+          avatar_gradient_source TEXT NOT NULL DEFAULT 'base',
           default_chat_template_id TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -453,6 +578,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           name TEXT NOT NULL,
           scene_id TEXT,
           prompt_template_id TEXT,
+          lorebook_ids_override TEXT,
           created_at INTEGER NOT NULL,
           FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
         );
@@ -478,6 +604,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           avatar_crop_scale REAL,
           design_description TEXT,
           design_reference_image_ids TEXT,
+          active_lorebook_ids TEXT NOT NULL DEFAULT '[]',
           is_default INTEGER NOT NULL DEFAULT 0,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
@@ -492,6 +619,9 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           system_prompt TEXT,
           selected_scene_id TEXT,
           prompt_template_id TEXT,
+          mode TEXT NOT NULL DEFAULT 'roleplay',
+          lorebook_ids_override TEXT,
+          author_note TEXT,
           persona_id TEXT,
           persona_disabled INTEGER NOT NULL DEFAULT 0,
           voice_autoplay INTEGER,
@@ -501,6 +631,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           frequency_penalty REAL,
           presence_penalty REAL,
           top_k INTEGER,
+          companion_state TEXT,
           memories TEXT NOT NULL DEFAULT '[]',
           memory_embeddings TEXT NOT NULL DEFAULT '[]',
           memory_summary TEXT,
@@ -522,9 +653,14 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           role TEXT NOT NULL,
           content TEXT NOT NULL,
           created_at INTEGER NOT NULL,
+          visible_in_chat INTEGER NOT NULL DEFAULT 0,
+          scene_edited INTEGER NOT NULL DEFAULT 0,
           prompt_tokens INTEGER,
           completion_tokens INTEGER,
           total_tokens INTEGER,
+          first_token_ms INTEGER,
+          tokens_per_second REAL,
+          model_id TEXT,
           selected_variant_id TEXT,
           is_pinned INTEGER NOT NULL DEFAULT 0,
           memory_refs TEXT NOT NULL DEFAULT '[]',
@@ -532,6 +668,64 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           attachments TEXT NOT NULL DEFAULT '[]',
           reasoning TEXT,
           FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS companion_turn_effects (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          user_message_id TEXT,
+          assistant_message_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          summary TEXT,
+          relationship_delta TEXT NOT NULL DEFAULT '{}',
+          emotion_delta TEXT NOT NULL DEFAULT '{}',
+          signal_changes TEXT NOT NULL DEFAULT '{"added":[],"removed":[]}',
+          memory_changes TEXT NOT NULL DEFAULT '{"added":[],"updated":[],"superseded":[]}',
+          source_window TEXT NOT NULL DEFAULT '{}',
+          UNIQUE(session_id, assistant_message_id),
+          FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
+          FOREIGN KEY(user_message_id) REFERENCES messages(id) ON DELETE SET NULL,
+          FOREIGN KEY(assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_companion_turn_effects_session_assistant
+          ON companion_turn_effects(session_id, assistant_message_id, updated_at DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_companion_turn_effects_session_created
+          ON companion_turn_effects(session_id, created_at DESC);
+
+        CREATE TABLE IF NOT EXISTS companion_scheduled_notes (
+          id TEXT PRIMARY KEY,
+          character_id TEXT NOT NULL,
+          label TEXT NOT NULL DEFAULT '',
+          content TEXT NOT NULL,
+          available_at INTEGER NOT NULL,
+          expires_at INTEGER,
+          recurrence TEXT NOT NULL DEFAULT 'none',
+          recurrence_window_ms INTEGER,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_companion_scheduled_notes_character
+          ON companion_scheduled_notes(character_id);
+
+        CREATE TABLE IF NOT EXISTS companion_shared_memory_state (
+          character_id TEXT PRIMARY KEY,
+          memories TEXT NOT NULL DEFAULT '[]',
+          memory_summary TEXT,
+          memory_summary_token_count INTEGER NOT NULL DEFAULT 0,
+          memory_tool_events TEXT NOT NULL DEFAULT '[]',
+          memory_status TEXT,
+          memory_error TEXT,
+          memory_progress_step INTEGER,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY(character_id) REFERENCES characters(id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS message_variants (
@@ -542,6 +736,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           prompt_tokens INTEGER,
           completion_tokens INTEGER,
           total_tokens INTEGER,
+          first_token_ms INTEGER,
+          tokens_per_second REAL,
           reasoning TEXT,
           FOREIGN KEY(message_id) REFERENCES messages(id) ON DELETE CASCADE
         );
@@ -625,6 +821,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           location TEXT DEFAULT 'us-central1',
           base_url TEXT,
           request_path TEXT,
+          kokoro_variant TEXT,
+          asset_root TEXT,
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
         );
@@ -687,6 +885,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           chat_type TEXT NOT NULL DEFAULT 'conversation',
           starting_scene TEXT,
           background_image_path TEXT,
+          author_note TEXT,
           lorebook_ids TEXT NOT NULL DEFAULT '[]',
           disable_character_lorebooks INTEGER NOT NULL DEFAULT 0,
           memories TEXT NOT NULL DEFAULT '[]',
@@ -725,10 +924,13 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           prompt_tokens INTEGER,
           completion_tokens INTEGER,
           total_tokens INTEGER,
+          first_token_ms INTEGER,
+          tokens_per_second REAL,
           selected_variant_id TEXT,
           is_pinned INTEGER NOT NULL DEFAULT 0,
           attachments TEXT NOT NULL DEFAULT '[]',
           used_lorebook_entries TEXT NOT NULL DEFAULT '[]',
+          memory_refs TEXT NOT NULL DEFAULT '[]',
           reasoning TEXT,
           selection_reasoning TEXT,
           model_id TEXT,
@@ -745,6 +947,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
           prompt_tokens INTEGER,
           completion_tokens INTEGER,
           total_tokens INTEGER,
+          first_token_ms INTEGER,
+          tokens_per_second REAL,
           reasoning TEXT,
           selection_reasoning TEXT,
           model_id TEXT,
@@ -1106,6 +1310,58 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning TEXT", []);
     }
 
+    let mut has_scene_edited = false;
+    let mut stmt_scene_edited = conn
+        .prepare("PRAGMA table_info(messages)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut rows_scene_edited = stmt_scene_edited
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_scene_edited
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "scene_edited" {
+            has_scene_edited = true;
+            break;
+        }
+    }
+    if !has_scene_edited {
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN scene_edited INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+
+    let mut has_visible_in_chat = false;
+    let mut stmt_visible_in_chat = conn
+        .prepare("PRAGMA table_info(messages)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut rows_visible_in_chat = stmt_visible_in_chat
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_visible_in_chat
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "visible_in_chat" {
+            has_visible_in_chat = true;
+            break;
+        }
+    }
+    if !has_visible_in_chat {
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN visible_in_chat INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+
     let mut has_variant_reasoning = false;
     let mut stmt_variant_reasoning = conn
         .prepare("PRAGMA table_info(message_variants)")
@@ -1134,6 +1390,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut has_session_voice_autoplay = false;
     let mut has_session_persona_disabled = false;
+    let mut has_session_advanced_model_settings = false;
     let mut rows_sessions = stmt_sessions
         .query([])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1147,6 +1404,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         match col_name.as_str() {
             "voice_autoplay" => has_session_voice_autoplay = true,
             "persona_disabled" => has_session_persona_disabled = true,
+            "advanced_model_settings" => has_session_advanced_model_settings = true,
             _ => {}
         }
     }
@@ -1158,6 +1416,48 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             "ALTER TABLE sessions ADD COLUMN persona_disabled INTEGER NOT NULL DEFAULT 0",
             [],
         );
+    }
+    if !has_session_advanced_model_settings {
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN advanced_model_settings TEXT",
+            [],
+        );
+    }
+
+    {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(memory_embeddings)")
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let mut rows = stmt
+            .query([])
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let mut has_observed_at = false;
+        let mut has_observed_time_precision = false;
+        while let Some(row) = rows
+            .next()
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+        {
+            let col_name: String = row
+                .get(1)
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+            match col_name.as_str() {
+                "observed_at" => has_observed_at = true,
+                "observed_time_precision" => has_observed_time_precision = true,
+                _ => {}
+            }
+        }
+        if !has_observed_at {
+            let _ = conn.execute(
+                "ALTER TABLE memory_embeddings ADD COLUMN observed_at INTEGER",
+                [],
+            );
+        }
+        if !has_observed_time_precision {
+            let _ = conn.execute(
+                "ALTER TABLE memory_embeddings ADD COLUMN observed_time_precision TEXT",
+                [],
+            );
+        }
     }
 
     let mut stmt_sessions_mem = conn
@@ -1224,6 +1524,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut has_audio_base_url = false;
     let mut has_audio_request_path = false;
+    let mut has_audio_kokoro_variant = false;
+    let mut has_audio_asset_root = false;
     let mut rows_audio_providers = stmt_audio_providers
         .query([])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1237,6 +1539,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         match col_name.as_str() {
             "base_url" => has_audio_base_url = true,
             "request_path" => has_audio_request_path = true,
+            "kokoro_variant" => has_audio_kokoro_variant = true,
+            "asset_root" => has_audio_asset_root = true,
             _ => {}
         }
     }
@@ -1249,6 +1553,15 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             [],
         );
     }
+    if !has_audio_kokoro_variant {
+        let _ = conn.execute(
+            "ALTER TABLE audio_providers ADD COLUMN kokoro_variant TEXT",
+            [],
+        );
+    }
+    if !has_audio_asset_root {
+        let _ = conn.execute("ALTER TABLE audio_providers ADD COLUMN asset_root TEXT", []);
+    }
 
     let mut stmt2 = conn
         .prepare("PRAGMA table_info(characters)")
@@ -1259,10 +1572,27 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
     let mut has_custom_text_secondary = false;
     let mut has_voice_config = false;
     let mut has_voice_autoplay = false;
+    let mut has_avatar_gradient_source = false;
     let mut has_fallback_model_id = false;
     let mut has_avatar_crop_x = false;
     let mut has_avatar_crop_y = false;
     let mut has_avatar_crop_scale = false;
+    let mut has_banner_crop_x = false;
+    let mut has_banner_crop_y = false;
+    let mut has_banner_crop_scale = false;
+    let mut has_card_type = false;
+    let mut has_design_description = false;
+    let mut has_design_reference_image_ids = false;
+    let mut has_mode = false;
+    let mut has_companion = false;
+    let mut has_memory_type = false;
+    let mut has_disable_avatar_gradient = false;
+    let mut has_prompt_template_id = false;
+    let mut has_group_chat_prompt_template_id = false;
+    let mut has_group_chat_roleplay_prompt_template_id = false;
+    let mut has_system_prompt = false;
+    let mut has_chat_appearance = false;
+    let mut has_default_chat_template_id = false;
     let mut rows2 = stmt2
         .query([])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1280,10 +1610,29 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             "custom_text_secondary" => has_custom_text_secondary = true,
             "voice_config" => has_voice_config = true,
             "voice_autoplay" => has_voice_autoplay = true,
+            "avatar_gradient_source" => has_avatar_gradient_source = true,
             "fallback_model_id" => has_fallback_model_id = true,
             "avatar_crop_x" => has_avatar_crop_x = true,
             "avatar_crop_y" => has_avatar_crop_y = true,
             "avatar_crop_scale" => has_avatar_crop_scale = true,
+            "banner_crop_x" => has_banner_crop_x = true,
+            "banner_crop_y" => has_banner_crop_y = true,
+            "banner_crop_scale" => has_banner_crop_scale = true,
+            "card_type" => has_card_type = true,
+            "design_description" => has_design_description = true,
+            "design_reference_image_ids" => has_design_reference_image_ids = true,
+            "mode" => has_mode = true,
+            "companion" => has_companion = true,
+            "memory_type" => has_memory_type = true,
+            "disable_avatar_gradient" => has_disable_avatar_gradient = true,
+            "prompt_template_id" => has_prompt_template_id = true,
+            "group_chat_prompt_template_id" => has_group_chat_prompt_template_id = true,
+            "group_chat_roleplay_prompt_template_id" => {
+                has_group_chat_roleplay_prompt_template_id = true
+            }
+            "system_prompt" => has_system_prompt = true,
+            "chat_appearance" => has_chat_appearance = true,
+            "default_chat_template_id" => has_default_chat_template_id = true,
             _ => {}
         }
     }
@@ -1320,6 +1669,12 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             [],
         );
     }
+    if !has_avatar_gradient_source {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN avatar_gradient_source TEXT DEFAULT 'base'",
+            [],
+        );
+    }
     if !has_fallback_model_id {
         let _ = conn.execute(
             "ALTER TABLE characters ADD COLUMN fallback_model_id TEXT",
@@ -1338,7 +1693,87 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             [],
         );
     }
-
+    if !has_banner_crop_x {
+        let _ = conn.execute("ALTER TABLE characters ADD COLUMN banner_crop_x REAL", []);
+    }
+    if !has_banner_crop_y {
+        let _ = conn.execute("ALTER TABLE characters ADD COLUMN banner_crop_y REAL", []);
+    }
+    if !has_banner_crop_scale {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN banner_crop_scale REAL",
+            [],
+        );
+    }
+    if !has_card_type {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN card_type TEXT NOT NULL DEFAULT 'circle'",
+            [],
+        );
+    }
+    if !has_design_description {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN design_description TEXT",
+            [],
+        );
+    }
+    if !has_design_reference_image_ids {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN design_reference_image_ids TEXT",
+            [],
+        );
+    }
+    if !has_mode {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN mode TEXT NOT NULL DEFAULT 'roleplay'",
+            [],
+        );
+    }
+    if !has_companion {
+        let _ = conn.execute("ALTER TABLE characters ADD COLUMN companion TEXT", []);
+    }
+    if !has_memory_type {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN memory_type TEXT NOT NULL DEFAULT 'manual'",
+            [],
+        );
+    }
+    if !has_disable_avatar_gradient {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN disable_avatar_gradient INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+    if !has_prompt_template_id {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN prompt_template_id TEXT",
+            [],
+        );
+    }
+    if !has_group_chat_prompt_template_id {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN group_chat_prompt_template_id TEXT",
+            [],
+        );
+    }
+    if !has_group_chat_roleplay_prompt_template_id {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN group_chat_roleplay_prompt_template_id TEXT",
+            [],
+        );
+    }
+    if !has_system_prompt {
+        let _ = conn.execute("ALTER TABLE characters ADD COLUMN system_prompt TEXT", []);
+    }
+    if !has_chat_appearance {
+        let _ = conn.execute("ALTER TABLE characters ADD COLUMN chat_appearance TEXT", []);
+    }
+    if !has_default_chat_template_id {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN default_chat_template_id TEXT",
+            [],
+        );
+    }
     let mut stmt_personas = conn
         .prepare("PRAGMA table_info(personas)")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1346,6 +1781,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
     let mut has_persona_avatar_crop_y = false;
     let mut has_persona_avatar_crop_scale = false;
     let mut has_persona_nickname = false;
+    let mut has_persona_active_lorebook_ids = false;
     let mut rows_personas = stmt_personas
         .query([])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1361,6 +1797,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             "avatar_crop_y" => has_persona_avatar_crop_y = true,
             "avatar_crop_scale" => has_persona_avatar_crop_scale = true,
             "nickname" => has_persona_nickname = true,
+            "active_lorebook_ids" => has_persona_active_lorebook_ids = true,
             _ => {}
         }
     }
@@ -1375,6 +1812,12 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
     }
     if !has_persona_nickname {
         let _ = conn.execute("ALTER TABLE personas ADD COLUMN nickname TEXT", []);
+    }
+    if !has_persona_active_lorebook_ids {
+        let _ = conn.execute(
+            "ALTER TABLE personas ADD COLUMN active_lorebook_ids TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
     }
 
     // Migrations: add title to lorebook_entries if missing
@@ -1542,6 +1985,7 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut has_group_character_lorebook_ids = false;
     let mut has_group_character_disable_lorebooks = false;
+    let mut has_group_character_chat_appearance = false;
     let mut rows_group_characters = stmt_group_characters
         .query([])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -1556,6 +2000,8 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
             has_group_character_lorebook_ids = true;
         } else if col_name == "disable_character_lorebooks" {
             has_group_character_disable_lorebooks = true;
+        } else if col_name == "chat_appearance" {
+            has_group_character_chat_appearance = true;
         }
     }
     if !has_group_character_lorebook_ids {
@@ -1567,6 +2013,12 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
     if !has_group_character_disable_lorebooks {
         let _ = conn.execute(
             "ALTER TABLE group_characters ADD COLUMN disable_character_lorebooks INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+    if !has_group_character_chat_appearance {
+        let _ = conn.execute(
+            "ALTER TABLE group_characters ADD COLUMN chat_appearance TEXT",
             [],
         );
     }
@@ -1601,6 +2053,90 @@ pub fn init_db(_app: &tauri::AppHandle, conn: &Connection) -> Result<(), String>
     if !has_group_session_disable_lorebooks {
         let _ = conn.execute(
             "ALTER TABLE group_sessions ADD COLUMN disable_character_lorebooks INTEGER NOT NULL DEFAULT 0",
+            [],
+        );
+    }
+
+    let mut stmt_characters = conn
+        .prepare("PRAGMA table_info(characters)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut has_active_lorebook_ids = false;
+    let mut rows_characters = stmt_characters
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_characters
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "active_lorebook_ids" {
+            has_active_lorebook_ids = true;
+            break;
+        }
+    }
+    if !has_active_lorebook_ids {
+        let _ = conn.execute(
+            "ALTER TABLE characters ADD COLUMN active_lorebook_ids TEXT NOT NULL DEFAULT '[]'",
+            [],
+        );
+    }
+
+    let mut stmt_sessions = conn
+        .prepare("PRAGMA table_info(sessions)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut has_lorebook_ids_override = false;
+    let mut has_author_note = false;
+    let mut rows_sessions = stmt_sessions
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_sessions
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "lorebook_ids_override" {
+            has_lorebook_ids_override = true;
+        }
+        if col_name == "author_note" {
+            has_author_note = true;
+        }
+    }
+    if !has_lorebook_ids_override {
+        let _ = conn.execute(
+            "ALTER TABLE sessions ADD COLUMN lorebook_ids_override TEXT",
+            [],
+        );
+    }
+    if !has_author_note {
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN author_note TEXT", []);
+    }
+
+    let mut stmt_chat_templates = conn
+        .prepare("PRAGMA table_info(chat_templates)")
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut has_chat_template_lorebook_ids_override = false;
+    let mut rows_chat_templates = stmt_chat_templates
+        .query([])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    while let Some(row) = rows_chat_templates
+        .next()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    {
+        let col_name: String = row
+            .get(1)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if col_name == "lorebook_ids_override" {
+            has_chat_template_lorebook_ids_override = true;
+            break;
+        }
+    }
+    if !has_chat_template_lorebook_ids_override {
+        let _ = conn.execute(
+            "ALTER TABLE chat_templates ADD COLUMN lorebook_ids_override TEXT",
             [],
         );
     }

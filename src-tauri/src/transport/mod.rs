@@ -9,7 +9,13 @@ use crate::utils::log_warn;
 
 pub const DEFAULT_REQUEST_TIMEOUT_MS: u64 = 30 * 60 * 1000;
 
-pub fn build_client(timeout_ms: Option<u64>, stream: bool) -> Result<reqwest::Client, AppError> {
+pub fn build_client(
+    app: &tauri::AppHandle,
+    timeout_ms: Option<u64>,
+    stream: bool,
+    provider_id: Option<&str>,
+    request_url: Option<&str>,
+) -> Result<reqwest::Client, AppError> {
     let mut builder = reqwest::Client::builder();
     let normalized_timeout_ms = timeout_ms
         .unwrap_or(DEFAULT_REQUEST_TIMEOUT_MS)
@@ -17,6 +23,12 @@ pub fn build_client(timeout_ms: Option<u64>, stream: bool) -> Result<reqwest::Cl
     if let Some(ms) = (!stream).then_some(normalized_timeout_ms) {
         let timeout = Duration::from_millis(ms);
         builder = builder.timeout(timeout);
+    }
+    builder = crate::tls::apply_trusted_certificates(app, builder);
+    if let Some(url) = request_url {
+        if crate::tls::allow_invalid_tls_for_request(app, provider_id, url) {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
     }
     builder.build().map_err(AppError::from)
 }

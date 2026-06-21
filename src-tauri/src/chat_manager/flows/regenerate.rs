@@ -7,6 +7,7 @@ use crate::chat_manager::attachments::{
     cleanup_attachments, load_attachment_data, persist_attachments,
 };
 use crate::chat_manager::commands::take_aborted_request;
+use crate::chat_manager::companion;
 use crate::chat_manager::execution::{
     build_model_attempts, build_provider_extra_fields, emit_fallback_retry_toast, RequestSettings,
 };
@@ -30,8 +31,8 @@ use crate::chat_manager::service::{
 use crate::chat_manager::turn_builder::{
     append_image_directive_instructions, build_enriched_query, conversation_window_with_pinned,
     insert_in_chat_prompt_entries, is_dynamic_memory_active, manual_window_size,
-    maybe_swap_message_for_api, partition_prompt_entries, role_swap_enabled,
-    swapped_prompt_entities,
+    maybe_swap_message_for_api, message_visible_to_model, partition_prompt_entries,
+    role_swap_enabled, swapped_prompt_entities,
 };
 use crate::chat_manager::types::{
     ChatRegenerateArgs, ImageAttachment, RegenerateResult, StoredMessage,
@@ -56,10 +57,16 @@ impl RegenerateFlow {
             session_id,
             message_id,
             swap_places,
+            guidance,
             stream,
             request_id,
         } = args;
         let swap_places = role_swap_enabled(swap_places);
+        let guidance = guidance
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
 
         log_info(
             &app,
@@ -123,13 +130,9 @@ impl RegenerateFlow {
 
         let preceding_index = target_index - 1;
         let preceding_message = &session.messages[preceding_index];
-        if preceding_message.role != "user"
-            && preceding_message.role != "assistant"
-            && preceding_message.role != "scene"
-        {
+        if !message_visible_to_model(preceding_message) {
             return Err(
-                "Expected preceding user, assistant, or scene message before assistant response"
-                    .into(),
+                "Expected preceding model-visible message before assistant response".into(),
             );
         }
 
@@ -165,6 +168,7 @@ impl RegenerateFlow {
         );
 
         let dynamic_memory_enabled = is_dynamic_memory_active(settings, &character);
+        let companion_mode_enabled = companion::is_companion_mode(&session, &character);
         let dynamic_window = dynamic_window_size(settings);
 
         let relevant_memories = if dynamic_memory_enabled && !session.memory_embeddings.is_empty() {
@@ -193,13 +197,27 @@ impl RegenerateFlow {
                     .map(|m| m.content.clone())
                     .unwrap_or_default()
             };
+            log_info(
+                &app,
+                if companion_mode_enabled {
+                    "companion_memory"
+                } else {
+                    "memory_retrieval"
+                },
+                format!(
+                    "Search query ({} chars, enriched={})",
+                    search_query.len(),
+                    context_enrichment_enabled(&context.settings)
+                ),
+            );
             select_relevant_memories(
                 &app,
-                &session,
+                &mut session,
                 &search_query,
                 dynamic_retrieval_limit(&context.settings),
                 dynamic_min_similarity(&context.settings),
                 dynamic_retrieval_strategy(&context.settings),
+                companion_mode_enabled,
             )
             .await
         } else {
@@ -210,19 +228,42 @@ impl RegenerateFlow {
             let memory_ids: Vec<String> = relevant_memories.iter().map(|m| m.id.clone()).collect();
             let now = now_millis().unwrap_or_default();
             let promoted = promote_cold_memories(&mut session.memory_embeddings, &memory_ids, now);
-            let accessed = mark_memories_accessed(&mut session.memory_embeddings, &memory_ids, now);
-            if promoted > 0 {
+            let access_updates =
+                mark_memories_accessed(&mut session.memory_embeddings, &memory_ids, now);
+            let owner =
+                crate::storage_manager::companion_shared_memory::resolve_effective_memory_owner_for_session_app(
+                    &app,
+                    &session.id,
+                );
+            if !promoted.is_empty() {
+                if let Ok(owner) = &owner {
+                    let _ = crate::storage_manager::memory_embeddings::set_cold_many_app(
+                        &app,
+                        &owner.owner_id,
+                        owner.kind,
+                        &promoted,
+                        false,
+                    );
+                }
                 log_info(
                     &app,
                     "dynamic_memory",
-                    format!("Promoted {} cold memories to hot", promoted),
+                    format!("Promoted {} cold memories to hot", promoted.len()),
                 );
             }
-            if accessed > 0 {
+            if !access_updates.is_empty() {
+                if let Ok(owner) = &owner {
+                    let _ = crate::storage_manager::memory_embeddings::apply_access_updates_app(
+                        &app,
+                        &owner.owner_id,
+                        owner.kind,
+                        &access_updates,
+                    );
+                }
                 log_info(
                     &app,
                     "dynamic_memory",
-                    format!("Marked {} memories as accessed", accessed),
+                    format!("Marked {} memories as accessed", access_updates.len()),
                 );
             }
         }
@@ -249,6 +290,7 @@ impl RegenerateFlow {
             crate::chat_manager::prompt_engine::resolve_used_lorebook_entries(
                 &app,
                 &character.id,
+                persona.as_ref(),
                 &session,
                 &prompt_entries,
             );
@@ -276,14 +318,14 @@ impl RegenerateFlow {
             }
 
             let char_name = if swap_places {
-                persona.as_ref().map(|p| p.title.as_str()).unwrap_or("User")
+                persona.as_ref().map(|p| p.title.as_str()).unwrap_or("user")
             } else {
                 character.name.as_str()
             };
             let persona_name = if swap_places {
                 character.name.as_str()
             } else {
-                persona.as_ref().map(|p| p.title.as_str()).unwrap_or("")
+                persona.as_ref().map(|p| p.title.as_str()).unwrap_or("user")
             };
             let allow_image_input = model
                 .input_scopes
@@ -297,6 +339,19 @@ impl RegenerateFlow {
                 .filter(|(idx, _)| *idx < target_index)
                 .map(|(_, msg)| msg.clone())
                 .collect();
+
+            let time_stamp_enabled = companion_mode_enabled
+                && crate::chat_manager::temporal::companion_time_awareness_enabled(&session);
+            let time_frame_delta = if time_stamp_enabled {
+                let latest_created = messages_before_target
+                    .iter()
+                    .map(|msg| msg.created_at)
+                    .max()
+                    .unwrap_or(0);
+                crate::chat_manager::temporal::temporal_frame_delta(&session, latest_created)
+            } else {
+                0
+            };
 
             let mut chat_messages = Vec::new();
             if dynamic_memory_enabled {
@@ -312,6 +367,8 @@ impl RegenerateFlow {
                         char_name,
                         persona_name,
                         allow_image_input,
+                        time_frame_delta,
+                        time_stamp_enabled,
                     );
                 }
 
@@ -324,6 +381,8 @@ impl RegenerateFlow {
                         char_name,
                         persona_name,
                         allow_image_input,
+                        time_frame_delta,
+                        time_stamp_enabled,
                     );
                 }
             } else {
@@ -346,12 +405,23 @@ impl RegenerateFlow {
                         char_name,
                         persona_name,
                         allow_image_input,
+                        time_frame_delta,
+                        time_stamp_enabled,
                     );
                 }
             }
 
             insert_in_chat_prompt_entries(&mut chat_messages, &system_role, &in_chat_entries);
             out.extend(chat_messages);
+            if let Some(guidance) = &guidance {
+                out.push(json!({
+                    "role": "user",
+                    "content": format!(
+                        "[REGENERATE INSTRUCTION]\nRegenerate your previous response to the last message. Follow this additional user instruction for the new response:\n{}",
+                        guidance
+                    )
+                }));
+            }
             sanitize_placeholders_in_api_messages(&mut out, char_name, persona_name);
             out
         };
@@ -584,6 +654,13 @@ impl RegenerateFlow {
 
         let text = extract_text(api_response.data(), Some(&selected_credential.provider_id))
             .unwrap_or_default();
+        let text = if companion_mode_enabled
+            && crate::chat_manager::temporal::companion_time_awareness_enabled(&session)
+        {
+            crate::chat_manager::temporal::strip_leading_time_stamp(&text)
+        } else {
+            text
+        };
         let usage = extract_usage(api_response.data());
         let reasoning =
             extract_reasoning(api_response.data(), Some(&selected_credential.provider_id));

@@ -1,10 +1,13 @@
 import { useEffect } from "react";
-import { Settings, Check, HelpCircle, Loader } from "lucide-react";
+import { Settings, Check, Loader } from "lucide-react";
 import type { ProviderCredential } from "../../../../core/storage/schemas";
 import { ModelConfigForm } from "../components/ConfigForm";
 import { getPlatform } from "../../../../core/utils/platform";
 import { getProviderIcon } from "../../../../core/utils/providerIcons";
 import { useI18n } from "../../../../core/i18n/context";
+import type { TranslationKey, TranslateParams } from "../../../../core/i18n/context";
+
+type TFunction = (key: TranslationKey, params?: TranslateParams) => string;
 
 interface ModelStepProps {
   providers: ProviderCredential[];
@@ -21,7 +24,6 @@ interface ModelStepProps {
   onSave: () => void;
   onSkip: () => void;
   onGoBack: () => void;
-  onShowRecommendations: () => void;
 }
 
 export function ModelStep({
@@ -39,7 +41,6 @@ export function ModelStep({
   onSave,
   onSkip,
   onGoBack,
-  onShowRecommendations,
 }: ModelStepProps) {
   const { t } = useI18n();
   const platform = getPlatform();
@@ -65,8 +66,8 @@ export function ModelStep({
 
   if (isLoading) {
     return (
-      <div className="flex flex-1 items-center justify-center text-gray-300">
-        <div className="flex items-center gap-3 text-sm">
+      <div className="flex flex-1 items-center justify-center text-white/80">
+        <div className="flex items-center gap-3 text-[15px]">
           <Loader size={20} className="animate-spin" />
           {t("onboarding.loading")}
         </div>
@@ -76,19 +77,19 @@ export function ModelStep({
 
   if (providers.length === 0) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center text-gray-300">
+      <div className="flex flex-1 flex-col items-center justify-center gap-6 text-center text-white/80">
         <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-white/10 bg-white/10 text-gray-200">
           <Settings size={26} />
         </div>
         <div className="space-y-2">
-          <h2 className="text-xl font-semibold text-white">
+          <h2 className="text-[21px] font-semibold text-white">
             {t("onboarding.model.noProvidersTitle")}
           </h2>
-          <p className="max-w-md text-sm text-gray-400">{t("onboarding.model.noProvidersDesc")}</p>
+          <p className="max-w-md text-[15px] text-white/70">{t("onboarding.model.noProvidersDesc")}</p>
         </div>
         <button
           onClick={onGoBack}
-          className="rounded-full border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white transition hover:border-white/30 hover:bg-white/20"
+          className="rounded-full border border-white/15 bg-white/10 px-6 py-3 text-[15px] font-semibold text-white transition hover:border-white/30 hover:bg-white/20"
         >
           {t("onboarding.model.goToProviderSetup")}
         </button>
@@ -103,8 +104,8 @@ export function ModelStep({
         {/* Left Panel - Provider List */}
         <div className="flex-1 flex flex-col border-r border-white/10">
           <div className="p-6 pb-3">
-            <h2 className="text-sm font-medium text-white/70">Your Providers</h2>
-            <p className="text-xs text-gray-500 mt-0.5">Select which provider to use</p>
+            <h2 className="text-[15px] font-medium text-white/70">{t("onboarding.model.yourProviders")}</h2>
+            <p className="text-[13px] text-white/55 mt-0.5">{t("onboarding.model.yourProvidersHint")}</p>
           </div>
           <div className="flex-1 overflow-y-auto px-6">
             <div className="space-y-2">
@@ -115,8 +116,8 @@ export function ModelStep({
                     key={provider.id}
                     className={`w-full rounded-xl border px-4 py-3 text-left transition-all duration-200 ${
                       isActive
-                        ? "border-emerald-400/40 bg-emerald-400/10 ring-1 ring-emerald-400/30"
-                        : "border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/8 active:scale-[0.98]"
+                        ? "border-emerald-400/50 bg-emerald-500/20 ring-1 ring-emerald-400/40"
+                        : "border-white/15 bg-black/35 hover:border-white/25 hover:bg-black/45 active:scale-[0.98]"
                     }`}
                     onClick={() => onSelectCredential(provider)}
                   >
@@ -132,12 +133,12 @@ export function ModelStep({
                       </div>
                       <div className="flex-1 min-w-0">
                         <h3
-                          className={`text-sm font-medium ${isActive ? "text-emerald-100" : "text-white"}`}
+                          className={`text-[15px] font-medium ${isActive ? "text-emerald-100" : "text-white"}`}
                         >
                           {provider.label}
                         </h3>
-                        <p className="text-xs text-gray-500 truncate">
-                          {getProviderDisplayName(provider.providerId)}
+                        <p className="text-[13px] text-white/55 truncate">
+                          {getProviderDisplayName(provider.providerId, t)}
                         </p>
                       </div>
                       <div
@@ -160,21 +161,16 @@ export function ModelStep({
         {/* Right Panel - Config */}
         <div className="w-100 shrink-0 p-8 overflow-y-auto">
           <div className="space-y-1 mb-6">
-            <h1 className="text-xl font-bold text-white">
-              {selectedCredential ? "Model Details" : "Set your default model"}
-            </h1>
-            <p className="text-sm text-gray-400 leading-relaxed">
+            <h1 className="text-[21px] font-bold text-white">
               {selectedCredential
-                ? "Define the API identifier and the label you'll see inside the app."
-                : "Select a provider from the list to configure your model."}
+                ? t("onboarding.model.modelDetails")
+                : t("onboarding.model.setDefaultModel")}
+            </h1>
+            <p className="text-[15px] text-white/70 leading-relaxed">
+              {selectedCredential
+                ? t("onboarding.model.modelDetailsDesc")
+                : t("onboarding.model.setDefaultModelDescDesktop")}
             </p>
-            <button
-              onClick={onShowRecommendations}
-              className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-medium text-indigo-300 transition hover:border-indigo-400/50 hover:bg-indigo-400/20 active:scale-95"
-            >
-              <HelpCircle size={14} />
-              Which model should I use?
-            </button>
           </div>
 
           {selectedCredential ? (
@@ -192,7 +188,7 @@ export function ModelStep({
             />
           ) : (
             <div className="rounded-xl border border-dashed border-white/20 bg-white/5 p-6 text-center">
-              <p className="text-sm text-gray-500">Select a provider to configure</p>
+              <p className="text-[15px] text-white/55">{t("onboarding.common.selectAProvider")}</p>
             </div>
           )}
         </div>
@@ -205,18 +201,10 @@ export function ModelStep({
     <div className="flex flex-col items-center pb-8">
       {/* Title */}
       <div className="text-center space-y-2 mb-6">
-        <h1 className="text-2xl font-bold text-white">Set your default model</h1>
-        <p className="text-sm text-gray-400 max-w-sm leading-relaxed">
-          Choose which provider and model name LettuceAI should use by default. You'll be able to
-          add more later.
+        <h1 className="text-[25px] font-bold text-white">{t("onboarding.model.setDefaultModel")}</h1>
+        <p className="text-[15px] text-white/70 max-w-sm leading-relaxed">
+          {t("onboarding.model.setDefaultModelDesc")}
         </p>
-        <button
-          onClick={onShowRecommendations}
-          className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-medium text-indigo-300 transition hover:border-indigo-400/50 hover:bg-indigo-400/20 active:scale-95"
-        >
-          <HelpCircle size={14} />
-          Which model should I use?
-        </button>
       </div>
 
       {/* Provider Selection */}
@@ -228,8 +216,8 @@ export function ModelStep({
               key={provider.id}
               className={`w-full min-h-15 rounded-2xl border px-4 py-3 text-left transition-all duration-200 ${
                 isActive
-                  ? "border-white/25 bg-white/15 shadow-lg"
-                  : "border-white/10 bg-white/5 hover:border-white/20 hover:bg-white/10 active:scale-[0.98]"
+                  ? "border-white/30 bg-black/50 shadow-lg"
+                  : "border-white/15 bg-black/35 hover:border-white/25 hover:bg-black/45 active:scale-[0.98]"
               }`}
               onClick={() => onSelectCredential(provider)}
             >
@@ -238,9 +226,9 @@ export function ModelStep({
                   {getProviderIcon(provider.providerId)}
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="text-sm font-semibold text-white">{provider.label}</h3>
-                  <p className="text-xs text-gray-400 truncate">
-                    {getProviderDisplayName(provider.providerId)}
+                  <h3 className="text-[15px] font-semibold text-white">{provider.label}</h3>
+                  <p className="text-[13px] text-white/70 truncate">
+                    {getProviderDisplayName(provider.providerId, t)}
                   </p>
                 </div>
                 <div
@@ -264,9 +252,9 @@ export function ModelStep({
         className={`w-full max-w-sm transition-all duration-300 ${showForm ? "opacity-100" : "opacity-0 pointer-events-none"}`}
       >
         <div className="text-center space-y-2 mb-6">
-          <h2 className="text-lg font-semibold text-white">Model Details</h2>
-          <p className="text-xs text-gray-400 leading-relaxed">
-            Define the API identifier and the label you'll see inside the app.
+          <h2 className="text-[19px] font-semibold text-white">{t("onboarding.model.modelDetails")}</h2>
+          <p className="text-[13px] text-white/70 leading-relaxed">
+            {t("onboarding.model.modelDetailsDesc")}
           </p>
         </div>
 
@@ -289,20 +277,20 @@ export function ModelStep({
   );
 }
 
-function getProviderDisplayName(providerId: string): string {
+function getProviderDisplayName(providerId: string, t: TFunction): string {
   switch (providerId) {
     case "chutes":
-      return "Chutes";
+      return t("onboarding.model.providerNames.chutes");
     case "openai":
-      return "OpenAI";
+      return t("onboarding.model.providerNames.openai");
     case "anthropic":
-      return "Anthropic";
+      return t("onboarding.model.providerNames.anthropic");
     case "openrouter":
-      return "OpenRouter";
+      return t("onboarding.model.providerNames.openrouter");
     case "openai-compatible":
-      return "OpenAI compatible";
+      return t("onboarding.model.providerNames.openaiCompatible");
     case "custom":
-      return "Custom endpoint";
+      return t("onboarding.model.providerNames.custom");
     default:
       return providerId;
   }

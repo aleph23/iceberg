@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ExternalLink, Globe, RefreshCw } from "lucide-react";
+import { ExternalLink, Globe, RefreshCw, ScrollText, Sparkles } from "lucide-react";
 
 import githubSvg from "../../../assets/github.svg";
 import logoSvg from "../../../assets/logo.svg";
-import { checkForAppUpdate, type AppUpdateInfo } from "../../../core/app-updates/checkForAppUpdate";
+import {
+  checkForAppUpdate,
+  detectUpdateChannel,
+  type AppUpdateInfo,
+} from "../../../core/app-updates/checkForAppUpdate";
 import { presentAppUpdateToast } from "../../../core/app-updates/presentAppUpdateToast";
 import { useI18n } from "../../../core/i18n/context";
 import { readSettings, saveAdvancedSettings } from "../../../core/storage/repo";
@@ -13,12 +17,11 @@ import {
   DISCORD_SERVER_LINK,
   DOWNLOADS_PAGE_LINK,
   GITHUB_REPO_LINK,
-  SUBREDDIT_LINK,
 } from "../../../core/utils/links";
 import { getPlatform } from "../../../core/utils/platform";
 import { isDevelopmentMode, setDeveloperModeOverride } from "../../../core/utils/env";
 import { toast } from "../../components/toast";
-import { cn, interactive } from "../../design-tokens";
+import { cn, interactive, typography } from "../../design-tokens";
 import { Switch } from "../../components/Switch";
 
 function ensureAdvancedSettings(settings: Settings): NonNullable<Settings["advancedSettings"]> {
@@ -35,16 +38,84 @@ function ensureAdvancedSettings(settings: Settings): NonNullable<Settings["advan
   };
 }
 
-function SectionTitle({ title }: { title: string }) {
-  return <h2 className="px-1 text-[11px] font-medium text-fg/42">{title}</h2>;
+function GroupLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <h2
+      className={cn(
+        "px-1",
+        typography.overline.size,
+        typography.overline.weight,
+        typography.overline.tracking,
+        typography.overline.transform,
+        "text-fg/40",
+      )}
+    >
+      {children}
+    </h2>
+  );
+}
+
+function Group({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      className={cn(
+        "overflow-hidden rounded-xl",
+        "border border-fg/10 bg-fg/[0.025]",
+        "divide-y divide-fg/[0.06]",
+      )}
+    >
+      {children}
+    </div>
+  );
 }
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center justify-between gap-4 border-b border-fg/8 py-3 last:border-b-0 last:pb-0 first:pt-0">
-      <span className="text-sm text-fg/52">{label}</span>
-      <span className="text-sm font-medium text-fg">{value}</span>
+    <div className="flex items-center justify-between gap-4 px-4 py-3">
+      <span className={cn(typography.body.size, "text-fg/55")}>{label}</span>
+      <span className={cn(typography.body.size, "font-medium text-fg tabular-nums")}>{value}</span>
     </div>
+  );
+}
+
+interface LinkRowProps {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  onClick: () => void;
+}
+
+function LinkRow({ icon, title, subtitle, onClick }: LinkRowProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "group flex w-full items-center gap-3 px-4 py-3 text-left",
+        "transition-colors duration-150",
+        "hover:bg-fg/[0.04] focus:bg-fg/[0.04]",
+        "focus:outline-none",
+      )}
+    >
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center text-fg/55 transition-colors group-hover:text-fg/80">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className={cn("block truncate", typography.body.size, "font-medium text-fg")}>
+          {title}
+        </span>
+        <span
+          className={cn(
+            "mt-0.5 block line-clamp-1",
+            typography.caption.size,
+            "font-normal text-fg/45",
+          )}
+        >
+          {subtitle}
+        </span>
+      </span>
+      <ExternalLink className="h-4 w-4 shrink-0 text-fg/25 transition-colors group-hover:text-fg/45" />
+    </button>
   );
 }
 
@@ -85,7 +156,9 @@ export function AboutPage() {
     };
   }, []);
 
-  const buildChannel = appVersion.includes("-dev.")
+  const isDevBuild = import.meta.env.DEV;
+  const isDevChannel = isDevBuild || detectUpdateChannel(appVersion) === "dev";
+  const buildChannel = isDevChannel
     ? t("about.buildChannel.dev")
     : t("about.buildChannel.release");
 
@@ -146,6 +219,10 @@ export function AboutPage() {
     }
   };
 
+  const openChangelog = () => {
+    void openExternal("https://www.lettuceai.app/changelog");
+  };
+
   const handleEnableDeveloperMode = async () => {
     try {
       const settings = await readSettings();
@@ -162,208 +239,262 @@ export function AboutPage() {
   };
 
   return (
-    <div className="flex h-full flex-col pb-16">
-      <section className="flex-1 space-y-5 overflow-y-auto px-3 pt-3">
-        <div className="rounded-xl border border-fg/10 bg-fg/5">
-          <div className="border-b border-fg/8 px-4 py-4">
-            <div className="flex items-start gap-4">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-fg/10 bg-surface/60">
-                <img src={logoSvg} alt="LettuceAI" className="h-9 w-9" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="text-lg font-semibold text-fg">{t("about.appName")}</div>
-                <p className="mt-1 text-sm leading-6 text-fg/55">{t("about.description")}</p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <div className="rounded-md border border-fg/10 bg-surface/55 px-2.5 py-1 text-xs font-medium text-fg/72">
-                    {appVersion}
-                  </div>
-                  <div className="rounded-md border border-fg/10 bg-surface/55 px-2.5 py-1 text-xs font-medium text-fg/60">
-                    {buildChannel}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="px-4 py-4">
-            <InfoRow label={t("about.info.version")} value={appVersion} />
-            <InfoRow label={t("about.info.channel")} value={buildChannel} />
-            <InfoRow label={t("about.info.platform")} value={platform.os} />
-          </div>
-        </div>
-
-        <div>
-          <SectionTitle title={t("about.update.sectionTitle")} />
-          <div className="mt-2 rounded-xl border border-fg/10 bg-fg/5">
-            <div className="border-b border-fg/8 px-4 py-4">
-              <div className="flex items-start gap-3">
-                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-fg/10 bg-surface/60">
-                  <RefreshCw className="h-4 w-4 text-fg/70" />
-                </div>
-                <div>
-                  <div className="text-sm font-medium text-fg">{t("about.update.title")}</div>
-                  <div className="mt-1 text-sm leading-6 text-fg/50">
-                    {t("about.update.description")}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-4 px-4 py-4">
-              <div className="flex items-center justify-between gap-4 rounded-lg border border-fg/8 bg-surface/35 px-3 py-3">
-                <div>
-                  <div className="text-sm font-medium text-fg">{t("about.update.autoChecks")}</div>
-                  <div className="mt-1 text-xs leading-5 text-fg/45">
-                    {t("about.update.autoChecksDescription")}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-medium text-fg/50">
-                    {autoChecksEnabled ? t("common.labels.on") : t("common.labels.off")}
-                  </span>
-                  <Switch
-                    checked={autoChecksEnabled}
-                    onChange={() => void toggleAutoChecks()}
-                    aria-label={t("about.update.autoChecks")}
-                  />
-                </div>
-              </div>
-
-              {updateState === "available" && availableUpdate ? (
-                <div className="rounded-lg border border-accent/18 bg-accent/7 px-3 py-3">
-                  <div className="text-sm font-medium text-fg">{t("updates.available.title")}</div>
-                  <div className="mt-1 text-xs leading-5 text-fg/50">
-                    {t("updates.available.description", {
-                      currentVersion: availableUpdate.currentVersion,
-                      latestVersion: availableUpdate.latestVersion,
-                    })}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => void openExternal(availableUpdate.downloadUrl)}
-                    className={cn(
-                      "mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-accent/18 bg-surface/45 px-3 text-sm font-medium text-fg",
-                      interactive.transition.default,
-                      "hover:bg-surface-el/55",
-                    )}
-                  >
-                    {t("updates.available.actions.view")}
-                    <ExternalLink className="h-3.5 w-3.5 text-fg/45" />
-                  </button>
-                </div>
-              ) : null}
-
-              {updateState === "upToDate" ? (
-                <div className="rounded-lg border border-fg/8 bg-surface/30 px-3 py-3">
-                  <div className="text-sm font-medium text-fg">
-                    {t("about.update.upToDateTitle")}
-                  </div>
-                  <div className="mt-1 text-xs leading-5 text-fg/45">
-                    {t("about.update.upToDateDescription")}
-                  </div>
-                </div>
-              ) : null}
-
-              <button
-                type="button"
-                onClick={handleCheckNow}
-                disabled={isCheckingUpdates}
-                className={cn(
-                  "flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-fg/12 bg-surface/55 text-sm font-medium text-fg",
-                  interactive.transition.default,
-                  "hover:bg-surface-el/60 disabled:cursor-wait disabled:opacity-60",
-                )}
-              >
-                <RefreshCw className={cn("h-4 w-4", isCheckingUpdates && "animate-spin")} />
-                {isCheckingUpdates ? t("about.update.checking") : t("about.update.checkNow")}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div>
-          <SectionTitle title={t("about.links.sectionTitle")} />
-          <div className="mt-2 rounded-xl border border-fg/10 bg-fg/5">
-            {[
-              {
-                key: "website",
-                icon: <Globe className="h-4 w-4" />,
-                title: t("about.links.website"),
-                subtitle: t("about.links.websiteDescription"),
-                url: DOWNLOADS_PAGE_LINK,
-              },
-              {
-                key: "github",
-                icon: <img src={githubSvg} alt="" className="h-4 w-4" />,
-                title: t("about.links.github"),
-                subtitle: t("about.links.githubDescription"),
-                url: GITHUB_REPO_LINK,
-              },
-              {
-                key: "discord",
-                icon: (
-                  <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                    <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515a.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0a12.64 12.64 0 0 0-.617-1.25a.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057a19.9 19.9 0 0 0 5.993 3.03a.078.078 0 0 0 .084-.028a14.09 14.09 0 0 0 1.226-1.994a.076.076 0 0 0-.041-.106a13.107 13.107 0 0 1-1.872-.892a.077.077 0 0 1-.008-.128a10.2 10.2 0 0 0 .372-.292a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127a12.299 12.299 0 0 1-1.873.892a.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028a19.839 19.839 0 0 0 6.002-3.03a.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419c0-1.333.956-2.419 2.157-2.419c1.21 0 2.176 1.096 2.157 2.42c0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419c0-1.333.955-2.419 2.157-2.419c1.21 0 2.176 1.096 2.157 2.42c0 1.333-.946 2.418-2.157 2.418z" />
-                  </svg>
-                ),
-                title: t("about.links.discord"),
-                subtitle: t("about.links.discordDescription"),
-                url: DISCORD_SERVER_LINK,
-              },
-              {
-                key: "reddit",
-                icon: (
-                  <svg viewBox="0 0 24 24" fill="currentColor" className="h-4 w-4">
-                    <path d="M14.19 14.79c.11.11.11.29 0 .4c-.54.54-1.42.8-2.69.8s-2.15-.26-2.69-.8a.283.283 0 1 1 .4-.4c.43.43 1.18.63 2.29.63s1.86-.2 2.29-.63a.283.283 0 0 1 .4 0M9.5 13.01c0-.55-.45-.99-1-.99s-1 .44-1 .99s.45 1 1 1s1-.45 1-1m5 0c0-.55-.45-.99-1-.99s-1 .44-1 .99s.45 1 1 1s1-.45 1-1m6.5-.99c0-1.54-1.25-2.79-2.79-2.79c-.76 0-1.45.3-1.95.79c-1.36-.93-3.17-1.52-5.16-1.58l.88-2.78l2.39.56a1.99 1.99 0 1 0 .33-1.11l-2.68-.63a.56.56 0 0 0-.67.37l-1.01 3.18c-2.08.03-3.98.62-5.39 1.58a2.79 2.79 0 0 0-4.74 2c0 .81.35 1.55.9 2.06a4.91 4.91 0 0 0-.1.97c0 2.95 3.39 5.35 7.56 5.35s7.56-2.4 7.56-5.35c0-.33-.04-.65-.1-.97c.56-.51.9-1.25.9-2.06" />
-                  </svg>
-                ),
-                title: t("about.links.reddit"),
-                subtitle: t("about.links.redditDescription"),
-                url: SUBREDDIT_LINK,
-              },
-            ].map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => void openExternal(item.url)}
-                className={cn(
-                  "group flex w-full items-center gap-3 border-b border-fg/8 px-4 py-3 text-left last:border-b-0",
-                  interactive.transition.default,
-                  "hover:bg-fg/4",
-                  interactive.focus.ring,
-                )}
-              >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-fg/10 bg-surface/55 text-fg/70">
-                  {item.icon}
+    <div className="flex h-full flex-col">
+      <section className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-5xl px-3 pt-4 pb-10 sm:px-4 lg:px-8 lg:pt-8">
+          <div className="flex flex-col gap-7">
+            {/* Hero card */}
+            <div
+              className={cn(
+                "relative overflow-hidden rounded-2xl border border-fg/10 bg-fg/[0.03]",
+                "px-5 py-6 sm:px-7 sm:py-7",
+              )}
+            >
+              <div
+                aria-hidden
+                className="pointer-events-none absolute -top-16 -right-12 h-48 w-48 rounded-full bg-accent/10 blur-3xl"
+              />
+              <div className="relative flex flex-col gap-5 sm:flex-row sm:items-start sm:gap-5">
+                <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-2xl border border-fg/10 bg-surface/60 shadow-sm">
+                  <img src={logoSvg} alt="LettuceAI" className="h-10 w-10" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-fg">{item.title}</div>
-                  <div className="mt-1 text-xs leading-5 text-fg/45">{item.subtitle}</div>
-                </div>
-                <ExternalLink className="h-4 w-4 shrink-0 text-fg/30" />
-              </button>
-            ))}
-          </div>
-        </div>
+                  <div className="flex items-center gap-2">
+                    <h1
+                      className={cn(
+                        typography.h1.size,
+                        typography.h1.weight,
+                        typography.h1.tracking,
+                        "text-fg",
+                      )}
+                    >
+                      {t("about.appName")}
+                    </h1>
+                    <span
+                      className={cn(
+                        "shrink-0 rounded-md border border-fg/10 bg-surface/55 px-2 py-0.5",
+                        typography.caption.size,
+                        "font-medium tabular-nums text-fg/65",
+                      )}
+                    >
+                      {isDevBuild ? t("about.devVersion") : appVersion}
+                    </span>
+                    {isDevChannel && (
+                      <span
+                        className={cn(
+                          "shrink-0 rounded-md border border-warning/25 bg-warning/12 px-2 py-0.5",
+                          typography.caption.size,
+                          "font-medium uppercase tracking-wide text-warning",
+                        )}
+                      >
+                        {buildChannel}
+                      </span>
+                    )}
+                  </div>
+                  <p className={cn("mt-2", typography.body.size, "leading-relaxed text-fg/60")}>
+                    {t("about.description")}
+                  </p>
 
-        <div className="pt-1">
-          <button
-            type="button"
-            onClick={handleEnableDeveloperMode}
-            disabled={developerModeEnabled}
-            className={cn(
-              "flex h-10 w-full items-center justify-center rounded-lg border text-sm font-medium",
-              developerModeEnabled
-                ? "border-warning/12 bg-warning/8 text-warning/70"
-                : "border-warning/18 bg-surface/45 text-warning",
-              interactive.transition.default,
-              "hover:bg-surface-el/55 disabled:cursor-default",
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCheckNow}
+                      disabled={isCheckingUpdates}
+                      className={cn(
+                        "inline-flex h-9 items-center gap-2 rounded-lg border border-fg/12 bg-surface/60 px-3.5",
+                        typography.body.size,
+                        "font-medium text-fg",
+                        interactive.transition.default,
+                        "hover:bg-surface-el/65 disabled:cursor-wait disabled:opacity-60",
+                      )}
+                    >
+                      <RefreshCw
+                        className={cn("h-4 w-4 text-fg/70", isCheckingUpdates && "animate-spin")}
+                      />
+                      {isCheckingUpdates
+                        ? t("about.update.checking")
+                        : t("about.update.checkNow")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openChangelog}
+                      className={cn(
+                        "inline-flex h-9 items-center gap-2 rounded-lg border border-fg/10 bg-transparent px-3.5",
+                        typography.body.size,
+                        "font-medium text-fg/75",
+                        interactive.transition.default,
+                        "hover:bg-fg/[0.04] hover:text-fg",
+                      )}
+                    >
+                      <ScrollText className="h-4 w-4 text-fg/55" />
+                      {t("settings.items.changelog.title")}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Update status banner (only when an update is available or up to date) */}
+            {updateState === "available" && availableUpdate && (
+              <div className="rounded-xl border border-accent/20 bg-accent/8 px-4 py-3">
+                <div className={cn(typography.body.size, "font-medium text-fg")}>
+                  {t("updates.available.title")}
+                </div>
+                <div className={cn("mt-1", typography.caption.size, "leading-5 text-fg/55")}>
+                  {t("updates.available.description", {
+                    currentVersion: availableUpdate.currentVersion,
+                    latestVersion: availableUpdate.latestVersion,
+                  })}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void openExternal(availableUpdate.downloadUrl)}
+                  className={cn(
+                    "mt-3 inline-flex h-8 items-center gap-2 rounded-md border border-accent/25 bg-surface/55 px-3",
+                    typography.body.size,
+                    "font-medium text-fg",
+                    interactive.transition.default,
+                    "hover:bg-surface-el/60",
+                  )}
+                >
+                  {t("updates.available.actions.view")}
+                  <ExternalLink className="h-3.5 w-3.5 text-fg/55" />
+                </button>
+              </div>
             )}
-          >
-            {developerModeEnabled
-              ? t("about.developerMode.enabled")
-              : t("about.developerMode.enable")}
-          </button>
+
+            {updateState === "upToDate" && (
+              <div className="rounded-xl border border-fg/10 bg-fg/[0.025] px-4 py-3">
+                <div className={cn(typography.body.size, "font-medium text-fg")}>
+                  {t("about.update.upToDateTitle")}
+                </div>
+                <div className={cn("mt-1", typography.caption.size, "leading-5 text-fg/45")}>
+                  {t("about.update.upToDateDescription")}
+                </div>
+              </div>
+            )}
+
+            {/* Two-column grid at lg+ */}
+            <div className="grid grid-cols-1 gap-7 lg:grid-cols-2">
+              {/* Left column: Information + Updates */}
+              <div className="flex flex-col gap-7">
+                <div className="flex flex-col gap-2">
+                  <GroupLabel>{t("about.sections.information")}</GroupLabel>
+                  <Group>
+                    <InfoRow
+                      label={t("about.info.version")}
+                      value={isDevBuild ? t("about.devVersion") : appVersion}
+                    />
+                    <InfoRow label={t("about.info.channel")} value={buildChannel} />
+                    <InfoRow label={t("about.info.platform")} value={platform.os} />
+                  </Group>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <GroupLabel>{t("about.update.sectionTitle")}</GroupLabel>
+                  <Group>
+                    <div className="flex items-center justify-between gap-4 px-4 py-3">
+                      <div className="min-w-0">
+                        <div className={cn(typography.body.size, "font-medium text-fg")}>
+                          {t("about.update.autoChecks")}
+                        </div>
+                        <div className={cn("mt-0.5", typography.caption.size, "text-fg/45")}>
+                          {t("about.update.autoChecksDescription")}
+                        </div>
+                      </div>
+                      <Switch
+                        checked={autoChecksEnabled}
+                        onChange={() => void toggleAutoChecks()}
+                        aria-label={t("about.update.autoChecks")}
+                      />
+                    </div>
+                  </Group>
+                </div>
+              </div>
+
+              {/* Right column: Links + Advanced */}
+              <div className="flex flex-col gap-7">
+                <div className="flex flex-col gap-2">
+                  <GroupLabel>{t("about.links.sectionTitle")}</GroupLabel>
+                  <Group>
+                <LinkRow
+                  icon={<Globe className="h-[18px] w-[18px]" />}
+                  title={t("about.links.website")}
+                  subtitle={t("about.links.websiteDescription")}
+                  onClick={() => void openExternal(DOWNLOADS_PAGE_LINK)}
+                />
+                <LinkRow
+                  icon={<img src={githubSvg} alt="" className="h-[18px] w-[18px]" />}
+                  title={t("about.links.github")}
+                  subtitle={t("about.links.githubDescription")}
+                  onClick={() => void openExternal(GITHUB_REPO_LINK)}
+                />
+                <LinkRow
+                  icon={
+                    <svg viewBox="0 0 24 24" fill="currentColor" className="h-[18px] w-[18px]">
+                      <path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515a.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0a12.64 12.64 0 0 0-.617-1.25a.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057a19.9 19.9 0 0 0 5.993 3.03a.078.078 0 0 0 .084-.028a14.09 14.09 0 0 0 1.226-1.994a.076.076 0 0 0-.041-.106a13.107 13.107 0 0 1-1.872-.892a.077.077 0 0 1-.008-.128a10.2 10.2 0 0 0 .372-.292a.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127a12.299 12.299 0 0 1-1.873.892a.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028a19.839 19.839 0 0 0 6.002-3.03a.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419c0-1.333.956-2.419 2.157-2.419c1.21 0 2.176 1.096 2.157 2.42c0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419c0-1.333.955-2.419 2.157-2.419c1.21 0 2.176 1.096 2.157 2.42c0 1.333-.946 2.418-2.157 2.418z" />
+                    </svg>
+                  }
+                  title={t("about.links.discord")}
+                  subtitle={t("about.links.discordDescription")}
+                  onClick={() => void openExternal(DISCORD_SERVER_LINK)}
+                />
+                  </Group>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <GroupLabel>{t("about.sections.advanced")}</GroupLabel>
+                  <Group>
+                    <button
+                      type="button"
+                      onClick={handleEnableDeveloperMode}
+                      disabled={developerModeEnabled}
+                      className={cn(
+                        "group flex w-full items-center gap-3 px-4 py-3 text-left",
+                        "transition-colors duration-150",
+                        !developerModeEnabled && "hover:bg-fg/[0.04]",
+                        "disabled:cursor-default",
+                        "focus:outline-none focus:bg-fg/[0.04]",
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          "flex h-7 w-7 shrink-0 items-center justify-center",
+                          developerModeEnabled ? "text-warning/60" : "text-warning",
+                        )}
+                      >
+                        <Sparkles className="h-[18px] w-[18px]" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span
+                          className={cn(
+                            "block truncate",
+                            typography.body.size,
+                            "font-medium text-fg",
+                          )}
+                        >
+                          {developerModeEnabled
+                            ? t("about.developerMode.enabled")
+                            : t("about.developerMode.enable")}
+                        </span>
+                        <span
+                          className={cn(
+                            "mt-0.5 block line-clamp-1",
+                            typography.caption.size,
+                            "font-normal text-fg/45",
+                          )}
+                        >
+                          {developerModeEnabled
+                            ? t("about.developerMode.enabledDescription")
+                            : t("about.developerMode.enableDescription")}
+                        </span>
+                      </span>
+                    </button>
+                  </Group>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
     </div>

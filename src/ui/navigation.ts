@@ -34,6 +34,39 @@ export const Routes = {
     const query = params.toString();
     return query ? `/chat/${characterId}/memories?${query}` : `/chat/${characterId}/memories`;
   },
+  chatCompanionMemories: (
+    characterId: string,
+    sessionId?: string | null,
+    extra?: Record<string, string | null>,
+  ) => {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("sessionId", sessionId);
+    if (extra) {
+      Object.entries(extra).forEach(([k, v]) => {
+        if (v !== null && v !== undefined) params.set(k, v);
+      });
+    }
+    const query = params.toString();
+    return query
+      ? `/chat/${characterId}/companion/memories?${query}`
+      : `/chat/${characterId}/companion/memories`;
+  },
+  chatCompanionRelationship: (characterId: string, sessionId?: string | null) => {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("sessionId", sessionId);
+    const query = params.toString();
+    return query
+      ? `/chat/${characterId}/companion/relationship?${query}`
+      : `/chat/${characterId}/companion/relationship`;
+  },
+  chatCompanionSoul: (characterId: string, sessionId?: string | null) => {
+    const params = new URLSearchParams();
+    if (sessionId) params.set("sessionId", sessionId);
+    const query = params.toString();
+    return query
+      ? `/chat/${characterId}/companion/soul?${query}`
+      : `/chat/${characterId}/companion/soul`;
+  },
   chatSearch: (characterId: string, sessionId?: string | null) => {
     const params = new URLSearchParams();
     if (sessionId) params.set("sessionId", sessionId);
@@ -56,28 +89,50 @@ export const Routes = {
     return query ? `/chat/${characterId}?${query}` : `/chat/${characterId}`;
   },
   settings: "/settings",
-  settingsConvert: "/settings/convert",
+  settingsSpeechRecognition: "/settings/speech-recognition",
+  settingsAdvancedLorebooks: "/settings/advanced/lorebooks",
+  settingsAdvancedCompanionSoulWriter: "/settings/advanced/companion-soul-writer",
   settingsUsage: "/settings/usage",
   settingsUsageActivity: "/settings/usage/activity",
   settingsModels: "/settings/models",
   settingsModelsNew: "/settings/models/new",
   settingsModelsBrowse: "/settings/models/browse",
   settingsModelsInstalled: "/settings/models/installed",
+  settingsModelsRuntimeDefaults: "/settings/models/runtime-defaults",
   settingsModel: (modelId: string) => `/settings/models/${modelId}`,
   settingsImageGeneration: "/settings/image-generation",
   createPersona: "/create/persona",
   personaEdit: (personaId: string) => `/personas/${personaId}/edit`,
   characterLorebook: (characterId: string) => `/settings/characters/${characterId}/lorebook`,
+  characterLorebookGenerate: (
+    characterId: string,
+    lorebookId: string,
+    sessionId?: string | null,
+  ) => {
+    const params = new URLSearchParams({ lorebookId });
+    if (sessionId) params.set("sessionId", sessionId);
+    return `/settings/characters/${characterId}/lorebook/generate?${params.toString()}`;
+  },
+  characterLorebookPreview: (characterId: string, lorebookId: string) =>
+    `/settings/characters/${characterId}/lorebook/preview?lorebookId=${encodeURIComponent(lorebookId)}`,
+  libraryLorebookGenerate: (lorebookId: string) => `/library/lorebooks/${lorebookId}/generate`,
+  libraryLorebookPreview: (lorebookId: string) => `/library/lorebooks/${lorebookId}/preview`,
   sync: "/settings/sync",
   // Group Chat routes
   groupChats: "/group-chats",
   groupChatsNew: "/group-chats/new",
   groupSettings: (groupId: string) => `/group-chats/groups/${groupId}/settings`,
   groupLorebook: (groupId: string) => `/group-chats/groups/${groupId}/lorebook`,
+  groupLorebookPreview: (groupId: string, lorebookId: string) =>
+    `/group-chats/groups/${groupId}/lorebook/preview?lorebookId=${encodeURIComponent(lorebookId)}`,
   groupChat: (groupSessionId: string) => `/group-chats/${groupSessionId}`,
   groupChatSettings: (groupSessionId: string) => `/group-chats/${groupSessionId}/settings`,
   groupChatLorebook: (groupSessionId: string) => `/group-chats/${groupSessionId}/lorebook`,
+  groupChatLorebookPreview: (groupSessionId: string, lorebookId: string) =>
+    `/group-chats/${groupSessionId}/lorebook/preview?lorebookId=${encodeURIComponent(lorebookId)}`,
   groupChatMemories: (groupSessionId: string) => `/group-chats/${groupSessionId}/memories`,
+  groupChatAppearance: (groupSessionId: string) => `/group-chats/${groupSessionId}/appearance`,
+  groupChatSearch: (groupSessionId: string) => `/group-chats/${groupSessionId}/search`,
   groupChatHistory: "/group-chats/history",
   // Engine routes
   engineHome: (credentialId: string) => `/settings/engine/${credentialId}`,
@@ -109,6 +164,10 @@ export const BACK_MAPPINGS: BackMapping[] = [
     match: (p) => p.startsWith("/settings/models/browse") && p.includes("model="),
     target: Routes.settingsModelsBrowse,
   },
+  {
+    match: (p) => p.startsWith("/settings/models/installed"),
+    target: Routes.settingsModelsBrowse,
+  },
   { match: (p) => p.startsWith("/settings/models/"), target: Routes.settingsModels },
   { match: (p) => p.startsWith("/settings/image-generation"), target: Routes.settings },
   { match: (p) => p.startsWith("/settings/providers/"), target: "/settings/providers" },
@@ -129,6 +188,12 @@ export const BACK_MAPPINGS: BackMapping[] = [
   },
   {
     match: (p) => p.startsWith("/group-chats/") && p.includes("/memories"),
+    target: Routes.groupChats,
+  },
+  {
+    match: (p) =>
+      p.startsWith("/group-chats/") &&
+      (p.includes("/appearance") || p.includes("/search")),
     target: Routes.groupChats,
   },
   { match: (p) => p === "/group-chats/history", target: Routes.groupChats },
@@ -169,14 +234,27 @@ export const BACK_MAPPINGS: BackMapping[] = [
     target: "/settings/advanced",
   },
   { match: (p) => p.startsWith("/settings/advanced/help-me-reply"), target: "/settings/advanced" },
+  {
+    match: (p) => p.startsWith("/settings/advanced/lorebooks"),
+    target: "/settings/advanced",
+  },
+  {
+    match: (p) => p.startsWith("/settings/advanced/companion-soul-writer"),
+    target: "/settings/advanced",
+  },
   { match: (p) => p.startsWith("/settings/embedding-download"), target: "/settings/advanced" },
+  {
+    match: (p) => p.startsWith("/settings/companion-download"),
+    target: "/settings/advanced/companions",
+  },
   { match: (p) => p.startsWith("/settings/embedding-test"), target: "/settings/advanced" },
   { match: (p) => p.startsWith("/settings/security"), target: Routes.settings },
+  { match: (p) => p.startsWith("/settings/speech-recognition"), target: Routes.settings },
   { match: (p) => p.startsWith("/settings/backup"), target: Routes.settings },
-  { match: (p) => p.startsWith("/settings/convert"), target: Routes.settings },
   { match: (p) => p.startsWith("/settings/usage/activity"), target: Routes.settingsUsage },
   { match: (p) => p.startsWith("/settings/usage"), target: Routes.settings },
   { match: (p) => p.startsWith("/settings/changelog"), target: Routes.settings },
+  { match: (p) => p.startsWith("/settings/help"), target: Routes.settings },
   { match: (p) => p.startsWith("/settings/developer"), target: Routes.settings },
   { match: (p) => p.startsWith("/settings/reset"), target: Routes.settings },
   { match: (p) => /^\/personas\/[^/]+\/edit$/.test(p), target: Routes.libraryPersonas },
@@ -193,6 +271,11 @@ export function resolveChatBackTarget(path: string): string | null {
   const params = new URLSearchParams(search);
   const sessionId = params.get("sessionId");
 
+  if (pathname.startsWith("/chat/") && pathname.includes("/companion/")) {
+    const parts = pathname.split("/").filter(Boolean);
+    const charId = parts[1];
+    if (charId) return Routes.chatSession(charId, sessionId);
+  }
   if (pathname.startsWith("/chat/") && pathname.includes("/settings")) {
     const parts = pathname.split("/").filter(Boolean);
     const charId = parts[1];

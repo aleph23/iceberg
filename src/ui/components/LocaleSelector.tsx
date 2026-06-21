@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 
 import { type Locale, SUPPORTED_LOCALES, getLocaleMetadata } from "../../core/i18n";
+import { getLocaleTranslationCompletion } from "../../core/i18n/translationStatus";
 import { BottomMenu } from "./BottomMenu";
 import { LocaleIcon } from "./LocaleIcon";
 import { cn, interactive, radius, typography } from "../design-tokens";
@@ -34,6 +35,23 @@ function LocaleText({ locale, selected = false }: { locale: Locale; selected?: b
         </div>
       )}
     </div>
+  );
+}
+
+function CompletionBadge({ locale, selected = false }: { locale: Locale; selected?: boolean }) {
+  const completion = getLocaleTranslationCompletion(locale);
+
+  return (
+    <span
+      className={cn(
+        "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+        selected
+          ? "border-accent/35 bg-accent/10 text-accent/85"
+          : "border-fg/10 bg-fg/5 text-fg/45",
+      )}
+    >
+      {completion.percent}%
+    </span>
   );
 }
 
@@ -76,6 +94,7 @@ export function LocaleSelector({
       >
         <LocaleIcon locale={value} className="h-5 w-5" fallbackClassName="h-4 w-4" />
         <LocaleText locale={value} />
+        <CompletionBadge locale={value} />
         <ChevronDown className="h-4 w-4 shrink-0 text-fg/45" />
       </button>
 
@@ -89,7 +108,6 @@ export function LocaleSelector({
         isOpen={isOpen}
         onClose={() => setIsOpen(false)}
         title={title ?? label}
-        includeExitIcon
         className={menuClassName}
       >
         <div className="space-y-2">
@@ -115,6 +133,7 @@ export function LocaleSelector({
                   fallbackClassName={isSelected ? "h-4 w-4 text-accent/80" : "h-4 w-4 text-fg/55"}
                 />
                 <LocaleText locale={locale} selected={isSelected} />
+                <CompletionBadge locale={locale} selected={isSelected} />
                 <div
                   className={cn(
                     "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",

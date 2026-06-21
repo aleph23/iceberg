@@ -1,11 +1,12 @@
-import { useMemo, useReducer } from "react";
+import { useEffect, useMemo, useReducer, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { savePersona } from "../../../../core/storage/repo";
-import { saveAvatar } from "../../../../core/storage/avatars";
+import { savePersona, uuidv4 } from "../../../../core/storage/repo";
+import { saveAvatar, recalculateGradient } from "../../../../core/storage/avatars";
 import { convertToImageRef } from "../../../../core/storage/images";
 import { invalidateAvatarCache } from "../../../hooks/useAvatar";
 import { importPersona, readFileAsText } from "../../../../core/storage/personaTransfer";
 import { toast } from "../../../components/toast";
+import { useI18n } from "../../../../core/i18n/context";
 import type { AvatarCrop } from "../../../../core/storage/schemas";
 
 export interface PersonaFormState {
@@ -17,6 +18,7 @@ export interface PersonaFormState {
   avatarRoundPath: string | null;
   designDescription: string;
   designReferenceImageIds: string[];
+  activeLorebookIds: string[];
   isDefault: boolean;
   saving: boolean;
   importing: boolean;
@@ -32,6 +34,7 @@ export type PersonaFormAction =
   | { type: "set_avatar_round_path"; value: string | null }
   | { type: "set_design_description"; value: string }
   | { type: "set_design_reference_image_ids"; value: string[] }
+  | { type: "set_active_lorebook_ids"; value: string[] }
   | { type: "set_default"; value: boolean }
   | { type: "set_saving"; value: boolean }
   | { type: "set_importing"; value: boolean }
@@ -47,6 +50,7 @@ export type PersonaFormAction =
         avatarRoundPath?: string | null;
         designDescription?: string;
         designReferenceImageIds?: string[];
+        activeLorebookIds?: string[];
       };
     };
 
@@ -59,6 +63,7 @@ export const initialCreatePersonaState: PersonaFormState = {
   avatarRoundPath: null,
   designDescription: "",
   designReferenceImageIds: [],
+  activeLorebookIds: [],
   isDefault: false,
   saving: false,
   importing: false,
@@ -86,6 +91,8 @@ export function createPersonaReducer(
       return { ...state, designDescription: action.value };
     case "set_design_reference_image_ids":
       return { ...state, designReferenceImageIds: action.value };
+    case "set_active_lorebook_ids":
+      return { ...state, activeLorebookIds: action.value };
     case "set_default":
       return { ...state, isDefault: action.value };
     case "set_saving":
@@ -105,6 +112,7 @@ export function createPersonaReducer(
         avatarRoundPath: action.payload.avatarRoundPath ?? null,
         designDescription: action.payload.designDescription ?? "",
         designReferenceImageIds: action.payload.designReferenceImageIds ?? [],
+        activeLorebookIds: action.payload.activeLorebookIds ?? [],
         isDefault: false,
       };
     default:
@@ -115,7 +123,31 @@ export function createPersonaReducer(
 export function useCreatePersonaController() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { t } = useI18n();
   const [state, dispatch] = useReducer(createPersonaReducer, initialCreatePersonaState);
+
+  const hydratedFromDraftRef = useRef(false);
+  useEffect(() => {
+    if (hydratedFromDraftRef.current) return;
+    const draft = (location.state as { draftPersona?: unknown } | null)?.draftPersona as
+      | {
+          name?: string | null;
+          description?: string | null;
+          definition?: string | null;
+          avatarPath?: string | null;
+        }
+      | undefined;
+    if (!draft) return;
+    hydratedFromDraftRef.current = true;
+    dispatch({
+      type: "hydrate_from_import",
+      payload: {
+        title: draft.name ?? "",
+        description: (draft.description ?? draft.definition ?? "").toString(),
+        avatarPath: draft.avatarPath ?? null,
+      },
+    });
+  }, [location.state]);
 
   const canSave = useMemo(
     () => state.title.trim().length > 0 && state.description.trim().length > 0 && !state.saving,
@@ -157,8 +189,8 @@ export function useCreatePersonaController() {
         dispatch({ type: "set_importing", value: true });
         if (file.name.toLowerCase().endsWith(".json")) {
           toast.warning(
-            "Legacy JSON import detected",
-            "JSON imports are deprecated and will be removed soon. Use Settings → Convert Files.",
+            t("personas.importToast.legacyJsonTitle"),
+            t("personas.importToast.legacyJsonMessage"),
           );
         }
         const jsonContent = await readFileAsText(file);
@@ -174,15 +206,16 @@ export function useCreatePersonaController() {
             avatarCrop: importedPersona.avatarCrop ?? null,
             designDescription: importedPersona.designDescription ?? "",
             designReferenceImageIds: importedPersona.designReferenceImageIds ?? [],
+            activeLorebookIds: importedPersona.activeLorebookIds ?? [],
           },
         });
         dispatch({ type: "set_error", value: null });
 
-        alert("Persona imported successfully! Opening it for review.");
+        alert(t("personas.importToast.successMessage"));
         navigate(`/personas/${importedPersona.id}/edit`);
       } catch (err: any) {
         console.error("Failed to import persona:", err);
-        alert(err?.message || "Failed to import persona");
+        alert(err?.message || t("personas.errors.importFailed"));
       } finally {
         dispatch({ type: "set_importing", value: false });
       }
@@ -198,7 +231,7 @@ export function useCreatePersonaController() {
       dispatch({ type: "set_saving", value: true });
       dispatch({ type: "set_error", value: null });
 
-      const personaId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      const personaId = globalThis.crypto?.randomUUID?.() ?? uuidv4();
 
       let avatarFilename: string | undefined;
       if (state.avatarPath) {
@@ -207,11 +240,13 @@ export function useCreatePersonaController() {
           personaId,
           state.avatarPath,
           state.avatarRoundPath,
+          undefined,
         );
         if (!avatarFilename) {
           console.error("[CreatePersona] Failed to save avatar image");
         } else {
           invalidateAvatarCache("persona", personaId);
+          await recalculateGradient("persona", personaId);
         }
       }
 
@@ -238,12 +273,13 @@ export function useCreatePersonaController() {
         designDescription: state.designDescription.trim() || undefined,
         designReferenceImageIds:
           designReferenceImageIds.length > 0 ? designReferenceImageIds : undefined,
+        activeLorebookIds: state.activeLorebookIds,
         isDefault: state.isDefault,
       });
 
       navigate("/library?view=personas", { replace: true });
     } catch (e: any) {
-      dispatch({ type: "set_error", value: e?.message || "Failed to save persona" });
+      dispatch({ type: "set_error", value: e?.message || t("personas.errors.saveFailed") });
     } finally {
       dispatch({ type: "set_saving", value: false });
     }

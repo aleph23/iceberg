@@ -16,6 +16,9 @@ import { getPlatform } from "../../../core/utils/platform";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import { useI18n } from "../../../core/i18n/context";
+import type { TranslationKey, TranslateParams } from "../../../core/i18n/context";
+
+type TFunction = (key: TranslationKey, params?: TranslateParams) => string;
 
 export function ModelSetupPage() {
   const { t } = useI18n();
@@ -52,8 +55,12 @@ export function ModelSetupPage() {
   const isLocalModel = selectedProvider?.providerId === "llamacpp";
   const modelFetchEnabled =
     !!selectedProvider && !["llamacpp", "intenserp"].includes(selectedProvider.providerId);
-  const modelIdLabel = isLocalModel ? "Model Path (GGUF)" : "Model ID";
-  const modelIdPlaceholder = isLocalModel ? "/path/to/model.gguf" : "e.g. gpt-4o";
+  const modelIdLabel = isLocalModel
+    ? t("onboarding.model.fields.modelPathGguf")
+    : t("onboarding.model.fields.modelId");
+  const modelIdPlaceholder = isLocalModel
+    ? t("onboarding.model.fields.modelPathPlaceholder")
+    : t("onboarding.model.fields.modelIdPlaceholder");
 
   const fetchModels = async () => {
     if (!selectedProvider) return;
@@ -96,8 +103,8 @@ export function ModelSetupPage() {
 
   if (isLoading) {
     return (
-      <div className="flex h-full items-center justify-center rounded-3xl border border-white/5 bg-black/40 text-gray-300">
-        <div className="flex items-center gap-3 text-sm">
+      <div className="flex h-full items-center justify-center rounded-3xl border border-white/5 bg-black/40 text-white/80">
+        <div className="flex items-center gap-3 text-[15px]">
           <Loader size={20} className="animate-spin" />
           {t("onboarding.loading")}
         </div>
@@ -107,21 +114,21 @@ export function ModelSetupPage() {
 
   if (providers.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-6 rounded-3xl border border-white/5 bg-black/40 text-center text-gray-300">
+      <div className="flex h-full flex-col items-center justify-center gap-6 rounded-3xl border border-white/5 bg-black/40 text-center text-white/80">
         <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-white/10 bg-white/10 text-gray-200">
           <Settings size={26} />
         </div>
         <div className="space-y-2">
-          <h2 className="text-xl font-semibold text-white">No providers configured</h2>
-          <p className="max-w-md text-sm text-gray-400">
-            You'll need to connect a provider before choosing a default model.
+          <h2 className="text-[21px] font-semibold text-white">{t("onboarding.model.noProvidersTitle")}</h2>
+          <p className="max-w-md text-[15px] text-white/70">
+            {t("onboarding.model.noProvidersDesc")}
           </p>
         </div>
         <button
           onClick={goToProviderSetup}
-          className="rounded-full border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white transition hover:border-white/30 hover:bg-white/20"
+          className="rounded-full border border-white/15 bg-white/10 px-6 py-3 text-[15px] font-semibold text-white transition hover:border-white/30 hover:bg-white/20"
         >
-          Go to provider setup
+          {t("onboarding.model.goToProviderSetup")}
         </button>
       </div>
     );
@@ -130,20 +137,20 @@ export function ModelSetupPage() {
   const configFormContent = (
     <div className="space-y-4">
       <div className="space-y-2">
-        <label className="text-xs font-medium text-white/70">Display Name</label>
+        <label className="text-[13px] font-medium text-white/70">{t("onboarding.model.fields.displayName")}</label>
         <input
           type="text"
           value={displayName}
           onChange={(e) => handleDisplayNameChange(e.target.value)}
-          placeholder="Creative mentor"
+          placeholder={t("onboarding.model.fields.displayNamePlaceholder")}
           className="w-full min-h-11 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
         />
-        <p className="text-[11px] text-gray-500">How this model appears in menus</p>
+        <p className="text-[12px] text-white/55">{t("onboarding.model.fields.displayNameHint")}</p>
       </div>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <label className="text-[11px] font-bold tracking-wider text-white/50 uppercase">
+          <label className="text-[12px] font-bold tracking-wider text-white/50 uppercase">
             {modelIdLabel}
           </label>
           <div className="flex items-center gap-3">
@@ -151,9 +158,11 @@ export function ModelSetupPage() {
               <button
                 type="button"
                 onClick={() => setIsManualInput(!isManualInput)}
-                className="text-[10px] uppercase font-bold tracking-wider text-white/40 hover:text-white/80 transition"
+                className="text-[11px] uppercase font-bold tracking-wider text-white/40 hover:text-white/80 transition"
               >
-                {isManualInput ? "Show List" : "Manual Input"}
+                {isManualInput
+                  ? t("onboarding.model.fields.showList")
+                  : t("onboarding.model.fields.manualInput")}
               </button>
             )}
             {!isLocalModel && modelFetchEnabled && (
@@ -162,7 +171,7 @@ export function ModelSetupPage() {
                 onClick={fetchModels}
                 disabled={fetchingModels || !selectedProvider}
                 className="text-white/40 hover:text-white/80 transition disabled:opacity-30"
-                title="Refresh model list"
+                title={t("onboarding.model.fields.refreshModelList")}
               >
                 <RefreshCw className={fetchingModels ? "animate-spin" : ""} size={14} />
               </button>
@@ -180,7 +189,7 @@ export function ModelSetupPage() {
               <span className={`block truncate ${!modelName ? "text-white/40" : ""}`}>
                 {fetchedModels.find((m) => m.id === modelName)?.displayName ||
                   modelName ||
-                  "Select a model..."}
+                  t("onboarding.model.fields.selectAModel")}
               </span>
               <ChevronDown className="h-4 w-4 text-white/40" />
             </button>
@@ -188,18 +197,18 @@ export function ModelSetupPage() {
             <ModelSelectionBottomMenu
               isOpen={showModelSelector}
               onClose={() => setShowModelSelector(false)}
-              title="Select Model"
+              title={t("onboarding.model.fields.selectModel")}
               models={fetchedModels as any}
               selectedModelIds={modelName ? [modelName] : []}
-              searchPlaceholder="Search models..."
+              searchPlaceholder={t("onboarding.model.fields.searchModels")}
               theme="dark"
               tone="emerald"
               renderModelIcon={() => getProviderIcon(selectedProvider?.providerId ?? "custom")}
               renderModelTitle={(model: any) => model.displayName || model.id}
               renderModelDescription={(model: any) => model.description || model.id}
               renderEmptyState={(query) => (
-                <div className="py-12 text-center text-sm text-white/40">
-                  No models found matching "{query}"
+                <div className="py-12 text-center text-[15px] text-white/40">
+                  {t("onboarding.model.fields.noModelsFound", { query })}
                 </div>
               )}
               onSelectModel={(modelId) => {
@@ -217,14 +226,14 @@ export function ModelSetupPage() {
               placeholder={modelIdPlaceholder}
               className="w-full min-h-11 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
             />
-            <p className="text-[11px] text-gray-500">Exact identifier used for API calls</p>
+            <p className="text-[12px] text-white/55">{t("onboarding.model.fields.modelIdHint")}</p>
           </>
         )}
       </div>
 
       {verificationError && (
         <div className="rounded-xl border border-red-400/30 bg-red-400/10 px-4 py-3">
-          <p className="text-sm text-red-200">{verificationError}</p>
+          <p className="text-[15px] text-red-200">{verificationError}</p>
         </div>
       )}
 
@@ -237,24 +246,24 @@ export function ModelSetupPage() {
           {isSaving ? (
             <div className="flex items-center justify-center gap-2">
               <Loader size={14} className="animate-spin" />
-              Verifying...
+              {t("onboarding.common.verifying")}
             </div>
           ) : (
-            "Next: Memory System"
+            t("onboarding.model.nextMemorySystem")
           )}
         </button>
 
         <button
           onClick={handleSkip}
-          className="w-full min-h-11 rounded-xl border border-white/10 bg-white/5 px-6 py-3 text-sm font-medium text-gray-400 transition-all duration-200 hover:border-white/20 hover:bg-white/10 hover:text-white active:scale-[0.98]"
+          className="w-full min-h-11 rounded-xl border border-white/10 bg-white/5 px-6 py-3 text-[15px] font-medium text-white/70 transition-all duration-200 hover:border-white/20 hover:bg-white/10 hover:text-white active:scale-[0.98]"
         >
-          Skip for now
+          {t("onboarding.common.skipForNow")}
         </button>
       </div>
 
       {!canSave && (
-        <p className="text-xs text-center text-gray-500">
-          Fill out both fields above to enable the finish button.
+        <p className="text-[13px] text-center text-white/55">
+          {t("onboarding.model.fillBothFields")}
         </p>
       )}
     </div>
@@ -273,10 +282,10 @@ export function ModelSetupPage() {
             <ArrowLeft size={18} />
           </button>
           <div className="text-center">
-            <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-gray-500">
-              Step 2 of 3
+            <p className="text-[11px] font-medium uppercase tracking-[0.25em] text-white/55">
+              {t("onboarding.stepIndicator", { current: 2, total: 3 })}
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">Model Setup</p>
+            <p className="text-[13px] text-white/70 mt-0.5">{t("onboarding.steps.model")}</p>
           </div>
           <div className="w-11" />
         </div>
@@ -286,8 +295,8 @@ export function ModelSetupPage() {
           {/* Left Panel - Provider List (scrollable) */}
           <div className="flex-1 flex flex-col border-r border-white/10">
             <div className="p-6 pb-3">
-              <h2 className="text-sm font-medium text-white/70">Your Providers</h2>
-              <p className="text-xs text-gray-500 mt-0.5">Select which provider to use</p>
+              <h2 className="text-[15px] font-medium text-white/70">{t("onboarding.model.yourProviders")}</h2>
+              <p className="text-[13px] text-white/55 mt-0.5">{t("onboarding.model.yourProvidersHint")}</p>
             </div>
             <div className="flex-1 overflow-y-auto px-6">
               <div className="space-y-2">
@@ -313,17 +322,17 @@ export function ModelSetupPage() {
                         >
                           <Settings
                             size={18}
-                            className={isActive ? "text-emerald-300" : "text-gray-300"}
+                            className={isActive ? "text-emerald-300" : "text-white/80"}
                           />
                         </div>
                         <div className="flex-1 min-w-0">
                           <h3
-                            className={`text-sm font-medium ${isActive ? "text-emerald-100" : "text-white"}`}
+                            className={`text-[15px] font-medium ${isActive ? "text-emerald-100" : "text-white"}`}
                           >
                             {provider.label}
                           </h3>
-                          <p className="text-xs text-gray-500 truncate">
-                            {getProviderDisplayName(provider.providerId)}
+                          <p className="text-[13px] text-white/55 truncate">
+                            {getProviderDisplayName(provider.providerId, t)}
                           </p>
                         </div>
                         <div
@@ -346,20 +355,22 @@ export function ModelSetupPage() {
           {/* Right Panel - Config */}
           <div className="w-100 shrink-0 p-8 overflow-y-auto">
             <div className="space-y-1 mb-6">
-              <h1 className="text-xl font-bold text-white">
-                {selectedProvider ? "Model Details" : "Set your default model"}
-              </h1>
-              <p className="text-sm text-gray-400 leading-relaxed">
+              <h1 className="text-[21px] font-bold text-white">
                 {selectedProvider
-                  ? "Define the API identifier and the label you'll see inside the app."
-                  : "Select a provider from the list to configure your model."}
+                  ? t("onboarding.model.modelDetails")
+                  : t("onboarding.model.setDefaultModel")}
+              </h1>
+              <p className="text-[15px] text-white/70 leading-relaxed">
+                {selectedProvider
+                  ? t("onboarding.model.modelDetailsDesc")
+                  : t("onboarding.model.setDefaultModelDescDesktop")}
               </p>
               <button
                 onClick={() => navigate("/onboarding/model-recommendations")}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-medium text-indigo-300 transition hover:border-indigo-400/50 hover:bg-indigo-400/20 active:scale-95"
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-[13px] font-medium text-indigo-300 transition hover:border-indigo-400/50 hover:bg-indigo-400/20 active:scale-95"
               >
                 <HelpCircle size={14} />
-                Which model should I use?
+                {t("onboarding.model.whichModel")}
               </button>
             </div>
 
@@ -367,7 +378,7 @@ export function ModelSetupPage() {
               configFormContent
             ) : (
               <div className="rounded-xl border border-dashed border-white/20 bg-white/5 p-6 text-center">
-                <p className="text-sm text-gray-500">Select a provider to configure</p>
+                <p className="text-[15px] text-white/55">{t("onboarding.common.selectAProvider")}</p>
               </div>
             )}
           </div>
@@ -389,27 +400,26 @@ export function ModelSetupPage() {
             <ArrowLeft size={16} />
           </button>
           <div className="text-center">
-            <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-gray-500">
-              Step 2 of 3
+            <p className="text-[11px] font-medium uppercase tracking-[0.25em] text-white/55">
+              {t("onboarding.stepIndicator", { current: 2, total: 3 })}
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">Model Setup</p>
+            <p className="text-[13px] text-white/70 mt-0.5">{t("onboarding.steps.model")}</p>
           </div>
           <div className="w-10" />
         </div>
 
         {/* Title */}
         <div className="text-center space-y-2 mb-6">
-          <h1 className="text-2xl font-bold text-white">Set your default model</h1>
-          <p className="text-sm text-gray-400 max-w-sm leading-relaxed">
-            Choose which provider and model name LettuceAI should use by default. You'll be able to
-            add more later.
+          <h1 className="text-[25px] font-bold text-white">{t("onboarding.model.setDefaultModel")}</h1>
+          <p className="text-[15px] text-white/70 max-w-sm leading-relaxed">
+            {t("onboarding.model.setDefaultModelDesc")}
           </p>
           <button
             onClick={() => navigate("/onboarding/model-recommendations")}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-xs font-medium text-indigo-300 transition hover:border-indigo-400/50 hover:bg-indigo-400/20 active:scale-95"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-400/30 bg-indigo-400/10 px-3 py-1.5 text-[13px] font-medium text-indigo-300 transition hover:border-indigo-400/50 hover:bg-indigo-400/20 active:scale-95"
           >
             <HelpCircle size={14} />
-            Which model should I use?
+            {t("onboarding.model.whichModel")}
           </button>
         </div>
 
@@ -429,12 +439,12 @@ export function ModelSetupPage() {
               >
                 <div className="flex items-center gap-3">
                   <div className="flex h-10 w-10 items-center justify-center rounded-lg border border-white/15 bg-white/8">
-                    <Settings size={16} className="text-gray-300" />
+                    <Settings size={16} className="text-white/80" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <h3 className="text-sm font-semibold text-white">{provider.label}</h3>
-                    <p className="text-xs text-gray-400 truncate">
-                      {getProviderDisplayName(provider.providerId)}
+                    <h3 className="text-[15px] font-semibold text-white">{provider.label}</h3>
+                    <p className="text-[13px] text-white/70 truncate">
+                      {getProviderDisplayName(provider.providerId, t)}
                     </p>
                   </div>
                   <div
@@ -457,9 +467,9 @@ export function ModelSetupPage() {
           className={`w-full max-w-sm transition-all duration-300 ${selectedProvider ? "opacity-100" : "opacity-0 pointer-events-none"}`}
         >
           <div className="text-center space-y-2 mb-6">
-            <h2 className="text-lg font-semibold text-white">Model Details</h2>
-            <p className="text-xs text-gray-400 leading-relaxed">
-              Define the API identifier and the label you'll see inside the app.
+            <h2 className="text-[19px] font-semibold text-white">{t("onboarding.model.modelDetails")}</h2>
+            <p className="text-[13px] text-white/70 leading-relaxed">
+              {t("onboarding.model.modelDetailsDesc")}
             </p>
           </div>
 
@@ -470,24 +480,27 @@ export function ModelSetupPage() {
   );
 }
 
-function getProviderDisplayName(providerId: string): string {
+function getProviderDisplayName(providerId: string, t: TFunction): string {
   switch (providerId) {
     case "chutes":
-      return "Chutes";
+      return t("onboarding.model.providerNames.chutes");
     case "intenserp":
-      return "IntenseRP Next";
+      return t("onboarding.model.providerNames.intenseRpNext");
     case "openai":
-      return "OpenAI";
+      return t("onboarding.model.providerNames.openai");
+    case "cerebras":
+      return t("onboarding.model.providerNames.cerebras");
     case "anthropic":
-      return "Anthropic";
+      return t("onboarding.model.providerNames.anthropic");
     case "openrouter":
       return "OpenRouter";
     case "pollinations":
       return "Pollinations";
+      return t("onboarding.model.providerNames.openrouter");
     case "openai-compatible":
-      return "OpenAI compatible";
+      return t("onboarding.model.providerNames.openaiCompatible");
     case "custom":
-      return "Custom endpoint";
+      return t("onboarding.model.providerNames.custom");
     default:
       return providerId;
   }

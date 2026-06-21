@@ -10,23 +10,30 @@ import {
   Edit2,
   Trash2,
   Sparkles,
+  Heart,
   TriangleAlert,
   Upload,
+  NotebookPen,
 } from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import type {
   AdvancedModelSettings,
   Character,
+  CompanionTimeOverride,
   Model,
   Persona,
   Session,
 } from "../../../core/storage/schemas";
-import { createDefaultAdvancedModelSettings } from "../../../core/storage/schemas";
+import {
+  CompanionSessionStateSchema,
+  createDefaultAdvancedModelSettings,
+} from "../../../core/storage/schemas";
 import {
   readSettings,
   saveCharacter,
   createSession,
+  getCharacter,
   listPersonas,
   getSessionMeta,
   saveSession,
@@ -46,11 +53,14 @@ import {
   sanitizeAdvancedModelSettings,
 } from "../../components/AdvancedModelSettingsForm";
 import { typography, radius, spacing, interactive, cn, colors } from "../../design-tokens";
-import { WindowControlButtons, useDragRegionProps, hasCustomWindowControls } from "../../components/App/TopNav";
 import { Routes, useNavigationManager } from "../../navigation";
 import { PersonaSelector } from "../group-chats/components/settings";
 import { storageBridge } from "../../../core/storage/files";
 import { ChatTemplateSelector } from "./components/ChatTemplateSelector";
+import { AuthorNoteBottomMenu } from "./components/AuthorNoteBottomMenu";
+import { CompanionScheduledNotesEditor } from "../characters/components/CompanionScheduledNotesEditor";
+import { CompanionTimeOverrideCard } from "./components/CompanionTimeOverrideCard";
+import { CalendarClock, Clock } from "lucide-react";
 import { useI18n } from "../../../core/i18n/context";
 import { isRenderableImageUrl } from "../../../core/utils/image";
 
@@ -265,16 +275,17 @@ export function ChatSettingsContent({
   character,
   mode = "page",
   onClose,
+  onOpenAuthorNote,
 }: {
   character: Character;
   mode?: "page" | "drawer";
   onClose?: () => void;
+  onOpenAuthorNote?: () => void;
 }) {
   const navigate = useNavigate();
   const { backOrReplace } = useNavigationManager();
   const { t } = useI18n();
   const { characterId } = useParams();
-  const dragRegionProps = useDragRegionProps();
   const [models, setModels] = useState<Model[]>([]);
   const [globalDefaultModelId, setGlobalDefaultModelId] = useState<string | null>(null);
   const [currentCharacter, setCurrentCharacter] = useState<Character>(character);
@@ -294,20 +305,17 @@ export function ChatSettingsContent({
     useState<AdvancedModelSettings | null>(null);
   const [showSessionAdvancedMenu, setShowSessionAdvancedMenu] = useState(false);
   const [showParameterSupport, setShowParameterSupport] = useState(false);
-  const [showChatpkgImportMenu, setShowChatpkgImportMenu] = useState(false);
+  const [showScheduledNotes, setShowScheduledNotes] = useState(false);
   const [sessionAdvancedDraft, setSessionAdvancedDraft] = useState<AdvancedModelSettings>(
     createDefaultAdvancedModelSettings(),
   );
   const [sessionOverrideEnabled, setSessionOverrideEnabled] = useState<boolean>(false);
   const [showPersonaActions, setShowPersonaActions] = useState(false);
   const [showTemplateSelector, setShowTemplateSelector] = useState(false);
+  const [showAuthorNoteMenu, setShowAuthorNoteMenu] = useState(false);
   const [selectedPersonaForActions, setSelectedPersonaForActions] = useState<Persona | null>(null);
   const [messageCount, setMessageCount] = useState<number>(0);
-  const [pendingChatpkgImport, setPendingChatpkgImport] = useState<{
-    path: string;
-    info: any;
-  } | null>(null);
-  const [importingChatpkg, setImportingChatpkg] = useState(false);
+  const [, setImportingChatpkg] = useState(false);
   const personaForAvatar = useMemo(() => {
     if (!currentSession) return null;
     if (currentSession.personaDisabled || currentSession.personaId === "") return null;
@@ -332,6 +340,21 @@ export function ChatSettingsContent({
       console.error("Failed to load models/settings:", error);
     }
   }, []);
+
+  const loadCharacter = useCallback(async () => {
+    if (!characterId) {
+      setCurrentCharacter(character);
+      return;
+    }
+
+    try {
+      const latestCharacter = (await getCharacter(characterId)) ?? character;
+      setCurrentCharacter(latestCharacter);
+    } catch (error) {
+      console.error("Failed to load latest character:", error);
+      setCurrentCharacter(character);
+    }
+  }, [character, characterId]);
 
   const loadPersonas = useCallback(async () => {
     const personaList = await listPersonas();
@@ -369,9 +392,10 @@ export function ChatSettingsContent({
 
   useEffect(() => {
     loadModels();
+    loadCharacter();
     loadPersonas();
     loadSession();
-  }, [loadModels, loadPersonas, loadSession]);
+  }, [loadCharacter, loadModels, loadPersonas, loadSession]);
 
   useEffect(() => {
     setCurrentCharacter(character);
@@ -417,11 +441,7 @@ export function ChatSettingsContent({
     }
 
     try {
-      const session = await createSession(
-        characterId,
-        "New Chat",
-        currentCharacter.defaultSceneId ?? currentCharacter.scenes?.[0]?.id,
-      );
+      const session = await createSession(characterId, "New Chat");
       navigate(`/chat/${characterId}?sessionId=${session.id}`, { replace: true });
     } catch (error) {
       console.error("Failed to create new chat:", error);
@@ -432,15 +452,7 @@ export function ChatSettingsContent({
     if (!characterId || !currentCharacter) return;
     setShowTemplateSelector(false);
     try {
-      const sceneId = templateId
-        ? undefined
-        : (currentCharacter.defaultSceneId ?? currentCharacter.scenes?.[0]?.id);
-      const session = await createSession(
-        characterId,
-        "New Chat",
-        sceneId,
-        templateId ?? undefined,
-      );
+      const session = await createSession(characterId, "New Chat", undefined, templateId ?? undefined);
       navigate(`/chat/${characterId}?sessionId=${session.id}`, { replace: true });
     } catch (error) {
       console.error("Failed to create new chat:", error);
@@ -569,6 +581,69 @@ export function ChatSettingsContent({
     }
   }, [currentSession]);
 
+  const companionTimeAwarenessEnabled = useMemo(() => {
+    return currentSession?.companionState?.preferences?.timeAwarenessEnabled ?? false;
+  }, [currentSession?.companionState?.preferences?.timeAwarenessEnabled]);
+
+  const handleToggleCompanionTimeAwareness = useCallback(async () => {
+    if (!currentSession) {
+      return;
+    }
+
+    const nextCompanionState = CompanionSessionStateSchema.parse({
+      ...(currentSession.companionState ?? {}),
+      preferences: {
+        ...(currentSession.companionState?.preferences ?? {}),
+        timeAwarenessEnabled: !companionTimeAwarenessEnabled,
+      },
+      updatedAt: Date.now(),
+    });
+
+    const updatedSession: Session = {
+      ...currentSession,
+      companionState: nextCompanionState,
+      updatedAt: Date.now(),
+    };
+
+    try {
+      await saveSession(updatedSession);
+      setCurrentSession(updatedSession);
+    } catch (error) {
+      console.error("Failed to update companion time awareness:", error);
+    }
+  }, [companionTimeAwarenessEnabled, currentSession]);
+
+  const handleApplyCompanionTimeOverride = useCallback(
+    async (override: CompanionTimeOverride | null) => {
+      if (!currentSession) {
+        return;
+      }
+
+      const nextCompanionState = CompanionSessionStateSchema.parse({
+        ...(currentSession.companionState ?? {}),
+        preferences: {
+          ...(currentSession.companionState?.preferences ?? {}),
+          timeOverride: override ?? undefined,
+        },
+        updatedAt: Date.now(),
+      });
+
+      const updatedSession: Session = {
+        ...currentSession,
+        companionState: nextCompanionState,
+        updatedAt: Date.now(),
+      };
+
+      try {
+        await saveSession(updatedSession);
+        setCurrentSession(updatedSession);
+      } catch (error) {
+        console.error("Failed to update companion time override:", error);
+      }
+    },
+    [currentSession],
+  );
+
   const handleViewHistory = useCallback(() => {
     if (!characterId) return;
     const base = Routes.chatHistory(characterId);
@@ -579,44 +654,34 @@ export function ChatSettingsContent({
     navigate(base);
   }, [characterId, currentSession?.id, navigate]);
 
+  const handleOpenAuthorNote = useCallback(() => {
+    if (onOpenAuthorNote) {
+      onOpenAuthorNote();
+      return;
+    }
+    setShowAuthorNoteMenu(true);
+  }, [onOpenAuthorNote]);
+
   const handleOpenImportChatpkg = useCallback(async () => {
     if (!characterId) return;
     try {
-      const picked = await storageBridge.chatpkgPickFile();
+      const picked = await storageBridge.jsonlPickFile();
       if (!picked) return;
-      const info = await storageBridge.chatpkgInspect(picked.path);
-      if (info?.type !== "single_chat") {
-        alert("This package is not a single chat package.");
-        return;
-      }
-      setPendingChatpkgImport({ path: picked.path, info });
-      setShowChatpkgImportMenu(true);
-    } catch (error) {
-      console.error("Failed to inspect chat package:", error);
-      alert(typeof error === "string" ? error : "Failed to inspect chat package");
-    }
-  }, [characterId]);
-
-  const handleImportChatpkg = useCallback(async () => {
-    if (!characterId || !pendingChatpkgImport) return;
-    try {
       setImportingChatpkg(true);
-      const result = await storageBridge.chatpkgImport(pendingChatpkgImport.path, {
+      const result = await storageBridge.jsonlImport(picked.path, {
         targetCharacterId: characterId,
       });
-      setShowChatpkgImportMenu(false);
-      setPendingChatpkgImport(null);
       const importedSessionId = result?.sessionId;
       if (typeof importedSessionId === "string" && importedSessionId.length > 0) {
         navigate(Routes.chatSession(characterId, importedSessionId), { replace: true });
       }
     } catch (error) {
-      console.error("Failed to import chat package:", error);
-      alert(typeof error === "string" ? error : "Failed to import chat package");
+      console.error("Failed to import chat:", error);
+      alert(typeof error === "string" ? error : t("chats.settings.failedImportChat"));
     } finally {
       setImportingChatpkg(false);
     }
-  }, [characterId, navigate, pendingChatpkgImport]);
+  }, [characterId, navigate]);
 
   const avatarDisplay = useMemo(() => {
     if (avatarUrl && isImageLike(avatarUrl)) {
@@ -640,8 +705,8 @@ export function ChatSettingsContent({
   }, [currentCharacter, avatarUrl]);
 
   const advancedDefaultsLabel = useMemo(() => {
-    return currentModel?.advancedModelSettings ? "Model defaults" : "App defaults";
-  }, [currentModel?.advancedModelSettings]);
+    return currentModel?.advancedModelSettings ? t("chats.settings.modelDefaults") : t("chats.settings.appDefaults");
+  }, [currentModel?.advancedModelSettings, t]);
 
   const effectiveVoiceAutoplay = useMemo(() => {
     return currentSession?.voiceAutoplay ?? currentCharacter?.voiceAutoplay ?? false;
@@ -649,13 +714,15 @@ export function ChatSettingsContent({
 
   const sessionAdvancedSummary = useMemo(() => {
     if (!currentSession) {
-      return "Open a chat session first";
+      return t("chats.settings.openChatSessionFirst");
     }
     if (!sessionAdvancedSettings) {
-      return `${advancedDefaultsLabel}: ${formatAdvancedModelSettingsSummary(baseAdvancedSettings, "Default settings")}`;
+      return `${advancedDefaultsLabel}: ${formatAdvancedModelSettingsSummary(baseAdvancedSettings, t("chats.settings.defaultSettings"))}`;
     }
-    return `Overrides: ${formatAdvancedModelSettingsSummary(sessionAdvancedSettings, "Overrides active")}`;
-  }, [currentSession, sessionAdvancedSettings, baseAdvancedSettings, advancedDefaultsLabel]);
+    return t("chats.settings.overridesSummary", {
+      summary: formatAdvancedModelSettingsSummary(sessionAdvancedSettings, t("chats.settings.overridesActive")),
+    });
+  }, [currentSession, sessionAdvancedSettings, baseAdvancedSettings, advancedDefaultsLabel, t]);
 
   const sessionAdvancedOverrideCount = useMemo(() => {
     if (!currentSession || !sessionAdvancedSettings) return 0;
@@ -691,32 +758,32 @@ export function ChatSettingsContent({
   }, [currentCharacter?.memoryType]);
 
   const memorySummaryPreview = useMemo(() => {
-    if (!currentSession) return "Open a chat session to view memory";
+    if (!currentSession) return t("chats.settings.openChatSessionFirst");
     if (!isDynamic) {
       const memoryCount = currentSession.memories?.length ?? 0;
-      if (memoryCount > 0) return "Manual memories available for this session";
-      return "No memories yet — add manual memories from the Memories page";
+      if (memoryCount > 0) return t("chats.settings.manualMemoriesAvailable");
+      return t("chats.settings.noManualMemories");
     }
     const summary = (currentSession.memorySummary ?? "").trim();
     if (summary) return summary;
     const memoryCount =
       currentSession.memoryEmbeddings?.length ?? currentSession.memories?.length ?? 0;
-    if (memoryCount > 0) return "No summary yet — memories exist for this session";
-    return "No memories yet — open to add summary, tags, and history";
-  }, [currentSession, isDynamic]);
+    if (memoryCount > 0) return t("chats.settings.noSummaryYet");
+    return t("chats.settings.noMemoriesYet");
+  }, [currentSession, isDynamic, t]);
 
   const memoryMetaLine = useMemo(() => {
-    if (!currentSession) return "Session required";
+    if (!currentSession) return t("chats.settings.sessionRequired");
     const memoryCount =
       (isDynamic ? currentSession.memoryEmbeddings?.length : currentSession.memories?.length) ?? 0;
     const toolsCount = isDynamic ? (currentSession.memoryToolEvents?.length ?? 0) : 0;
     const tokenCount = isDynamic ? (currentSession.memorySummaryTokenCount ?? 0) : 0;
     const parts: string[] = [];
-    parts.push(`${memoryCount.toLocaleString()} items`);
-    if (toolsCount > 0) parts.push(`${toolsCount.toLocaleString()} tool events`);
-    if (tokenCount > 0) parts.push(`${tokenCount.toLocaleString()} summary tokens`);
+    parts.push(t("chats.settings.itemsCount", { count: memoryCount.toLocaleString() }));
+    if (toolsCount > 0) parts.push(t("chats.settings.toolEventsCount", { count: toolsCount.toLocaleString() }));
+    if (tokenCount > 0) parts.push(t("chats.settings.summaryTokensCount", { count: tokenCount.toLocaleString() }));
     return parts.join(" • ");
-  }, [currentSession, isDynamic]);
+  }, [currentSession, isDynamic, t]);
 
   const handleBack = () => {
     if (mode === "drawer" && onClose) {
@@ -733,19 +800,19 @@ export function ChatSettingsContent({
   };
 
   const getCurrentPersonaDisplay = () => {
-    if (!currentSession) return "Open a chat session first";
+    if (!currentSession) return t("chats.settings.openChatSessionFirst");
 
-    if (currentSession.personaDisabled || currentSession.personaId === "") return "No persona";
+    if (currentSession.personaDisabled || currentSession.personaId === "") return t("chats.settings.noPersona");
     const currentPersonaId = currentSession?.personaId;
     if (!currentPersonaId) {
       const defaultPersona = personas.find((p) => p.isDefault);
-      if (!defaultPersona) return "No persona";
+      if (!defaultPersona) return t("chats.settings.noPersona");
       return defaultPersona.nickname
-        ? `${defaultPersona.title} (${defaultPersona.nickname}) (default)`
-        : `${defaultPersona.title} (default)`;
+        ? `${defaultPersona.title} (${defaultPersona.nickname}) ${t("chats.settings.defaultSuffix")}`
+        : `${defaultPersona.title} ${t("chats.settings.defaultSuffix")}`;
     }
     const persona = personas.find((p) => p.id === currentPersonaId);
-    if (!persona) return "Custom persona";
+    if (!persona) return t("chats.settings.customPersona");
     return persona.nickname ? `${persona.title} (${persona.nickname})` : persona.title;
   };
 
@@ -758,14 +825,14 @@ export function ChatSettingsContent({
   }, [currentSession, personas]);
 
   const getModelDisplay = () => {
-    if (!currentModel) return "No model available";
-    return currentModel.displayName + (!currentCharacter?.defaultModelId ? " (app default)" : "");
+    if (!currentModel) return t("chats.settings.noModelAvailable");
+    return currentModel.displayName + (!currentCharacter?.defaultModelId ? ` ${t("chats.settings.appDefaultSuffix")}` : "");
   };
 
   const getFallbackModelDisplay = () => {
-    if (!selectedFallbackModelId) return "None";
+    if (!selectedFallbackModelId) return t("chats.settings.fallbackNone");
     const fallback = models.find((m) => m.id === selectedFallbackModelId);
-    return fallback?.displayName || fallback?.name || "Unknown model";
+    return fallback?.displayName || fallback?.name || t("chats.settings.unknownModel");
   };
 
   const isDrawer = mode === "drawer";
@@ -788,30 +855,28 @@ export function ChatSettingsContent({
         <header
           className={cn(
             "z-20 shrink-0 border-b border-fg/10 pl-3 lg:pl-8",
-            hasCustomWindowControls ? "pr-0" : "pr-3 lg:pr-8",
+            "pr-3 lg:pr-8",
             !backgroundImageData ? "bg-surface" : "",
           )}
           style={{
             paddingTop: "calc(env(safe-area-inset-top) + 12px)",
             paddingBottom: "12px",
           }}
-          {...dragRegionProps}
         >
-          <div className="flex h-10 items-center justify-between" {...dragRegionProps}>
+          <div className="flex h-10 items-center justify-between">
             <div className="flex items-center min-w-0">
               <button
                 onClick={handleBack}
                 className="flex shrink-0 items-center justify-center -ml-2 px-[0.6em] py-[0.3em] text-fg transition hover:text-fg/80"
-                aria-label="Back to chat"
+                aria-label={t("chats.settings.backToChat")}
               >
                 <ArrowLeft size={18} strokeWidth={2.5} />
               </button>
               <div className="min-w-0 text-left">
-                <p className="truncate text-xl font-bold text-fg/90">Chat Settings</p>
-                <p className="mt-0.5 truncate text-xs text-fg/50">Manage conversation preferences</p>
+                <p className="truncate text-xl font-bold text-fg/90">{t("chats.settings.chatSettingsTitle")}</p>
+                <p className="mt-0.5 truncate text-xs text-fg/50">{t("chats.settings.chatSettingsSubtitle")}</p>
               </div>
             </div>
-            <WindowControlButtons />
           </div>
         </header>
       )}
@@ -836,9 +901,9 @@ export function ChatSettingsContent({
                 </h3>
                 {currentSession ? (
                   <p className={cn(typography.caption.size, "text-fg/55 mt-1 truncate")}>
-                    Session: {currentSession.title || "Untitled"}
+                    {t("chats.settings.sessionTitle", { title: currentSession.title || t("chats.settings.sessionUntitled") })}
                     <span className="opacity-50 mx-1.5">•</span>
-                    {messageCount} messages
+                    {t("chats.settings.messageCount", { count: messageCount })}
                   </p>
                 ) : null}
                 {currentCharacter?.description || currentCharacter?.definition ? (
@@ -865,7 +930,11 @@ export function ChatSettingsContent({
               onClick={() => {
                 if (!characterId) return;
                 if (!currentSession) return;
-                navigate(Routes.chatMemories(characterId, currentSession.id));
+                navigate(
+                  currentCharacter?.mode === "companion"
+                    ? Routes.chatCompanionMemories(characterId, currentSession.id)
+                    : Routes.chatMemories(characterId, currentSession.id),
+                );
               }}
               disabled={!currentSession}
               className={cn(
@@ -900,7 +969,7 @@ export function ChatSettingsContent({
                         "text-fg/50",
                       )}
                     >
-                      Memory
+                      {t("chats.settings.memorySection")}
                     </div>
                     <div className={cn(typography.bodySmall.size, "text-fg truncate")}>
                       {memoryMetaLine}
@@ -947,6 +1016,20 @@ export function ChatSettingsContent({
                 onClick={() => setShowPersonaSelector(true)}
                 disabled={!currentSession}
               />
+              {currentCharacter?.mode === "companion" && characterId ? (
+                <QuickChip
+                  icon={<Heart className="h-4 w-4" />}
+                  label={t("chats.settings.soulLabel")}
+                  value={
+                    currentCharacter.companion?.soul?.essence?.trim()
+                      ? t("chats.settings.identityProfileAuthored")
+                      : t("chats.settings.addIdentityProfile")
+                  }
+                  onClick={() =>
+                    navigate(Routes.chatCompanionSoul(characterId, currentSession?.id))
+                  }
+                />
+              ) : null}
               <QuickChip
                 icon={<Cpu className="h-4 w-4" />}
                 label={t("chats.settings.model")}
@@ -968,6 +1051,86 @@ export function ChatSettingsContent({
             </div>
           </section>
 
+          {currentCharacter?.mode === "companion" && (
+            <section className={spacing.item}>
+              <SectionHeader
+                title={t("chats.settings.companionContext")}
+                subtitle={t("chats.settings.companionContextDesc")}
+              />
+              <div
+                className={cn(
+                  "flex items-start justify-between gap-3 rounded-xl border px-4 py-3",
+                  !currentSession
+                    ? "border-white/5 bg-[#0c0d13]/50 opacity-50 cursor-not-allowed"
+                    : "border-white/10 bg-[#0c0d13]/85",
+                )}
+              >
+                <div className="flex min-w-0 items-start gap-3">
+                  <div
+                    className={cn(
+                      "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border border-fg/15 bg-fg/10 text-fg/75",
+                      radius.full,
+                    )}
+                  >
+                    <Clock className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-white">{t("chats.settings.timeAwareness")}</p>
+                    <p className="mt-1 text-xs text-white/50">
+                      {currentSession
+                        ? t("chats.settings.timeAwarenessDesc")
+                        : t("chats.settings.openChatSessionFirst")}
+                    </p>
+                  </div>
+                </div>
+                <Switch
+                  id="companion-time-awareness"
+                  checked={companionTimeAwarenessEnabled}
+                  onChange={handleToggleCompanionTimeAwareness}
+                  disabled={!currentSession}
+                />
+              </div>
+
+              <CompanionTimeOverrideCard
+                session={currentSession ?? null}
+                onApply={handleApplyCompanionTimeOverride}
+                disabled={!currentSession}
+              />
+
+              {characterId ? (
+                <button
+                  type="button"
+                  onClick={() => setShowScheduledNotes(true)}
+                  className={cn(
+                    "group flex w-full items-center justify-between gap-3 border px-4 py-3 text-left",
+                    radius.lg,
+                    interactive.transition.default,
+                    interactive.active.scale,
+                    "border-white/10 bg-[#0c0d13]/85 hover:border-white/20 hover:bg-[#0c0d13]",
+                  )}
+                >
+                  <div className="flex min-w-0 items-start gap-3">
+                    <div
+                      className={cn(
+                        "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center border border-fg/15 bg-fg/10 text-fg/75",
+                        radius.full,
+                      )}
+                    >
+                      <CalendarClock className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-white">{t("chats.settings.scheduledNotes")}</p>
+                      <p className="mt-1 text-xs text-white/50">
+                        {t("chats.settings.scheduledNotesDesc")}
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-fg/40 transition-colors group-hover:text-fg/80" />
+                </button>
+              ) : null}
+            </section>
+          )}
+
           {/* Voice */}
           {currentCharacter?.voiceConfig && (
             <section className={spacing.item}>
@@ -984,13 +1147,13 @@ export function ChatSettingsContent({
                 )}
               >
                 <div>
-                  <p className="text-sm font-semibold text-white">Autoplay voice</p>
+                  <p className="text-sm font-semibold text-white">{t("chats.settings.autoplayVoice")}</p>
                   <p className="mt-1 text-xs text-white/50">
                     {currentSession
                       ? currentSession.voiceAutoplay == null
-                        ? "Using character default"
-                        : "Session override active"
-                      : "Open a chat session first"}
+                        ? t("chats.settings.usingCharacterDefault")
+                        : t("chats.settings.sessionOverrideActive")
+                      : t("chats.settings.openChatSessionFirst")}
                   </p>
                 </div>
                 <Switch
@@ -1006,7 +1169,7 @@ export function ChatSettingsContent({
                   onClick={handleResetSessionVoiceAutoplay}
                   className="mt-2 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs text-white/70 transition hover:border-white/20 hover:bg-white/10"
                 >
-                  Use character default
+                  {t("chats.settings.useCharacterDefault")}
                 </button>
               )}
             </section>
@@ -1059,7 +1222,7 @@ export function ChatSettingsContent({
                         "text-fg/50 truncate",
                       )}
                     >
-                      Advanced Settings
+                      {t("chats.settings.advancedSettingsLabel")}
                     </div>
                     {currentSession ? (
                       <span
@@ -1075,8 +1238,10 @@ export function ChatSettingsContent({
                         )}
                       >
                         {sessionAdvancedSettings
-                          ? `Overrides${sessionAdvancedOverrideCount ? ` (${sessionAdvancedOverrideCount})` : ""}`
-                          : "Defaults"}
+                          ? sessionAdvancedOverrideCount
+                            ? t("chats.settings.overridesCount", { count: sessionAdvancedOverrideCount })
+                            : t("chats.settings.overrides")
+                          : t("chats.settings.defaults")}
                       </span>
                     ) : null}
                   </div>
@@ -1096,6 +1261,17 @@ export function ChatSettingsContent({
               subtitle={t("chats.settings.sessionDesc")}
             />
             <div className={spacing.field}>
+              <SettingsButton
+                icon={<NotebookPen className="h-4 w-4" />}
+                title={t("chats.settings.authorNote")}
+                subtitle={
+                  currentSession?.authorNote?.trim()
+                    ? t("chats.settings.authorNoteActive")
+                    : t("chats.settings.authorNoteInactive")
+                }
+                onClick={handleOpenAuthorNote}
+                disabled={!currentSession}
+              />
               <SettingsButton
                 icon={<MessageSquarePlus className="h-4 w-4" />}
                 title={t("chats.settings.newChat")}
@@ -1134,6 +1310,13 @@ export function ChatSettingsContent({
         }}
       />
 
+      <AuthorNoteBottomMenu
+        isOpen={showAuthorNoteMenu}
+        onClose={() => setShowAuthorNoteMenu(false)}
+        session={currentSession}
+        onSaved={setCurrentSession}
+      />
+
       {/* Model Selection */}
       <ModelSelectionBottomMenu
         isOpen={showModelSelector}
@@ -1153,7 +1336,7 @@ export function ChatSettingsContent({
               ? [selectedModelId]
               : []
         }
-        searchPlaceholder="Search models..."
+        searchPlaceholder={t("chats.settings.searchModels")}
         theme="dark"
         tone="emerald"
         includeExitIcon={false}
@@ -1168,7 +1351,9 @@ export function ChatSettingsContent({
         }}
         clearOption={{
           label:
-            modelSelectorTarget === "fallback" ? "No fallback model" : "Use global default model",
+            modelSelectorTarget === "fallback"
+              ? t("chats.settings.noFallbackModel")
+              : t("chats.settings.useGlobalDefaultModel"),
           icon: Cpu,
           selected:
             modelSelectorTarget === "fallback" ? !selectedFallbackModelId : !selectedModelId,
@@ -1203,7 +1388,7 @@ export function ChatSettingsContent({
               <div className="flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-white/10">
                 <Edit2 className="h-4 w-4 text-white/70" />
               </div>
-              <span className="text-sm font-medium text-white">Edit Persona</span>
+              <span className="text-sm font-medium text-white">{t("common.buttons.edit")}</span>
             </button>
 
             <button
@@ -1223,7 +1408,7 @@ export function ChatSettingsContent({
               <div className="flex h-8 w-8 items-center justify-center rounded-full border border-red-500/30 bg-red-500/20">
                 <Trash2 className="h-4 w-4 text-red-400" />
               </div>
-              <span className="text-sm font-medium text-red-300">Delete Persona</span>
+              <span className="text-sm font-medium text-red-300">{t("common.buttons.delete")}</span>
             </button>
           </div>
         </MenuSection>
@@ -1247,52 +1432,9 @@ export function ChatSettingsContent({
 
       {/* Parameter Support */}
       <BottomMenu
-        isOpen={showChatpkgImportMenu}
-        onClose={() => {
-          if (importingChatpkg) return;
-          setShowChatpkgImportMenu(false);
-          setPendingChatpkgImport(null);
-        }}
-        title={t("chats.importChatPackage")}
-      >
-        <MenuSection>
-          <div className="space-y-4">
-            <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/70">
-              Format:{" "}
-              {pendingChatpkgImport?.info?.source?.format === "sillytavern"
-                ? "SillyTavern format (.jsonl)"
-                : "Chat package / JSONL"}
-            </div>
-            <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
-              {pendingChatpkgImport?.info?.characterId ? (
-                pendingChatpkgImport.info.characterId === characterId ? (
-                  <p>{t("chats.characterSpecificMatches")}</p>
-                ) : (
-                  <p>{t("chats.characterSpecificMismatch", { name: currentCharacter.name })}</p>
-                )
-              ) : (
-                <p>{t("chats.nonCharacterSpecificImport", { name: currentCharacter.name })}</p>
-              )}
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                void handleImportChatpkg();
-              }}
-              disabled={importingChatpkg}
-              className="w-full rounded-xl border border-emerald-500/30 bg-emerald-500/20 py-3 text-sm font-medium text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-50"
-            >
-              {importingChatpkg ? t("common.buttons.importing") : t("common.buttons.import")}
-            </button>
-          </div>
-        </MenuSection>
-      </BottomMenu>
-
-      {/* Parameter Support */}
-      <BottomMenu
         isOpen={showParameterSupport}
         onClose={() => setShowParameterSupport(false)}
-        title="Parameter Support"
+        title={t("chats.settings.parameterSupport")}
         includeExitIcon={true}
         location="bottom"
       >
@@ -1315,11 +1457,24 @@ export function ChatSettingsContent({
         defaultTemplateId={currentCharacter.defaultChatTemplateId}
         onSelect={handleTemplateSelected}
       />
+
+      {characterId ? (
+        <BottomMenu
+          isOpen={showScheduledNotes}
+          onClose={() => setShowScheduledNotes(false)}
+          title={t("chats.settings.scheduledNotes")}
+        >
+          <MenuSection>
+            <CompanionScheduledNotesEditor characterId={characterId} />
+          </MenuSection>
+        </BottomMenu>
+      ) : null}
     </div>
   );
 }
 
 export function ChatSettingsPage() {
+  const { t } = useI18n();
   const { character, characterLoading } = useChatLayoutContext();
 
   if (characterLoading) {
@@ -1334,9 +1489,9 @@ export function ChatSettingsPage() {
     return (
       <div className="flex min-h-screen items-center justify-center bg-surface px-4">
         <div className="text-center">
-          <p className="text-lg text-white">Character not found</p>
+          <p className="text-lg text-white">{t("chats.chatPage.characterNotFound")}</p>
           <p className="mt-2 text-sm text-gray-400">
-            The character you&apos;re looking for doesn&apos;t exist.
+            {t("chats.chatPage.characterDoesntExist")}
           </p>
         </div>
       </div>

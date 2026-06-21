@@ -30,7 +30,7 @@ export function MemorySystemIntro() {
           enabled: false,
           summaryMessageInterval: 20,
           maxEntries: 50,
-          minSimilarityThreshold: 0.35,
+          minSimilarityThreshold: 0.32,
           hotMemoryTokenBudget: 2000,
           decayRate: 0.08,
           coldThreshold: 0.3,
@@ -101,18 +101,18 @@ export function MemorySystemIntro() {
                 "w-10 h-10 rounded-xl flex items-center justify-center border transition-colors duration-300",
                 selectedType === "dynamic"
                   ? "bg-emerald-500/20 border-emerald-500/30 text-emerald-400"
-                  : "bg-white/10 border-white/10 text-gray-400 group-hover:text-emerald-300",
+                  : "bg-white/10 border-white/10 text-white/70 group-hover:text-emerald-300",
               )}
             >
               <Brain size={20} />
             </div>
             <div>
-              <h3 className={cn("font-semibold text-white", compact ? "text-base" : "text-lg")}>
-                Dynamic Memory
+              <h3 className={cn("font-semibold text-white", compact ? "text-[17px]" : "text-[19px]")}>
+                {t("onboarding.memory.dynamicTitle")}
               </h3>
               <div className="flex items-center gap-1.5 mt-0.5 h-5">
-                <span className="text-[10px] uppercase tracking-wider font-medium text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
-                  Recommended
+                <span className="text-[11px] uppercase tracking-wider font-medium text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                  {t("onboarding.memory.recommended")}
                 </span>
               </div>
             </div>
@@ -131,32 +131,40 @@ export function MemorySystemIntro() {
 
         <p
           className={cn(
-            "text-gray-400 mb-4 leading-relaxed pl-13",
-            compact ? "text-xs" : "text-sm",
+            "text-white/70 mb-4 leading-relaxed pl-13",
+            compact ? "text-[13px]" : "text-[15px]",
           )}
         >
-          Uses a <b>local embedding model</b> to smartly manage context. This cuts token costs while
-          maintaining high quality, even in long chats.
+          {(() => {
+            const parts = t("onboarding.memory.dynamicDescription").split(/<0>|<\/0>/);
+            return (
+              <>
+                {parts[0]}
+                <b>{parts[1]}</b>
+                {parts[2]}
+              </>
+            );
+          })()}
         </p>
 
         <div
           className={cn("grid gap-2 pl-13", compact ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2")}
         >
-          <div className="flex items-center gap-2 text-xs text-gray-300">
+          <div className="flex items-center gap-2 text-[13px] text-white/80">
             <div className="w-1 h-1 rounded-full bg-emerald-500" />
-            Maintains quality in long chats
+            {t("onboarding.memory.dynamicFeatures.quality")}
           </div>
-          <div className="flex items-center gap-2 text-xs text-gray-300">
+          <div className="flex items-center gap-2 text-[13px] text-white/80">
             <div className="w-1 h-1 rounded-full bg-emerald-500" />
-            Reduces API costs significantly
+            {t("onboarding.memory.dynamicFeatures.cost")}
           </div>
-          <div className="flex items-center gap-2 text-xs text-gray-300">
+          <div className="flex items-center gap-2 text-[13px] text-white/80">
             <div className="w-1 h-1 rounded-full bg-emerald-500" />
-            Automatic context management
+            {t("onboarding.memory.dynamicFeatures.auto")}
           </div>
-          <div className="flex items-center gap-2 text-xs text-gray-300">
+          <div className="flex items-center gap-2 text-[13px] text-white/80">
             <div className="w-1 h-1 rounded-full bg-emerald-500" />
-            Zero configuration needed
+            {t("onboarding.memory.dynamicFeatures.zeroConfig")}
           </div>
         </div>
       </div>
@@ -190,17 +198,17 @@ export function MemorySystemIntro() {
                 "w-10 h-10 rounded-xl flex items-center justify-center border transition-colors duration-300",
                 selectedType === "manual"
                   ? "bg-blue-500/20 border-blue-500/30 text-blue-400"
-                  : "bg-white/10 border-white/10 text-gray-400 group-hover:text-blue-300",
+                  : "bg-white/10 border-white/10 text-white/70 group-hover:text-blue-300",
               )}
             >
               <Edit3 size={20} />
             </div>
             <div>
-              <h3 className={cn("font-semibold text-white", compact ? "text-base" : "text-lg")}>
-                Manual Memory
+              <h3 className={cn("font-semibold text-white", compact ? "text-[17px]" : "text-[19px]")}>
+                {t("onboarding.memory.manualTitle")}
               </h3>
-              <p className="text-xs text-gray-500 mt-0.5 h-5 flex items-center">
-                Classic experience
+              <p className="text-[13px] text-white/55 mt-0.5 h-5 flex items-center">
+                {t("onboarding.memory.manualBadge")}
               </p>
             </div>
           </div>
@@ -218,24 +226,23 @@ export function MemorySystemIntro() {
 
         <p
           className={cn(
-            "text-gray-400 mb-4 leading-relaxed pl-13",
-            compact ? "text-xs" : "text-sm",
+            "text-white/70 mb-4 leading-relaxed pl-13",
+            compact ? "text-[13px]" : "text-[15px]",
           )}
         >
-          You explicitly pin messages and edit the "World Info" or character definitions yourself.
-          Good for total control.
+          {t("onboarding.memory.manualDescription")}
         </p>
 
         <div
           className={cn("grid gap-2 pl-13", compact ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2")}
         >
-          <div className="flex items-center gap-2 text-xs text-gray-300">
+          <div className="flex items-center gap-2 text-[13px] text-white/80">
             <div className="w-1 h-1 rounded-full bg-blue-500" />
-            Total control over facts
+            {t("onboarding.memory.manualFeatures.control")}
           </div>
-          <div className="flex items-center gap-2 text-xs text-gray-300">
+          <div className="flex items-center gap-2 text-[13px] text-white/80">
             <div className="w-1 h-1 rounded-full bg-blue-500" />
-            Best for specific scenarios
+            {t("onboarding.memory.manualFeatures.scenarios")}
           </div>
         </div>
       </div>
@@ -247,22 +254,22 @@ export function MemorySystemIntro() {
       onClick={handleFinish}
       disabled={!selectedType || isProcessing}
       className={cn(
-        "w-full h-14 rounded-2xl font-bold text-lg transition-all duration-300 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 flex items-center justify-center gap-3 group relative overflow-hidden",
+        "w-full h-14 rounded-2xl font-bold text-[19px] transition-all duration-300 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 flex items-center justify-center gap-3 group relative overflow-hidden",
         selectedType === "dynamic"
           ? "bg-emerald-500 text-black shadow-[0_4px_20px_rgba(16,185,129,0.25)] hover:shadow-[0_4px_24px_rgba(16,185,129,0.4)] hover:bg-emerald-400"
           : selectedType === "manual"
             ? "bg-blue-500 text-black shadow-[0_4px_20px_rgba(59,130,246,0.25)] hover:shadow-[0_4px_24px_rgba(59,130,246,0.4)] hover:bg-blue-400"
-            : "bg-white/5 text-gray-500 border border-white/5",
+            : "bg-white/5 text-white/55 border border-white/5",
       )}
     >
       {isProcessing ? (
         <>
           <Loader size={20} className="animate-spin" />
-          <span>Setting up...</span>
+          <span>{t("onboarding.memory.settingUp")}</span>
         </>
       ) : (
         <>
-          <span>Finish Setup</span>
+          <span>{t("onboarding.memory.finishSetup")}</span>
           {selectedType && (
             <ArrowRight
               size={20}
@@ -290,12 +297,12 @@ export function MemorySystemIntro() {
             <p
               className={cn(
                 typography.caption.size,
-                "font-medium uppercase tracking-[0.25em] text-gray-500",
+                "font-medium uppercase tracking-[0.25em] text-white/55",
               )}
             >
-              Step 3 of 3
+              {t("onboarding.stepIndicator", { current: 3, total: 3 })}
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">Memory System</p>
+            <p className="text-[13px] text-white/70 mt-0.5">{t("onboarding.steps.memory")}</p>
           </div>
           <div className="w-11" />
         </div>
@@ -305,9 +312,9 @@ export function MemorySystemIntro() {
           <div className="w-full max-w-4xl">
             {/* Title */}
             <div className="text-center space-y-3 mb-10">
-              <h1 className="text-2xl font-bold text-white">{t("onboarding.steps.memory")}</h1>
-              <p className="text-sm text-gray-400 max-w-md mx-auto leading-relaxed">
-                How should your AI companions remember details about you and your conversations?
+              <h1 className="text-[25px] font-bold text-white">{t("onboarding.steps.memory")}</h1>
+              <p className="text-[15px] text-white/70 max-w-md mx-auto leading-relaxed">
+                {t("onboarding.memory.howRemember")}
               </p>
             </div>
 
@@ -358,12 +365,12 @@ export function MemorySystemIntro() {
             <p
               className={cn(
                 typography.caption.size,
-                "font-medium uppercase tracking-[0.25em] text-gray-500",
+                "font-medium uppercase tracking-[0.25em] text-white/55",
               )}
             >
-              Step 3 of 3
+              {t("onboarding.stepIndicator", { current: 3, total: 3 })}
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">Memory System</p>
+            <p className="text-[13px] text-white/70 mt-0.5">{t("onboarding.steps.memory")}</p>
           </div>
           <div className="w-10" />
         </div>
@@ -371,10 +378,10 @@ export function MemorySystemIntro() {
         {/* Title */}
         <div className="text-center space-y-3 mb-10">
           <h1 className={cn(typography.h3.size, typography.h3.weight, "text-white")}>
-            Choose your memory style
+            {t("onboarding.memory.chooseStyle")}
           </h1>
-          <p className="text-sm text-gray-400 max-w-xs mx-auto leading-relaxed">
-            How should your AI companions remember details about you and your conversations?
+          <p className="text-[15px] text-white/70 max-w-xs mx-auto leading-relaxed">
+            {t("onboarding.memory.howRemember")}
           </p>
         </div>
 

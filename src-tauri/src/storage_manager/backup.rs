@@ -18,7 +18,9 @@ use super::db::open_db;
 use super::legacy::storage_root;
 use crate::utils::log_info;
 #[cfg(target_os = "android")]
-use tauri_plugin_android_fs::{AndroidFs, AndroidFsExt};
+use tauri_plugin_android_fs::{
+    AndroidFs, AndroidFsExt, PrivateDir, PrivateStorage, PublicGeneralPurposeDir, PublicStorage,
+};
 #[cfg(target_os = "android")]
 use tauri_plugin_fs::FilePath;
 #[cfg(target_os = "android")]
@@ -59,18 +61,18 @@ fn open_backup_file(_app: &tauri::AppHandle, path: &str) -> Result<File, String>
     }
 }
 
-const BACKUP_VERSION: u32 = 2;
+pub const BACKUP_VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
-struct BackupManifest {
-    version: u32,
-    created_at: u64,
-    app_version: String,
-    encrypted: bool,
+pub struct BackupManifest {
+    pub version: u32,
+    pub created_at: u64,
+    pub app_version: String,
+    pub encrypted: bool,
     /// Salt used for key derivation (base64)
-    salt: Option<String>,
+    pub salt: Option<String>,
     /// Nonce used for encryption (base64)
-    nonce: Option<String>,
+    pub nonce: Option<String>,
 }
 
 /// Derive encryption key from password using BLAKE3
@@ -104,16 +106,55 @@ fn decrypt_data(data: &[u8], key: &[u8; 32], nonce: &[u8; 24]) -> Result<Vec<u8>
 }
 
 /// Get the downloads directory path
+#[cfg(not(target_os = "android"))]
 fn get_downloads_dir() -> Result<PathBuf, String> {
-    #[cfg(target_os = "android")]
-    {
-        Ok(PathBuf::from("/storage/emulated/0/Download"))
-    }
+    dirs::download_dir().ok_or_else(|| "Could not find Downloads directory".to_string())
+}
 
-    #[cfg(not(target_os = "android"))]
-    {
-        dirs::download_dir().ok_or_else(|| "Could not find Downloads directory".to_string())
+// Android cannot enumerate the public Downloads directory, so the app keeps an
+// index of the backups it has written (in app-private storage) to power the
+// in-app backup list.
+#[cfg(target_os = "android")]
+fn android_backup_index_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .android_fs()
+        .private_storage()
+        .resolve_path(PrivateDir::Data)
+        .map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to resolve private storage dir: {}", e),
+            )
+        })?;
+    Ok(dir.join("backup_index.json"))
+}
+
+#[cfg(target_os = "android")]
+fn android_read_backup_index(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
+    let path = android_backup_index_path(app)?;
+    if !path.exists() {
+        return Ok(Vec::new());
     }
+    let bytes = fs::read(&path).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    match serde_json::from_slice::<JsonValue>(&bytes) {
+        Ok(JsonValue::Array(items)) => Ok(items),
+        _ => Ok(Vec::new()),
+    }
+}
+
+#[cfg(target_os = "android")]
+fn android_write_backup_index(app: &tauri::AppHandle, entries: &[JsonValue]) -> Result<(), String> {
+    let path = android_backup_index_path(app)?;
+    if let Some(parent) = path.parent() {
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        }
+    }
+    let json = serde_json::to_vec(&JsonValue::Array(entries.to_vec()))
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    fs::write(&path, json).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
 fn archive_name_targets_media(name: &str) -> bool {
@@ -125,7 +166,7 @@ fn archive_name_targets_media(name: &str) -> bool {
         || normalized.starts_with("generated_images/")
 }
 
-fn require_encrypted_backup(manifest: &BackupManifest) -> Result<(), String> {
+pub fn require_encrypted_backup(manifest: &BackupManifest) -> Result<(), String> {
     if manifest.encrypted {
         Ok(())
     } else {
@@ -147,7 +188,7 @@ fn require_non_empty_password<'a>(
     Ok(password)
 }
 
-fn sanitize_media_archive_name(
+pub fn sanitize_media_archive_name(
     name: &str,
     strip_encryption_suffix: bool,
 ) -> Result<PathBuf, String> {
@@ -180,6 +221,19 @@ fn sanitize_media_archive_name(
     }
 
     Ok(path.to_path_buf())
+}
+
+fn parse_memory_session_kind(
+    raw: &str,
+) -> Result<crate::storage_manager::memory_embeddings::SessionKind, String> {
+    match raw {
+        "session" => Ok(crate::storage_manager::memory_embeddings::SessionKind::Session),
+        "group_session" => Ok(crate::storage_manager::memory_embeddings::SessionKind::GroupSession),
+        "companion_shared" => {
+            Ok(crate::storage_manager::memory_embeddings::SessionKind::CompanionShared)
+        }
+        other => Err(format!("Unknown memory_embeddings session_kind: {}", other)),
+    }
 }
 
 // ============================================================================
@@ -384,7 +438,7 @@ fn export_prompt_templates(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, Str
 fn export_personas(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
     let conn = open_db(app)?;
     let mut stmt = conn
-        .prepare("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, is_default, created_at, updated_at FROM personas")
+        .prepare("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, COALESCE(active_lorebook_ids, '[]'), is_default, created_at, updated_at FROM personas")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     let rows = stmt
@@ -400,9 +454,10 @@ fn export_personas(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
                 "avatar_crop_scale": r.get::<_, Option<f64>>(7)?,
                 "design_description": r.get::<_, Option<String>>(8)?,
                 "design_reference_image_ids": r.get::<_, Option<String>>(9)?,
-                "is_default": r.get::<_, i64>(10)? != 0,
-                "created_at": r.get::<_, i64>(11)?,
-                "updated_at": r.get::<_, i64>(12)?,
+                "active_lorebook_ids": r.get::<_, String>(10)?,
+                "is_default": r.get::<_, i64>(11)? != 0,
+                "created_at": r.get::<_, i64>(12)?,
+                "updated_at": r.get::<_, i64>(13)?,
             }))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -416,7 +471,7 @@ fn export_characters(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
 
     // Get all characters
     let mut stmt = conn
-        .prepare("SELECT id, name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, fallback_model_id, memory_type, prompt_template_id, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt, voice_config, voice_autoplay, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, chat_appearance, default_chat_template_id, created_at, updated_at FROM characters")
+        .prepare("SELECT id, name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, fallback_model_id, COALESCE(mode, 'roleplay'), companion, memory_type, COALESCE(active_lorebook_ids, '[]'), prompt_template_id, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt, voice_config, voice_autoplay, disable_avatar_gradient, COALESCE(avatar_gradient_source, 'base'), custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, chat_appearance, default_chat_template_id, created_at, updated_at FROM characters")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     let characters: Vec<(String, JsonValue)> = stmt
@@ -444,22 +499,26 @@ fn export_characters(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
                 "default_scene_id": r.get::<_, Option<String>>(18)?,
                 "default_model_id": r.get::<_, Option<String>>(19)?,
                 "fallback_model_id": r.get::<_, Option<String>>(20)?,
-                "memory_type": r.get::<_, String>(21)?,
-                "prompt_template_id": r.get::<_, Option<String>>(22)?,
-                "group_chat_prompt_template_id": r.get::<_, Option<String>>(23)?,
-                "group_chat_roleplay_prompt_template_id": r.get::<_, Option<String>>(24)?,
-                "system_prompt": r.get::<_, Option<String>>(25)?,
-                "voice_config": r.get::<_, Option<String>>(26)?,
-                "voice_autoplay": r.get::<_, Option<i64>>(27)?.unwrap_or(0) != 0,
-                "disable_avatar_gradient": r.get::<_, i64>(28)? != 0,
-                "custom_gradient_enabled": r.get::<_, i64>(29)? != 0,
-                "custom_gradient_colors": r.get::<_, Option<String>>(30)?,
-                "custom_text_color": r.get::<_, Option<String>>(31)?,
-                "custom_text_secondary": r.get::<_, Option<String>>(32)?,
-                "chat_appearance": r.get::<_, Option<String>>(33)?,
-                "default_chat_template_id": r.get::<_, Option<String>>(34)?,
-                "created_at": r.get::<_, i64>(35)?,
-                "updated_at": r.get::<_, i64>(36)?,
+                "mode": r.get::<_, String>(21)?,
+                "companion": r.get::<_, Option<String>>(22)?,
+                "memory_type": r.get::<_, String>(23)?,
+                "active_lorebook_ids": r.get::<_, String>(24)?,
+                "prompt_template_id": r.get::<_, Option<String>>(25)?,
+                "group_chat_prompt_template_id": r.get::<_, Option<String>>(26)?,
+                "group_chat_roleplay_prompt_template_id": r.get::<_, Option<String>>(27)?,
+                "system_prompt": r.get::<_, Option<String>>(28)?,
+                "voice_config": r.get::<_, Option<String>>(29)?,
+                "voice_autoplay": r.get::<_, Option<i64>>(30)?.unwrap_or(0) != 0,
+                "disable_avatar_gradient": r.get::<_, i64>(31)? != 0,
+                "avatar_gradient_source": r.get::<_, String>(32)?,
+                "custom_gradient_enabled": r.get::<_, i64>(33)? != 0,
+                "custom_gradient_colors": r.get::<_, Option<String>>(34)?,
+                "custom_text_color": r.get::<_, Option<String>>(35)?,
+                "custom_text_secondary": r.get::<_, Option<String>>(36)?,
+                "chat_appearance": r.get::<_, Option<String>>(37)?,
+                "default_chat_template_id": r.get::<_, Option<String>>(38)?,
+                "created_at": r.get::<_, i64>(39)?,
+                "updated_at": r.get::<_, i64>(40)?,
             });
             Ok((id, json))
         })
@@ -482,7 +541,7 @@ fn export_characters(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
 
         // Get scenes with variants
         let mut scenes_stmt = conn
-            .prepare("SELECT id, content, direction, created_at, selected_variant_id FROM scenes WHERE character_id = ?")
+            .prepare("SELECT id, content, direction, background_image_path, created_at, selected_variant_id FROM scenes WHERE character_id = ?")
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let scenes: Vec<JsonValue> = scenes_stmt
             .query_map([&char_id], |r| {
@@ -490,8 +549,9 @@ fn export_characters(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
                     "id": r.get::<_, String>(0)?,
                     "content": r.get::<_, String>(1)?,
                     "direction": r.get::<_, Option<String>>(2)?,
-                    "created_at": r.get::<_, i64>(3)?,
-                    "selected_variant_id": r.get::<_, Option<String>>(4)?,
+                    "background_image_path": r.get::<_, Option<String>>(3)?,
+                    "created_at": r.get::<_, i64>(4)?,
+                    "selected_variant_id": r.get::<_, Option<String>>(5)?,
                 }))
             })
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
@@ -530,18 +590,112 @@ fn export_characters(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
     Ok(result)
 }
 
+fn export_companion_scheduled_notes(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
+    let conn = open_db(app)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, character_id, label, content, available_at, expires_at, recurrence,
+                   recurrence_window_ms, enabled, created_at, updated_at
+            FROM companion_scheduled_notes
+            ORDER BY character_id ASC, available_at ASC, id ASC
+            "#,
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, String>(0)?,
+                "character_id": r.get::<_, String>(1)?,
+                "label": r.get::<_, String>(2)?,
+                "content": r.get::<_, String>(3)?,
+                "available_at": r.get::<_, i64>(4)?,
+                "expires_at": r.get::<_, Option<i64>>(5)?,
+                "recurrence": r.get::<_, String>(6)?,
+                "recurrence_window_ms": r.get::<_, Option<i64>>(7)?,
+                "enabled": r.get::<_, i64>(8)? != 0,
+                "created_at": r.get::<_, i64>(9)?,
+                "updated_at": r.get::<_, i64>(10)?,
+            }))
+        })
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+fn export_companion_shared_memory(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
+    let conn = open_db(app)?;
+    let mut rows = crate::storage_manager::companion_shared_memory::export_all(app)?;
+    for item in &mut rows {
+        let Some(character_id) = item.get("character_id").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let embeddings = crate::storage_manager::memory_embeddings::canonical_json_for_session(
+            &conn,
+            character_id,
+            crate::storage_manager::memory_embeddings::SessionKind::CompanionShared,
+            Some("[]"),
+        )?;
+        if let Some(obj) = item.as_object_mut() {
+            obj.insert(
+                "memory_embeddings".to_string(),
+                JsonValue::String(embeddings),
+            );
+        }
+    }
+    Ok(rows)
+}
+
+fn export_memory_embeddings(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
+    let conn = open_db(app)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT session_id, session_kind
+             FROM memory_embeddings
+             ORDER BY session_kind ASC, session_id ASC",
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let owners: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let mut result = Vec::with_capacity(owners.len());
+    for (session_id, session_kind) in owners {
+        let kind = parse_memory_session_kind(&session_kind)?;
+        let memory_embeddings =
+            crate::storage_manager::memory_embeddings::canonical_json_for_session(
+                &conn,
+                &session_id,
+                kind,
+                Some("[]"),
+            )?;
+        result.push(serde_json::json!({
+            "session_id": session_id,
+            "session_kind": session_kind,
+            "memory_embeddings": memory_embeddings,
+        }));
+    }
+
+    Ok(result)
+}
+
 fn export_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
     let conn = open_db(app)?;
 
     // Get all sessions
     let mut stmt = conn
-        .prepare("SELECT id, character_id, title, background_image_path, system_prompt, selected_scene_id, persona_id, persona_disabled, voice_autoplay,
-                         prompt_template_id, temperature, top_p, max_output_tokens, frequency_penalty, presence_penalty, top_k,
-                         memories, memory_embeddings, memory_summary, memory_summary_token_count, memory_tool_events,
+        .prepare("SELECT id, character_id, title, background_image_path, system_prompt, mode, selected_scene_id, author_note, persona_id, persona_disabled, voice_autoplay,
+                         prompt_template_id, lorebook_ids_override, temperature, top_p, max_output_tokens, frequency_penalty, presence_penalty, top_k,
+                         companion_state, memories, memory_embeddings, memory_summary, memory_summary_token_count, memory_tool_events,
                          memory_status, memory_error, memory_progress_step, archived, created_at, updated_at FROM sessions")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
-    let sessions: Vec<(String, JsonValue)> = stmt
+    let mut sessions: Vec<(String, JsonValue)> = stmt
         .query_map([], |r| {
             let id: String = r.get(0)?;
             let json = serde_json::json!({
@@ -550,28 +704,32 @@ fn export_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
                 "title": r.get::<_, String>(2)?,
                 "background_image_path": r.get::<_, Option<String>>(3)?,
                 "system_prompt": r.get::<_, Option<String>>(4)?,
-                "selected_scene_id": r.get::<_, Option<String>>(5)?,
-                "persona_id": r.get::<_, Option<String>>(6)?,
-                "persona_disabled": r.get::<_, i64>(7)? != 0,
-                "voice_autoplay": r.get::<_, Option<i64>>(8)?.map(|value| value != 0),
-                "prompt_template_id": r.get::<_, Option<String>>(9)?,
-                "temperature": r.get::<_, Option<f64>>(10)?,
-                "top_p": r.get::<_, Option<f64>>(11)?,
-                "max_output_tokens": r.get::<_, Option<i64>>(12)?,
-                "frequency_penalty": r.get::<_, Option<f64>>(13)?,
-                "presence_penalty": r.get::<_, Option<f64>>(14)?,
-                "top_k": r.get::<_, Option<i64>>(15)?,
-                "memories": r.get::<_, String>(16)?,
-                "memory_embeddings": r.get::<_, String>(17)?,
-                "memory_summary": r.get::<_, Option<String>>(18)?,
-                "memory_summary_token_count": r.get::<_, i64>(19)?,
-                "memory_tool_events": r.get::<_, String>(20)?,
-                "memory_status": r.get::<_, Option<String>>(21)?,
-                "memory_error": r.get::<_, Option<String>>(22)?,
-                "memory_progress_step": r.get::<_, Option<i64>>(23)?,
-                "archived": r.get::<_, i64>(24)? != 0,
-                "created_at": r.get::<_, i64>(25)?,
-                "updated_at": r.get::<_, i64>(26)?,
+                "mode": r.get::<_, String>(5)?,
+                "selected_scene_id": r.get::<_, Option<String>>(6)?,
+                "author_note": r.get::<_, Option<String>>(7)?,
+                "persona_id": r.get::<_, Option<String>>(8)?,
+                "persona_disabled": r.get::<_, i64>(9)? != 0,
+                "voice_autoplay": r.get::<_, Option<i64>>(10)?.map(|value| value != 0),
+                "prompt_template_id": r.get::<_, Option<String>>(11)?,
+                "lorebook_ids_override": r.get::<_, Option<String>>(12)?,
+                "temperature": r.get::<_, Option<f64>>(13)?,
+                "top_p": r.get::<_, Option<f64>>(14)?,
+                "max_output_tokens": r.get::<_, Option<i64>>(15)?,
+                "frequency_penalty": r.get::<_, Option<f64>>(16)?,
+                "presence_penalty": r.get::<_, Option<f64>>(17)?,
+                "top_k": r.get::<_, Option<i64>>(18)?,
+                "companion_state": r.get::<_, Option<String>>(19)?,
+                "memories": r.get::<_, String>(20)?,
+                "memory_embeddings": r.get::<_, String>(21)?,
+                "memory_summary": r.get::<_, Option<String>>(22)?,
+                "memory_summary_token_count": r.get::<_, i64>(23)?,
+                "memory_tool_events": r.get::<_, String>(24)?,
+                "memory_status": r.get::<_, Option<String>>(25)?,
+                "memory_error": r.get::<_, Option<String>>(26)?,
+                "memory_progress_step": r.get::<_, Option<i64>>(27)?,
+                "archived": r.get::<_, i64>(28)? != 0,
+                "created_at": r.get::<_, i64>(29)?,
+                "updated_at": r.get::<_, i64>(30)?,
             });
             Ok((id, json))
         })
@@ -579,11 +737,33 @@ fn export_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
+    for (id, json) in sessions.iter_mut() {
+        let legacy_json = json
+            .get("memory_embeddings")
+            .and_then(|v| v.as_str())
+            .unwrap_or("[]");
+        if let Ok(serialized) =
+            crate::storage_manager::memory_embeddings::canonical_json_for_session(
+                &conn,
+                id,
+                crate::storage_manager::memory_embeddings::SessionKind::Session,
+                Some(legacy_json),
+            )
+        {
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert(
+                    "memory_embeddings".to_string(),
+                    JsonValue::String(serialized),
+                );
+            }
+        }
+    }
+
     // For each session, get messages
     let mut result = Vec::new();
     for (session_id, mut session_json) in sessions {
         let mut messages_stmt = conn
-            .prepare("SELECT id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens,
+            .prepare("SELECT id, role, content, created_at, visible_in_chat, scene_edited, prompt_tokens, completion_tokens, total_tokens,
                              selected_variant_id, is_pinned, memory_refs, used_lorebook_entries, attachments, reasoning FROM messages
                       WHERE session_id = ? ORDER BY created_at ASC")
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -596,15 +776,17 @@ fn export_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
                     "role": r.get::<_, String>(1)?,
                     "content": r.get::<_, String>(2)?,
                     "created_at": r.get::<_, i64>(3)?,
-                    "prompt_tokens": r.get::<_, Option<i64>>(4)?,
-                    "completion_tokens": r.get::<_, Option<i64>>(5)?,
-                    "total_tokens": r.get::<_, Option<i64>>(6)?,
-                    "selected_variant_id": r.get::<_, Option<String>>(7)?,
-                    "is_pinned": r.get::<_, i64>(8)? != 0,
-                    "memory_refs": r.get::<_, String>(9)?,
-                    "used_lorebook_entries": r.get::<_, String>(10)?,
-                    "attachments": r.get::<_, String>(11)?,
-                    "reasoning": r.get::<_, Option<String>>(12)?,
+                    "visible_in_chat": r.get::<_, i64>(4)? != 0,
+                    "scene_edited": r.get::<_, i64>(5)? != 0,
+                    "prompt_tokens": r.get::<_, Option<i64>>(6)?,
+                    "completion_tokens": r.get::<_, Option<i64>>(7)?,
+                    "total_tokens": r.get::<_, Option<i64>>(8)?,
+                    "selected_variant_id": r.get::<_, Option<String>>(9)?,
+                    "is_pinned": r.get::<_, i64>(10)? != 0,
+                    "memory_refs": r.get::<_, String>(11)?,
+                    "used_lorebook_entries": r.get::<_, String>(12)?,
+                    "attachments": r.get::<_, String>(13)?,
+                    "reasoning": r.get::<_, Option<String>>(14)?,
                 });
                 Ok((msg_id, json))
             })
@@ -660,7 +842,7 @@ fn export_group_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, Strin
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
-    let sessions: Vec<(String, JsonValue)> = stmt
+    let mut sessions: Vec<(String, JsonValue)> = stmt
         .query_map([], |r| {
             let id: String = r.get(0)?;
             let json = serde_json::json!({
@@ -694,6 +876,28 @@ fn export_group_sessions(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, Strin
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    for (id, json) in sessions.iter_mut() {
+        let legacy_json = json
+            .get("memory_embeddings")
+            .and_then(|v| v.as_str())
+            .unwrap_or("[]");
+        if let Ok(serialized) =
+            crate::storage_manager::memory_embeddings::canonical_json_for_session(
+                &conn,
+                id,
+                crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+                Some(legacy_json),
+            )
+        {
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert(
+                    "memory_embeddings".to_string(),
+                    JsonValue::String(serialized),
+                );
+            }
+        }
+    }
 
     let mut result = Vec::new();
     for (session_id, mut session_json) in sessions {
@@ -923,36 +1127,11 @@ fn export_lorebooks(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
     Ok(result)
 }
 
-fn export_character_lorebooks(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
-    let conn = open_db(app)?;
-
-    let mut stmt = conn
-        .prepare("SELECT character_id, lorebook_id, enabled, display_order, created_at, updated_at FROM character_lorebooks")
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-
-    let links: Vec<JsonValue> = stmt
-        .query_map([], |r| {
-            Ok(serde_json::json!({
-                "character_id": r.get::<_, String>(0)?,
-                "lorebook_id": r.get::<_, String>(1)?,
-                "enabled": r.get::<_, i64>(2)? != 0,
-                "display_order": r.get::<_, i64>(3)?,
-                "created_at": r.get::<_, i64>(4)?,
-                "updated_at": r.get::<_, i64>(5)?,
-            }))
-        })
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-
-    Ok(links)
-}
-
 fn export_chat_templates(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
     let conn = open_db(app)?;
     let mut stmt = conn
         .prepare(
-            "SELECT id, character_id, name, scene_id, prompt_template_id, created_at
+            "SELECT id, character_id, name, scene_id, prompt_template_id, lorebook_ids_override, created_at
              FROM chat_templates
              ORDER BY created_at ASC",
         )
@@ -969,7 +1148,8 @@ fn export_chat_templates(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, Strin
                     "name": r.get::<_, String>(2)?,
                     "scene_id": r.get::<_, Option<String>>(3)?,
                     "prompt_template_id": r.get::<_, Option<String>>(4)?,
-                    "created_at": r.get::<_, i64>(5)?,
+                    "lorebook_ids_override": r.get::<_, Option<String>>(5)?,
+                    "created_at": r.get::<_, i64>(6)?,
                 }),
             ))
         })
@@ -1098,6 +1278,64 @@ fn export_model_pricing_cache(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, 
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
+fn export_audio_providers(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
+    let conn = open_db(app)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, provider_type, label, api_key, project_id, location, base_url, request_path, kokoro_variant, asset_root, created_at, updated_at FROM audio_providers",
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, String>(0)?,
+                "provider_type": r.get::<_, String>(1)?,
+                "label": r.get::<_, String>(2)?,
+                "api_key": r.get::<_, Option<String>>(3)?,
+                "project_id": r.get::<_, Option<String>>(4)?,
+                "location": r.get::<_, Option<String>>(5)?,
+                "base_url": r.get::<_, Option<String>>(6)?,
+                "request_path": r.get::<_, Option<String>>(7)?,
+                "kokoro_variant": r.get::<_, Option<String>>(8)?,
+                "asset_root": r.get::<_, Option<String>>(9)?,
+                "created_at": r.get::<_, i64>(10)?,
+                "updated_at": r.get::<_, i64>(11)?,
+            }))
+        })
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+fn export_user_voices(app: &tauri::AppHandle) -> Result<Vec<JsonValue>, String> {
+    let conn = open_db(app)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, provider_id, name, model_id, voice_id, prompt, created_at, updated_at FROM user_voices",
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, String>(0)?,
+                "provider_id": r.get::<_, String>(1)?,
+                "name": r.get::<_, String>(2)?,
+                "model_id": r.get::<_, String>(3)?,
+                "voice_id": r.get::<_, String>(4)?,
+                "prompt": r.get::<_, Option<String>>(5)?,
+                "created_at": r.get::<_, i64>(6)?,
+                "updated_at": r.get::<_, i64>(7)?,
+            }))
+        })
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
 /// Export full app backup to a .lettuce file
 #[tauri::command]
 pub async fn backup_export(
@@ -1118,16 +1356,11 @@ pub async fn backup_export(
     // Generate timestamp for filename
     let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
     let filename = format!("lettuce_backup_{}.lettuce", timestamp);
-    let downloads = get_downloads_dir()?;
-    let output_path = downloads.join(&filename);
 
     log_info(
         &app,
         "backup",
-        format!(
-            "Starting backup export (v2 JSON format) to {:?}",
-            output_path
-        ),
+        format!("Starting backup export (v2 JSON format): {}", filename),
     );
 
     let password = require_non_empty_password(
@@ -1141,14 +1374,13 @@ pub async fn backup_export(
     let key = derive_key_from_password(password, &salt);
     let encryption = Some((salt, nonce, key));
 
-    // Create the zip file
-    let file = File::create(&output_path)
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-    let mut zip = ZipWriter::new(file);
+    // Build the zip in memory so the final bytes can be written through the
+    // platform-appropriate path (raw filesystem on desktop, MediaStore on Android)
+    let mut zip = ZipWriter::new(std::io::Cursor::new(Vec::<u8>::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
 
     // Helper to add JSON data to zip (with optional encryption)
-    let add_json_to_zip = |zip: &mut ZipWriter<File>,
+    let add_json_to_zip = |zip: &mut ZipWriter<std::io::Cursor<Vec<u8>>>,
                            name: &str,
                            data: &JsonValue,
                            enc: &Option<([u8; 16], [u8; 24], [u8; 32])>|
@@ -1192,6 +1424,24 @@ pub async fn backup_export(
     log_info(&app, "backup", "Exporting models...");
     let models = export_models(&app)?;
     add_json_to_zip(&mut zip, "models", &serde_json::json!(models), &encryption)?;
+
+    log_info(&app, "backup", "Exporting audio providers...");
+    let audio_providers = export_audio_providers(&app)?;
+    add_json_to_zip(
+        &mut zip,
+        "audio_providers",
+        &serde_json::json!(audio_providers),
+        &encryption,
+    )?;
+
+    log_info(&app, "backup", "Exporting user voices...");
+    let user_voices = export_user_voices(&app)?;
+    add_json_to_zip(
+        &mut zip,
+        "user_voices",
+        &serde_json::json!(user_voices),
+        &encryption,
+    )?;
 
     log_info(&app, "backup", "Exporting model pricing cache...");
     let pricing_cache = export_model_pricing_cache(&app)?;
@@ -1247,6 +1497,33 @@ pub async fn backup_export(
         &encryption,
     )?;
 
+    log_info(&app, "backup", "Exporting companion scheduled notes...");
+    let companion_scheduled_notes = export_companion_scheduled_notes(&app)?;
+    add_json_to_zip(
+        &mut zip,
+        "companion_scheduled_notes",
+        &serde_json::json!(companion_scheduled_notes),
+        &encryption,
+    )?;
+
+    log_info(&app, "backup", "Exporting companion shared memory...");
+    let companion_shared_memory = export_companion_shared_memory(&app)?;
+    add_json_to_zip(
+        &mut zip,
+        "companion_shared_memory",
+        &serde_json::json!(companion_shared_memory),
+        &encryption,
+    )?;
+
+    log_info(&app, "backup", "Exporting memory embeddings...");
+    let memory_embeddings = export_memory_embeddings(&app)?;
+    add_json_to_zip(
+        &mut zip,
+        "memory_embeddings",
+        &serde_json::json!(memory_embeddings),
+        &encryption,
+    )?;
+
     log_info(&app, "backup", "Exporting sessions...");
     let sessions = export_sessions(&app)?;
     add_json_to_zip(
@@ -1289,15 +1566,6 @@ pub async fn backup_export(
         &mut zip,
         "lorebooks",
         &serde_json::json!(lorebooks),
-        &encryption,
-    )?;
-
-    log_info(&app, "backup", "Exporting character-lorebook links...");
-    let char_lorebooks = export_character_lorebooks(&app)?;
-    add_json_to_zip(
-        &mut zip,
-        "character_lorebooks",
-        &serde_json::json!(char_lorebooks),
         &encryption,
     )?;
 
@@ -1404,16 +1672,65 @@ pub async fn backup_export(
     zip.write_all(manifest_json.as_bytes())
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
-    zip.finish()
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let buffer = zip
+        .finish()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+        .into_inner();
 
-    log_info(
-        &app,
-        "backup",
-        format!("Backup export complete: {:?}", output_path),
-    );
+    #[cfg(target_os = "android")]
+    {
+        let relative_path = format!("LettuceAI/{}", filename);
+        let saved = app
+            .android_fs()
+            .public_storage()
+            .write(
+                PublicGeneralPurposeDir::Download,
+                &relative_path,
+                Some("application/octet-stream"),
+                &buffer,
+            )
+            .map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to save backup to Downloads: {}", e),
+                )
+            })?;
 
-    Ok(output_path.to_string_lossy().to_string())
+        let saved_path = saved.to_string();
+        let mut info = backup_get_info_from_bytes(buffer.clone())?;
+        if let Some(obj) = info.as_object_mut() {
+            obj.insert("path".to_string(), JsonValue::String(saved_path.clone()));
+            obj.insert("filename".to_string(), JsonValue::String(filename.clone()));
+        }
+        let mut index = android_read_backup_index(&app).unwrap_or_default();
+        index.retain(|entry| entry.get("path").and_then(|p| p.as_str()) != Some(saved_path.as_str()));
+        index.push(info);
+        android_write_backup_index(&app, &index)?;
+
+        log_info(
+            &app,
+            "backup",
+            format!("Backup export complete: Download/{}", relative_path),
+        );
+
+        Ok(saved_path)
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let output_path = get_downloads_dir()?.join(&filename);
+        fs::write(&output_path, &buffer)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+        log_info(
+            &app,
+            "backup",
+            format!("Backup export complete: {:?}", output_path),
+        );
+
+        Ok(output_path.to_string_lossy().to_string())
+    }
 }
 
 /// Helper to add a directory recursively to zip (with optional encryption)
@@ -1540,7 +1857,7 @@ fn import_settings(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Strin
     Ok(())
 }
 
-fn disable_dynamic_memory_in_advanced_settings(settings: &mut serde_json::Value) {
+pub fn disable_dynamic_memory_in_advanced_settings(settings: &mut serde_json::Value) {
     let Some(obj) = settings.as_object_mut() else {
         *settings = serde_json::json!({
             "dynamicMemory": {
@@ -1616,7 +1933,7 @@ fn import_models(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String>
                     }
                 }
             }
-            if !scopes.iter().any(|s| s.eq_ignore_ascii_case("text")) {
+            if scopes.is_empty() {
                 scopes.push("text".to_string());
             }
             scopes.sort_by_key(|s| {
@@ -1761,8 +2078,8 @@ fn import_personas(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Strin
     if let Some(arr) = data.as_array() {
         for item in arr {
             conn.execute(
-                "INSERT INTO personas (id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, is_default, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                "INSERT INTO personas (id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, active_lorebook_ids, is_default, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     item.get("id").and_then(|v| v.as_str()),
                     item.get("title").and_then(|v| v.as_str()),
@@ -1774,6 +2091,7 @@ fn import_personas(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Strin
                     item.get("avatar_crop_scale").and_then(|v| v.as_f64()),
                     item.get("design_description").and_then(|v| v.as_str()),
                     item.get("design_reference_image_ids").and_then(|v| v.as_str()),
+                    item.get("active_lorebook_ids").and_then(|v| v.as_str()).unwrap_or("[]"),
                     item.get("is_default").and_then(|v| v.as_bool()).unwrap_or(false) as i64,
                     item.get("created_at").and_then(|v| v.as_i64()),
                     item.get("updated_at").and_then(|v| v.as_i64()),
@@ -1815,15 +2133,24 @@ fn import_characters(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Str
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
+            let companion_json = item.get("companion").and_then(|value| {
+                if value.is_null() {
+                    None
+                } else if let Some(raw) = value.as_str() {
+                    Some(raw.to_string())
+                } else {
+                    serde_json::to_string(value).ok()
+                }
+            });
 
             // Insert character
             conn.execute(
                 "INSERT INTO characters (id, name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, background_image_path, description, definition,
                  nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags,
-                 default_scene_id, default_model_id, fallback_model_id, memory_type, prompt_template_id, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt,
-                 voice_config, voice_autoplay, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors,
+                 default_scene_id, default_model_id, fallback_model_id, mode, companion, memory_type, active_lorebook_ids, prompt_template_id, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt,
+                 voice_config, voice_autoplay, disable_avatar_gradient, avatar_gradient_source, custom_gradient_enabled, custom_gradient_colors,
                  custom_text_color, custom_text_secondary, chat_appearance, default_chat_template_id, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41)",
                 params![
                     char_id,
                     item.get("name").and_then(|v| v.as_str()),
@@ -1849,7 +2176,12 @@ fn import_characters(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Str
                     item.get("default_scene_id").and_then(|v| v.as_str()),
                     item.get("default_model_id").and_then(|v| v.as_str()),
                     item.get("fallback_model_id").and_then(|v| v.as_str()),
+                    item.get("mode").and_then(|v| v.as_str()).unwrap_or("roleplay"),
+                    companion_json.as_deref(),
                     item.get("memory_type").and_then(|v| v.as_str()).unwrap_or("manual"),
+                    item.get("active_lorebook_ids")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("[]"),
                     item.get("prompt_template_id").and_then(|v| v.as_str()),
                     item.get("group_chat_prompt_template_id")
                         .and_then(|v| v.as_str()),
@@ -1862,6 +2194,7 @@ fn import_characters(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Str
                         .or_else(|| item.get("voice_autoplay").and_then(|v| v.as_bool()).map(|b| if b { 1 } else { 0 }))
                         .unwrap_or(0),
                     item.get("disable_avatar_gradient").and_then(|v| v.as_bool()).unwrap_or(false) as i64,
+                    item.get("avatar_gradient_source").and_then(|v| v.as_str()).unwrap_or("base"),
                     item.get("custom_gradient_enabled").and_then(|v| v.as_bool()).unwrap_or(false) as i64,
                     item.get("custom_gradient_colors").and_then(|v| v.as_str()),
                     item.get("custom_text_color").and_then(|v| v.as_str()),
@@ -1895,13 +2228,14 @@ fn import_characters(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Str
                     let scene_id = scene.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
                     conn.execute(
-                        "INSERT INTO scenes (id, character_id, content, direction, created_at, selected_variant_id)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                        "INSERT INTO scenes (id, character_id, content, direction, background_image_path, created_at, selected_variant_id)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                         params![
                             scene_id,
                             char_id,
                             scene.get("content").and_then(|v| v.as_str()),
                             scene.get("direction").and_then(|v| v.as_str()),
+                            scene.get("background_image_path").and_then(|v| v.as_str()),
                             scene.get("created_at").and_then(|v| v.as_i64()),
                             scene.get("selected_variant_id").and_then(|v| v.as_str()),
                         ],
@@ -1944,14 +2278,84 @@ fn import_characters(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Str
     Ok(())
 }
 
-fn import_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
+fn import_companion_scheduled_notes(
+    app: &tauri::AppHandle,
+    data: &JsonValue,
+) -> Result<(), String> {
     let conn = open_db(app)?;
+    conn.execute("DELETE FROM companion_scheduled_notes", [])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let mut note_count = 0usize;
+    if let Some(arr) = data.as_array() {
+        log_info(
+            app,
+            "backup",
+            format!("Importing {} companion scheduled notes...", arr.len()),
+        );
+
+        for item in arr {
+            conn.execute(
+                r#"
+                INSERT INTO companion_scheduled_notes (
+                    id, character_id, label, content, available_at, expires_at, recurrence,
+                    recurrence_window_ms, enabled, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "#,
+                params![
+                    item.get("id").and_then(|v| v.as_str()),
+                    item.get("character_id").and_then(|v| v.as_str()),
+                    item.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+                    item.get("content").and_then(|v| v.as_str()),
+                    item.get("available_at").and_then(|v| v.as_i64()),
+                    item.get("expires_at").and_then(|v| v.as_i64()),
+                    item.get("recurrence")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("none"),
+                    item.get("recurrence_window_ms").and_then(|v| v.as_i64()),
+                    item.get("enabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true) as i64,
+                    item.get("created_at").and_then(|v| v.as_i64()),
+                    item.get("updated_at").and_then(|v| v.as_i64()),
+                ],
+            )
+            .map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to insert companion scheduled note: {}", e),
+                )
+            })?;
+            note_count += 1;
+        }
+    }
+
+    log_info(
+        app,
+        "backup",
+        format!(
+            "Companion scheduled notes import complete: {} notes",
+            note_count
+        ),
+    );
+    Ok(())
+}
+
+fn import_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
+    let mut conn = open_db(app)?;
 
     // Delete in correct order due to foreign keys
     conn.execute("DELETE FROM message_variants", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     conn.execute("DELETE FROM messages", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "DELETE FROM memory_embeddings WHERE session_kind = 'session'",
+        [],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     conn.execute("DELETE FROM sessions", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
@@ -1984,32 +2388,36 @@ fn import_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Strin
                     });
 
             conn.execute(
-                "INSERT INTO sessions (id, character_id, title, background_image_path, system_prompt, selected_scene_id, persona_id, persona_disabled, voice_autoplay,
-                 prompt_template_id, temperature, top_p, max_output_tokens, frequency_penalty, presence_penalty, top_k,
+                "INSERT INTO sessions (id, character_id, title, background_image_path, system_prompt, mode, selected_scene_id, author_note, persona_id, persona_disabled, voice_autoplay,
+                 prompt_template_id, lorebook_ids_override, temperature, top_p, max_output_tokens, frequency_penalty, presence_penalty, top_k, companion_state,
                  memories, memory_embeddings, memory_summary, memory_summary_token_count, memory_tool_events,
                  memory_status, memory_error, memory_progress_step, archived, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
                 params![
                     session_id,
                     character_id,
                     item.get("title").and_then(|v| v.as_str()),
                     item.get("background_image_path").and_then(|v| v.as_str()),
                     item.get("system_prompt").and_then(|v| v.as_str()),
+                    item.get("mode").and_then(|v| v.as_str()).unwrap_or("roleplay"),
                     item.get("selected_scene_id").and_then(|v| v.as_str()),
+                    item.get("author_note").and_then(|v| v.as_str()),
                     item.get("persona_id").and_then(|v| v.as_str()),
                     item.get("persona_disabled")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false) as i64,
                     voice_autoplay,
                     item.get("prompt_template_id").and_then(|v| v.as_str()),
+                    item.get("lorebook_ids_override").and_then(|v| v.as_str()),
                     item.get("temperature").and_then(|v| v.as_f64()),
                     item.get("top_p").and_then(|v| v.as_f64()),
                     item.get("max_output_tokens").and_then(|v| v.as_i64()),
                     item.get("frequency_penalty").and_then(|v| v.as_f64()),
                     item.get("presence_penalty").and_then(|v| v.as_f64()),
                     item.get("top_k").and_then(|v| v.as_i64()),
+                    item.get("companion_state").and_then(|v| v.as_str()),
                     item.get("memories").and_then(|v| v.as_str()).unwrap_or("[]"),
-                    item.get("memory_embeddings").and_then(|v| v.as_str()).unwrap_or("[]"),
+                    "[]",
                     item.get("memory_summary").and_then(|v| v.as_str()),
                     item.get("memory_summary_token_count").and_then(|v| v.as_i64()).unwrap_or(0),
                     item.get("memory_tool_events").and_then(|v| v.as_str()).unwrap_or("[]"),
@@ -2021,6 +2429,12 @@ fn import_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Strin
                     item.get("updated_at").and_then(|v| v.as_i64()),
                 ],
             ).map_err(|e| crate::utils::err_msg(module_path!(), line!(), format!("Failed to insert session (character_id={}): {}", character_id, e)))?;
+            crate::storage_manager::memory_embeddings::replace_all_from_json(
+                &mut conn,
+                session_id,
+                crate::storage_manager::memory_embeddings::SessionKind::Session,
+                item.get("memory_embeddings").and_then(|v| v.as_str()),
+            )?;
             session_count += 1;
 
             // Insert messages
@@ -2029,15 +2443,17 @@ fn import_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Strin
                     let msg_id = msg.get("id").and_then(|v| v.as_str()).unwrap_or("");
 
                     conn.execute(
-                        "INSERT INTO messages (id, session_id, role, content, created_at, prompt_tokens,
+                        "INSERT INTO messages (id, session_id, role, content, created_at, visible_in_chat, scene_edited, prompt_tokens,
                          completion_tokens, total_tokens, selected_variant_id, is_pinned, memory_refs, used_lorebook_entries, attachments, reasoning)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                         params![
                             msg_id,
                             session_id,
                             msg.get("role").and_then(|v| v.as_str()),
                             msg.get("content").and_then(|v| v.as_str()),
                             msg.get("created_at").and_then(|v| v.as_i64()),
+                            msg.get("visible_in_chat").and_then(|v| v.as_bool()).unwrap_or(false) as i64,
+                            msg.get("scene_edited").and_then(|v| v.as_bool()).unwrap_or(false) as i64,
                             msg.get("prompt_tokens").and_then(|v| v.as_i64()),
                             msg.get("completion_tokens").and_then(|v| v.as_i64()),
                             msg.get("total_tokens").and_then(|v| v.as_i64()),
@@ -2098,8 +2514,102 @@ fn import_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Strin
     Ok(())
 }
 
+fn import_companion_shared_memory(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
+    let mut conn = open_db(app)?;
+    conn.execute("DELETE FROM companion_shared_memory_state", [])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "DELETE FROM memory_embeddings WHERE session_kind = 'companion_shared'",
+        [],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let Some(arr) = data.as_array() else {
+        return Ok(());
+    };
+
+    for item in arr {
+        conn.execute(
+            r#"
+            INSERT INTO companion_shared_memory_state (
+                character_id, memories, memory_summary, memory_summary_token_count,
+                memory_tool_events, memory_status, memory_error, memory_progress_step,
+                created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+            params![
+                item.get("character_id").and_then(|v| v.as_str()),
+                item.get("memories")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("[]"),
+                item.get("memory_summary").and_then(|v| v.as_str()),
+                item.get("memory_summary_token_count")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                item.get("memory_tool_events")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("[]"),
+                item.get("memory_status").and_then(|v| v.as_str()),
+                item.get("memory_error").and_then(|v| v.as_str()),
+                item.get("memory_progress_step").and_then(|v| v.as_i64()),
+                item.get("created_at").and_then(|v| v.as_i64()),
+                item.get("updated_at").and_then(|v| v.as_i64()),
+            ],
+        )
+        .map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to insert companion shared memory row: {}", e),
+            )
+        })?;
+
+        crate::storage_manager::memory_embeddings::replace_all_from_json(
+            &mut conn,
+            item.get("character_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default(),
+            crate::storage_manager::memory_embeddings::SessionKind::CompanionShared,
+            item.get("memory_embeddings").and_then(|v| v.as_str()),
+        )?;
+    }
+
+    Ok(())
+}
+
+fn import_memory_embeddings(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
+    let mut conn = open_db(app)?;
+    conn.execute("DELETE FROM memory_embeddings", [])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let Some(arr) = data.as_array() else {
+        return Ok(());
+    };
+
+    for item in arr {
+        let session_id = item
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "memory_embeddings row missing session_id".to_string())?;
+        let session_kind = item
+            .get("session_kind")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "memory_embeddings row missing session_kind".to_string())?;
+        let kind = parse_memory_session_kind(session_kind)?;
+        crate::storage_manager::memory_embeddings::replace_all_from_json(
+            &mut conn,
+            session_id,
+            kind,
+            item.get("memory_embeddings").and_then(|v| v.as_str()),
+        )?;
+    }
+
+    Ok(())
+}
+
 fn import_group_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
-    let conn = open_db(app)?;
+    let mut conn = open_db(app)?;
 
     conn.execute("DELETE FROM group_message_variants", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -2107,6 +2617,11 @@ fn import_group_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(),
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     conn.execute("DELETE FROM group_participation", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "DELETE FROM memory_embeddings WHERE session_kind = 'group_session'",
+        [],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     conn.execute("DELETE FROM group_sessions", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
@@ -2150,7 +2665,7 @@ fn import_group_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(),
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false) as i64,
                     item.get("memories").and_then(|v| v.as_str()).unwrap_or("[]"),
-                    item.get("memory_embeddings").and_then(|v| v.as_str()).unwrap_or("[]"),
+                    "[]",
                     item.get("memory_summary").and_then(|v| v.as_str()).unwrap_or(""),
                     item.get("memory_summary_token_count").and_then(|v| v.as_i64()).unwrap_or(0),
                     item.get("memory_tool_events").and_then(|v| v.as_str()).unwrap_or("[]"),
@@ -2166,6 +2681,12 @@ fn import_group_sessions(app: &tauri::AppHandle, data: &JsonValue) -> Result<(),
                 ],
             )
             .map_err(|e| crate::utils::err_msg(module_path!(), line!(), format!("Failed to insert group session {}: {}", session_id, e)))?;
+            crate::storage_manager::memory_embeddings::replace_all_from_json(
+                &mut conn,
+                session_id,
+                crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+                item.get("memory_embeddings").and_then(|v| v.as_str()),
+            )?;
             session_count += 1;
 
             if let Some(participants) = item.get("participation").and_then(|v| v.as_array()) {
@@ -2387,24 +2908,44 @@ fn import_lorebooks(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), Stri
 fn import_character_lorebooks(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
     let conn = open_db(app)?;
 
-    // Delete existing character-lorebook links
-    conn.execute("DELETE FROM character_lorebooks", [])
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-
     if let Some(arr) = data.as_array() {
+        let mut grouped: std::collections::BTreeMap<String, Vec<(i64, String)>> =
+            std::collections::BTreeMap::new();
         for item in arr {
+            let Some(character_id) = item.get("character_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let Some(lorebook_id) = item.get("lorebook_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if !item
+                .get("enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            grouped.entry(character_id.to_string()).or_default().push((
+                item.get("display_order")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                lorebook_id.to_string(),
+            ));
+        }
+
+        for (character_id, mut lorebook_items) in grouped {
+            lorebook_items.sort_by(|a, b| a.0.cmp(&b.0));
+            let lorebook_ids = lorebook_items
+                .into_iter()
+                .map(|(_, lorebook_id)| lorebook_id)
+                .collect::<Vec<_>>();
+            let lorebook_ids_json = serde_json::to_string(&lorebook_ids)
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
             conn.execute(
-                "INSERT INTO character_lorebooks (character_id, lorebook_id, enabled, display_order, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    item.get("character_id").and_then(|v| v.as_str()),
-                    item.get("lorebook_id").and_then(|v| v.as_str()),
-                    item.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true) as i64,
-                    item.get("display_order").and_then(|v| v.as_i64()).unwrap_or(0),
-                    item.get("created_at").and_then(|v| v.as_i64()),
-                    item.get("updated_at").and_then(|v| v.as_i64()),
-                ],
-            ).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+                "UPDATE characters SET active_lorebook_ids = ?1 WHERE id = ?2",
+                params![lorebook_ids_json, character_id],
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         }
     }
     Ok(())
@@ -2421,14 +2962,15 @@ fn import_chat_templates(app: &tauri::AppHandle, data: &JsonValue) -> Result<(),
         for item in arr {
             let template_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
             conn.execute(
-                "INSERT INTO chat_templates (id, character_id, name, scene_id, prompt_template_id, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO chat_templates (id, character_id, name, scene_id, prompt_template_id, lorebook_ids_override, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
                     template_id,
                     item.get("character_id").and_then(|v| v.as_str()),
                     item.get("name").and_then(|v| v.as_str()),
                     item.get("scene_id").and_then(|v| v.as_str()),
                     item.get("prompt_template_id").and_then(|v| v.as_str()),
+                    item.get("lorebook_ids_override").and_then(|v| v.as_str()),
                     item.get("created_at").and_then(|v| v.as_i64()),
                 ],
             )
@@ -2546,6 +3088,66 @@ fn import_model_pricing_cache(app: &tauri::AppHandle, data: &JsonValue) -> Resul
                     item.get("model_id").and_then(|v| v.as_str()),
                     item.get("pricing_json").and_then(|v| v.as_str()),
                     item.get("cached_at").and_then(|v| v.as_i64()),
+                ],
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn import_audio_providers(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute("DELETE FROM audio_providers", [])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    if let Some(arr) = data.as_array() {
+        for item in arr {
+            conn.execute(
+                "INSERT INTO audio_providers (id, provider_type, label, api_key, project_id, location, base_url, request_path, kokoro_variant, asset_root, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    item.get("id").and_then(|v| v.as_str()),
+                    item.get("provider_type").and_then(|v| v.as_str()),
+                    item.get("label").and_then(|v| v.as_str()),
+                    item.get("api_key").and_then(|v| v.as_str()),
+                    item.get("project_id").and_then(|v| v.as_str()),
+                    item.get("location").and_then(|v| v.as_str()),
+                    item.get("base_url").and_then(|v| v.as_str()),
+                    item.get("request_path").and_then(|v| v.as_str()),
+                    item.get("kokoro_variant").and_then(|v| v.as_str()),
+                    item.get("asset_root").and_then(|v| v.as_str()),
+                    item.get("created_at").and_then(|v| v.as_i64()),
+                    item.get("updated_at").and_then(|v| v.as_i64()),
+                ],
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn import_user_voices(app: &tauri::AppHandle, data: &JsonValue) -> Result<(), String> {
+    let conn = open_db(app)?;
+    conn.execute("DELETE FROM user_voices", [])
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    if let Some(arr) = data.as_array() {
+        for item in arr {
+            conn.execute(
+                "INSERT INTO user_voices (id, provider_id, name, model_id, voice_id, prompt, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    item.get("id").and_then(|v| v.as_str()),
+                    item.get("provider_id").and_then(|v| v.as_str()),
+                    item.get("name").and_then(|v| v.as_str()),
+                    item.get("model_id").and_then(|v| v.as_str()),
+                    item.get("voice_id").and_then(|v| v.as_str()),
+                    item.get("prompt").and_then(|v| v.as_str()),
+                    item.get("created_at").and_then(|v| v.as_i64()),
+                    item.get("updated_at").and_then(|v| v.as_i64()),
                 ],
             )
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -2908,6 +3510,13 @@ pub async fn backup_import(
         &encryption_params,
     )?;
     let models_data = read_backup_file(&mut archive, "data/models.json", &encryption_params)?;
+    let audio_providers_data = read_backup_file(
+        &mut archive,
+        "data/audio_providers.json",
+        &encryption_params,
+    )?;
+    let user_voices_data =
+        read_backup_file(&mut archive, "data/user_voices.json", &encryption_params)?;
     let model_pricing_cache_data = read_backup_file(
         &mut archive,
         "data/model_pricing_cache.json",
@@ -2924,6 +3533,21 @@ pub async fn backup_import(
     let personas_data = read_backup_file(&mut archive, "data/personas.json", &encryption_params)?;
     let characters_data =
         read_backup_file(&mut archive, "data/characters.json", &encryption_params)?;
+    let companion_scheduled_notes_data = read_backup_file(
+        &mut archive,
+        "data/companion_scheduled_notes.json",
+        &encryption_params,
+    )?;
+    let companion_shared_memory_data = read_backup_file(
+        &mut archive,
+        "data/companion_shared_memory.json",
+        &encryption_params,
+    )?;
+    let memory_embeddings_data = read_backup_file(
+        &mut archive,
+        "data/memory_embeddings.json",
+        &encryption_params,
+    )?;
     let sessions_data = read_backup_file(&mut archive, "data/sessions.json", &encryption_params)?;
     let creation_helper_sessions_data = read_backup_file(
         &mut archive,
@@ -3020,6 +3644,40 @@ pub async fn backup_import(
         log_info(&app, "backup", "No models data found");
     }
 
+    if let Some(data) = audio_providers_data {
+        log_info(&app, "backup", "Found audio_providers data");
+        let json_str = String::from_utf8(data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse audio_providers JSON: {}", e),
+            )
+        })?;
+        import_audio_providers(&app, &json_value)?;
+        log_info(&app, "backup", "Audio providers imported");
+    } else {
+        log_info(&app, "backup", "No audio_providers data found");
+    }
+
+    if let Some(data) = user_voices_data {
+        log_info(&app, "backup", "Found user_voices data");
+        let json_str = String::from_utf8(data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse user_voices JSON: {}", e),
+            )
+        })?;
+        import_user_voices(&app, &json_value)?;
+        log_info(&app, "backup", "User voices imported");
+    } else {
+        log_info(&app, "backup", "No user_voices data found");
+    }
+
     if let Some(data) = model_pricing_cache_data {
         log_info(&app, "backup", "Found model_pricing_cache data");
         let json_str = String::from_utf8(data)
@@ -3109,6 +3767,40 @@ pub async fn backup_import(
         log_info(&app, "backup", "No characters data found");
     }
 
+    if let Some(data) = companion_scheduled_notes_data {
+        log_info(&app, "backup", "Found companion_scheduled_notes data");
+        let json_str = String::from_utf8(data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse companion_scheduled_notes JSON: {}", e),
+            )
+        })?;
+        import_companion_scheduled_notes(&app, &json_value)?;
+        log_info(&app, "backup", "Companion scheduled notes imported");
+    } else {
+        log_info(&app, "backup", "No companion_scheduled_notes data found");
+    }
+
+    if let Some(data) = companion_shared_memory_data {
+        log_info(&app, "backup", "Found companion_shared_memory data");
+        let json_str = String::from_utf8(data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse companion_shared_memory JSON: {}", e),
+            )
+        })?;
+        import_companion_shared_memory(&app, &json_value)?;
+        log_info(&app, "backup", "Companion shared memory imported");
+    } else {
+        log_info(&app, "backup", "No companion_shared_memory data found");
+    }
+
     if let Some(data) = chat_templates_data {
         log_info(&app, "backup", "Found chat_templates data");
         let json_str = String::from_utf8(data)
@@ -3194,6 +3886,23 @@ pub async fn backup_import(
         log_info(&app, "backup", "Group sessions imported");
     } else {
         log_info(&app, "backup", "No group sessions data found");
+    }
+
+    if let Some(data) = memory_embeddings_data {
+        log_info(&app, "backup", "Found memory_embeddings data");
+        let json_str = String::from_utf8(data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse memory_embeddings JSON: {}", e),
+            )
+        })?;
+        import_memory_embeddings(&app, &json_value)?;
+        log_info(&app, "backup", "Memory embeddings imported");
+    } else {
+        log_info(&app, "backup", "No memory_embeddings data found");
     }
 
     // Usage records (depends on sessions)
@@ -3390,7 +4099,7 @@ pub async fn backup_import(
             log_info(
                 &app,
                 "backup",
-                &format!("Failed to delete temp backup file: {}", e),
+                format!("Failed to delete temp backup file: {}", e),
             );
         } else {
             log_info(&app, "backup", "Deleted temp backup file");
@@ -3429,81 +4138,27 @@ fn copy_dir_all(src: &PathBuf, dst: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{disable_dynamic_memory_in_advanced_settings, sanitize_media_archive_name};
-    use std::path::PathBuf;
-
-    #[test]
-    fn sanitize_media_archive_name_accepts_safe_paths() {
-        assert_eq!(
-            sanitize_media_archive_name("images/example.png", false).unwrap(),
-            PathBuf::from("images/example.png")
-        );
-        assert_eq!(
-            sanitize_media_archive_name("images/example.png.enc", true).unwrap(),
-            PathBuf::from("images/example.png")
-        );
-        assert_eq!(
-            sanitize_media_archive_name("avatars/character-1/", false).unwrap(),
-            PathBuf::from("avatars/character-1")
-        );
-    }
-
-    #[test]
-    fn sanitize_media_archive_name_rejects_traversal() {
-        assert!(sanitize_media_archive_name("images/../../tmp/pwned", false).is_err());
-        assert!(sanitize_media_archive_name("images\\..\\..\\tmp\\pwned", false).is_err());
-        assert!(sanitize_media_archive_name("/tmp/pwned", false).is_err());
-    }
-
-    #[test]
-    fn require_encrypted_backup_rejects_plaintext_archives() {
-        let manifest = super::BackupManifest {
-            version: super::BACKUP_VERSION,
-            created_at: 0,
-            app_version: "test".to_string(),
-            encrypted: false,
-            salt: None,
-            nonce: None,
-        };
-
-        assert!(super::require_encrypted_backup(&manifest).is_err());
-    }
-
-    #[test]
-    fn disable_dynamic_memory_preserves_imported_settings() {
-        let mut settings = serde_json::json!({
-            "dynamicMemory": {
-                "enabled": true,
-                "summaryMessageInterval": 42,
-                "maxEntries": 99,
-                "retrievalLimit": 7,
-                "contextEnrichmentEnabled": false
-            },
-            "groupDynamicMemory": {
-                "enabled": true,
-                "summaryMessageInterval": 11
-            }
-        });
-
-        disable_dynamic_memory_in_advanced_settings(&mut settings);
-
-        assert_eq!(
-            settings["dynamicMemory"]["enabled"],
-            serde_json::Value::Bool(false)
-        );
-        assert_eq!(settings["dynamicMemory"]["summaryMessageInterval"], 42);
-        assert_eq!(settings["dynamicMemory"]["maxEntries"], 99);
-        assert_eq!(settings["dynamicMemory"]["retrievalLimit"], 7);
-        assert_eq!(settings["dynamicMemory"]["contextEnrichmentEnabled"], false);
-        assert_eq!(settings["groupDynamicMemory"]["enabled"], true);
-    }
-}
-
 /// List available backups in downloads directory
 #[tauri::command]
 pub fn backup_list(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, String> {
+    #[cfg(target_os = "android")]
+    {
+        let mut backups = android_read_backup_index(&app)?;
+        backups.sort_by(|a, b| {
+            let a_time = a.get("createdAt").and_then(|v| v.as_u64()).unwrap_or(0);
+            let b_time = b.get("createdAt").and_then(|v| v.as_u64()).unwrap_or(0);
+            b_time.cmp(&a_time)
+        });
+        log_info(
+            &app,
+            "backup",
+            format!("Found {} backups in index", backups.len()),
+        );
+        return Ok(backups);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
     let downloads = get_downloads_dir()?;
     let mut backups = Vec::new();
 
@@ -3524,11 +4179,7 @@ pub fn backup_list(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, Stri
 
     let read_result = fs::read_dir(&downloads);
     match &read_result {
-        Ok(_) => log_info(
-            &app,
-            "backup",
-            "Successfully opened downloads directory".to_string(),
-        ),
+        Ok(_) => log_info(&app, "backup", "Successfully opened downloads directory"),
         Err(e) => log_info(
             &app,
             "backup",
@@ -3581,18 +4232,45 @@ pub fn backup_list(app: tauri::AppHandle) -> Result<Vec<serde_json::Value>, Stri
     });
 
     Ok(backups)
+    }
 }
 
 /// Delete a backup file
 #[tauri::command]
-pub fn backup_delete(backup_path: String) -> Result<(), String> {
-    fs::remove_file(&backup_path).map_err(|e| {
-        crate::utils::err_msg(
-            module_path!(),
-            line!(),
-            format!("Failed to delete backup: {}", e),
-        )
-    })
+pub fn backup_delete(app: tauri::AppHandle, backup_path: String) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        let url = Url::parse(&backup_path).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Invalid backup URI '{}': {}", backup_path, e),
+            )
+        })?;
+        if let Err(e) = app.android_fs().remove_file(&FilePath::Url(url)) {
+            log_info(
+                &app,
+                "backup",
+                format!("Could not remove backup file, pruning index anyway: {}", e),
+            );
+        }
+        let mut index = android_read_backup_index(&app)?;
+        index.retain(|entry| entry.get("path").and_then(|p| p.as_str()) != Some(backup_path.as_str()));
+        android_write_backup_index(&app, &index)?;
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = &app;
+        fs::remove_file(&backup_path).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to delete backup: {}", e),
+            )
+        })
+    }
 }
 
 /// Get backup info from bytes (for Android content URI support)
@@ -3933,6 +4611,10 @@ pub async fn backup_import_from_bytes(
     let provider_credentials_data =
         read_backup_file_bytes(&data, "data/provider_credentials.json", &encryption_params)?;
     let models_data = read_backup_file_bytes(&data, "data/models.json", &encryption_params)?;
+    let audio_providers_data =
+        read_backup_file_bytes(&data, "data/audio_providers.json", &encryption_params)?;
+    let user_voices_data =
+        read_backup_file_bytes(&data, "data/user_voices.json", &encryption_params)?;
     let model_pricing_cache_data =
         read_backup_file_bytes(&data, "data/model_pricing_cache.json", &encryption_params)?;
     let secrets_data = read_backup_file_bytes(&data, "data/secrets.json", &encryption_params)?;
@@ -3943,6 +4625,18 @@ pub async fn backup_import_from_bytes(
     let personas_data = read_backup_file_bytes(&data, "data/personas.json", &encryption_params)?;
     let characters_data =
         read_backup_file_bytes(&data, "data/characters.json", &encryption_params)?;
+    let companion_scheduled_notes_data = read_backup_file_bytes(
+        &data,
+        "data/companion_scheduled_notes.json",
+        &encryption_params,
+    )?;
+    let companion_shared_memory_data = read_backup_file_bytes(
+        &data,
+        "data/companion_shared_memory.json",
+        &encryption_params,
+    )?;
+    let memory_embeddings_data =
+        read_backup_file_bytes(&data, "data/memory_embeddings.json", &encryption_params)?;
     let sessions_data = read_backup_file_bytes(&data, "data/sessions.json", &encryption_params)?;
     let creation_helper_sessions_data = read_backup_file_bytes(
         &data,
@@ -4018,6 +4712,34 @@ pub async fn backup_import_from_bytes(
         log_info(&app, "backup", "Models imported");
     }
 
+    if let Some(file_data) = audio_providers_data {
+        let json_str = String::from_utf8(file_data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse audio_providers JSON: {}", e),
+            )
+        })?;
+        import_audio_providers(&app, &json_value)?;
+        log_info(&app, "backup", "Audio providers imported");
+    }
+
+    if let Some(file_data) = user_voices_data {
+        let json_str = String::from_utf8(file_data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse user_voices JSON: {}", e),
+            )
+        })?;
+        import_user_voices(&app, &json_value)?;
+        log_info(&app, "backup", "User voices imported");
+    }
+
     if let Some(file_data) = model_pricing_cache_data {
         let json_str = String::from_utf8(file_data)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -4088,6 +4810,34 @@ pub async fn backup_import_from_bytes(
         log_info(&app, "backup", "Characters imported");
     }
 
+    if let Some(file_data) = companion_scheduled_notes_data {
+        let json_str = String::from_utf8(file_data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse companion_scheduled_notes JSON: {}", e),
+            )
+        })?;
+        import_companion_scheduled_notes(&app, &json_value)?;
+        log_info(&app, "backup", "Companion scheduled notes imported");
+    }
+
+    if let Some(file_data) = companion_shared_memory_data {
+        let json_str = String::from_utf8(file_data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse companion_shared_memory JSON: {}", e),
+            )
+        })?;
+        import_companion_shared_memory(&app, &json_value)?;
+        log_info(&app, "backup", "Companion shared memory imported");
+    }
+
     if let Some(file_data) = chat_templates_data {
         let json_str = String::from_utf8(file_data)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -4156,6 +4906,20 @@ pub async fn backup_import_from_bytes(
         })?;
         import_group_sessions(&app, &json_value)?;
         log_info(&app, "backup", "Group sessions imported");
+    }
+
+    if let Some(file_data) = memory_embeddings_data {
+        let json_str = String::from_utf8(file_data)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let json_value: serde_json::Value = serde_json::from_str(&json_str).map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to parse memory_embeddings JSON: {}", e),
+            )
+        })?;
+        import_memory_embeddings(&app, &json_value)?;
+        log_info(&app, "backup", "Memory embeddings imported");
     }
 
     if let Some(file_data) = usage_records_data {
@@ -4467,7 +5231,7 @@ pub async fn backup_check_dynamic_memory(
         log_info(
             &app,
             "backup_check_dynamic_memory",
-            "Decrypting characters JSON...".to_string(),
+            "Decrypting characters JSON...",
         );
         decrypt_data(&json_data, &key, &nonce)?
     } else {
@@ -4528,7 +5292,7 @@ pub async fn backup_check_dynamic_memory_from_bytes(
     log_info(
         &app,
         "backup_check_dynamic_memory_from_bytes",
-        "Successfully opened archive".to_string(),
+        "Successfully opened archive",
     );
 
     // Read manifest to check if encrypted
@@ -4637,7 +5401,7 @@ pub async fn backup_check_dynamic_memory_from_bytes(
         log_info(
             &app,
             "backup_check_dynamic_memory_from_bytes",
-            "Decrypting characters JSON...".to_string(),
+            "Decrypting characters JSON...",
         );
         decrypt_data(&json_data, &key, &nonce)?
     } else {

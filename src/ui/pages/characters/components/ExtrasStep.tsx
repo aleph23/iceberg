@@ -2,6 +2,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { User, PenTool, Tag, FileText, Globe, AlertCircle } from "lucide-react";
 import { radius, interactive, typography, spacing, shadows, cn } from "../../../design-tokens";
 import { useI18n } from "../../../../core/i18n/context";
+import { ActiveLorebooksSelector } from "./ActiveLorebooksSelector";
 
 interface ExtrasStepProps {
   nickname: string;
@@ -14,6 +15,8 @@ interface ExtrasStepProps {
   onCreatorNotesMultilingualTextChange: (value: string) => void;
   tagsText: string;
   onTagsTextChange: (value: string) => void;
+  activeLorebookIds: string[];
+  onActiveLorebookIdsChange: (ids: string[]) => void;
   onSave: () => void;
   saving: boolean;
   error: string | null;
@@ -30,6 +33,8 @@ export function ExtrasStep({
   onCreatorNotesMultilingualTextChange,
   tagsText,
   onTagsTextChange,
+  activeLorebookIds,
+  onActiveLorebookIdsChange,
   onSave,
   saving,
   error,
@@ -222,7 +227,7 @@ export function ExtrasStep({
                 "uppercase text-fg/70",
               )}
             >
-              Multilingual Notes
+              {t("characters.extras.multilingualNotes")}
             </label>
           </div>
           <textarea
@@ -241,10 +246,16 @@ export function ExtrasStep({
             )}
           />
           <p className={cn(typography.bodySmall.size, "text-fg/40")}>
-            JSON object with language codes as keys
+            {t("characters.extras.multilingualNotesHint")}
           </p>
         </div>
       </div>
+
+      <ActiveLorebooksSelector
+        selectedIds={activeLorebookIds}
+        onChange={onActiveLorebookIdsChange}
+        disabled={saving}
+      />
 
       {/* Error Display */}
       <AnimatePresence>
@@ -287,7 +298,7 @@ export function ExtrasStep({
           {saving ? (
             <div className="flex items-center justify-center gap-2">
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-accent/30 border-t-accent/80" />
-              <span>Creating Character...</span>
+              <span>{t("characters.extras.creatingCharacter")}</span>
             </div>
           ) : (
             t("characters.identity.title")

@@ -34,7 +34,7 @@ type ToastActionOptions = {
   actionTone?: "neutral" | "accent";
   secondaryLabel?: string;
   onSecondary?: () => void;
-  secondaryTone?: "neutral" | "danger";
+  secondaryTone?: "neutral" | "danger" | "accent";
   id?: string | number;
   duration?: number | typeof Infinity;
 };
@@ -45,6 +45,7 @@ type ModelLoadToastOptions = {
   subtitle: string;
   modelName: string;
   progress: number;
+  progressLabel?: string;
   duration?: number | typeof Infinity;
 };
 
@@ -69,14 +70,14 @@ function showToast(
         {description && <div className={cn(descriptionClassName, "mt-0.5")}>{description}</div>}
       </div>
       {(options?.actionLabel || options?.secondaryLabel) && (
-        <div className="flex shrink-0 gap-1.5">
+        <div className="flex shrink-0 flex-col gap-1.5">
           {options?.actionLabel && (
             <button
               type="button"
               onPointerDown={(event) => event.stopPropagation()}
               onClick={handleAction(options.onAction)}
               className={cn(
-                "shrink-0 touch-manipulation rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                "w-full touch-manipulation rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
                 options?.actionTone === "accent"
                   ? "border border-accent/35 bg-accent/18 text-accent hover:bg-accent/24"
                   : "border border-fg/30 bg-fg/5 text-fg/70 hover:bg-fg/10 hover:text-fg",
@@ -91,10 +92,12 @@ function showToast(
               onPointerDown={(event) => event.stopPropagation()}
               onClick={handleAction(options.onSecondary)}
               className={cn(
-                "shrink-0 touch-manipulation rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
+                "w-full touch-manipulation rounded-lg px-3 py-1.5 text-xs font-medium transition-colors",
                 options?.secondaryTone === "neutral"
                   ? "border border-fg/30 bg-fg/5 text-fg/70 hover:bg-fg/10 hover:text-fg"
-                  : "border border-danger/30 bg-danger/10 text-danger hover:bg-danger/20",
+                  : options?.secondaryTone === "accent"
+                    ? "border border-accent/35 bg-accent/18 text-accent hover:bg-accent/24"
+                    : "border border-danger/30 bg-danger/10 text-danger hover:bg-danger/20",
               )}
             >
               {options.secondaryLabel}
@@ -132,7 +135,7 @@ function showModelLoadToast(options: ModelLoadToastOptions) {
           <span className="min-w-0 truncate">{options.modelName}</span>
         </div>
         <div className="mt-2 flex items-center justify-between gap-3 text-[11px] text-fg/60">
-          <span>Startup progress</span>
+          <span>{options.progressLabel ?? "Startup progress"}</span>
           <span className="shrink-0 font-medium tabular-nums text-fg/72">{percent}%</span>
         </div>
         <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-fg/10">
@@ -180,12 +183,16 @@ export const toast = {
     actionLabel: string,
     onAction: () => void,
     id?: string | number,
+    secondary?: { label: string; onAction: () => void },
   ) =>
     showToast("warning", title, description, {
       actionLabel,
       onAction,
       id,
       duration: Infinity,
+      secondaryLabel: secondary?.label,
+      onSecondary: secondary?.onAction,
+      secondaryTone: secondary ? "accent" : undefined,
     }),
   dismiss: (id: string | number) => sonnerToast.dismiss(id),
   isVisible: (id: string | number) =>

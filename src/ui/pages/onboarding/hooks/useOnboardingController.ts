@@ -62,7 +62,34 @@ export interface OnboardingController {
 
 export function useOnboardingController(): OnboardingController {
   const navigate = useNavigate();
-  const [state, dispatch] = useReducer(onboardingReducer, initialOnboardingState);
+  const [state, dispatch] = useReducer(onboardingReducer, initialOnboardingState, (init) => {
+    const path = typeof window !== "undefined" ? window.location.pathname : "/welcome";
+    const step =
+      path === "/welcome"
+        ? OnboardingStep.Welcome
+        : path === "/onboarding/sync"
+          ? OnboardingStep.Sync
+          : path === "/onboarding/models"
+            ? OnboardingStep.Model
+            : path === "/onboarding/memory"
+              ? OnboardingStep.Memory
+              : path === "/onboarding/provider"
+                ? OnboardingStep.Provider
+                : path === "/onboarding/start"
+                  ? OnboardingStep.Intro
+                  : path === "/onboarding/learn"
+                    ? OnboardingStep.Learn
+                    : path === "/onboarding/path"
+                      ? OnboardingStep.Path
+                      : path === "/onboarding/gemini"
+                        ? OnboardingStep.GeminiSetup
+                        : path === "/onboarding/openrouter"
+                          ? OnboardingStep.OpenRouterSetup
+                          : path === "/onboarding/finish"
+                            ? OnboardingStep.MemorySetup
+                            : init.step;
+    return { ...init, step };
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -139,12 +166,31 @@ export function useOnboardingController(): OnboardingController {
   const goBack = useCallback(() => {
     if (state.step === OnboardingStep.Memory) {
       dispatch({ type: "SET_STEP", payload: OnboardingStep.Model });
-      navigate("/onboarding/models");
+      window.history.replaceState(null, "", "/onboarding/models");
     } else if (state.step === OnboardingStep.Model) {
       dispatch({ type: "SET_STEP", payload: OnboardingStep.Provider });
-      navigate("/onboarding/provider");
+      window.history.replaceState(null, "", "/onboarding/provider");
+    } else if (state.step === OnboardingStep.GeminiSetup) {
+      dispatch({ type: "SET_STEP", payload: OnboardingStep.Path });
+      window.history.replaceState(null, "", "/onboarding/path");
+    } else if (state.step === OnboardingStep.OpenRouterSetup) {
+      dispatch({ type: "SET_STEP", payload: OnboardingStep.Path });
+      window.history.replaceState(null, "", "/onboarding/path");
+    } else if (state.step === OnboardingStep.Provider) {
+      dispatch({ type: "SET_STEP", payload: OnboardingStep.Path });
+      window.history.replaceState(null, "", "/onboarding/path");
+    } else if (state.step === OnboardingStep.Path) {
+      dispatch({ type: "SET_STEP", payload: OnboardingStep.Learn });
+      window.history.replaceState(null, "", "/onboarding/learn");
+    } else if (state.step === OnboardingStep.Learn) {
+      dispatch({ type: "SET_STEP", payload: OnboardingStep.Intro });
+      window.history.replaceState(null, "", "/onboarding/start");
+    } else if (state.step === OnboardingStep.Intro) {
+      dispatch({ type: "SET_STEP", payload: OnboardingStep.Welcome });
+      window.history.replaceState(null, "", "/welcome");
     } else {
-      navigate("/welcome");
+      dispatch({ type: "SET_STEP", payload: OnboardingStep.Welcome });
+      window.history.replaceState(null, "", "/welcome");
     }
   }, [state.step, navigate]);
 
@@ -278,7 +324,7 @@ export function useOnboardingController(): OnboardingController {
       const trimmedKey = apiKey.trim();
       const requiresVerification =
         !isLocalProvider &&
-        ["openai", "anthropic", "openrouter", "gemini", "lettuce-host"].includes(
+        ["openai", "cerebras", "anthropic", "openrouter", "gemini", "lettuce-host"].includes(
           selectedProviderId,
         );
 
@@ -349,7 +395,7 @@ export function useOnboardingController(): OnboardingController {
         },
       });
       dispatch({ type: "SET_STEP", payload: OnboardingStep.Model });
-      navigate("/onboarding/models");
+      window.history.replaceState(null, "", "/onboarding/models");
     } catch (error: any) {
       dispatch({
         type: "SET_TEST_RESULT",
@@ -386,7 +432,9 @@ export function useOnboardingController(): OnboardingController {
     dispatch({ type: "SET_MODEL_ERROR", payload: null });
 
     try {
-      const shouldVerify = ["openai", "anthropic"].includes(selectedCredential.providerId);
+      const shouldVerify = ["openai", "cerebras", "anthropic"].includes(
+        selectedCredential.providerId,
+      );
 
       if (shouldVerify) {
         const verification = await invoke<{ exists: boolean; error?: string }>(
@@ -418,10 +466,11 @@ export function useOnboardingController(): OnboardingController {
         outputScopes: ["text"],
       };
 
-      await addOrUpdateModel(model);
+      const savedModel = await addOrUpdateModel(model);
+      dispatch({ type: "SET_SAVED_MODEL_ID", payload: savedModel.id });
       await setModelSetupCompleted(true);
       dispatch({ type: "SET_STEP", payload: OnboardingStep.Memory });
-      navigate("/onboarding/memory");
+      window.history.replaceState(null, "", "/onboarding/memory");
     } catch (error: any) {
       dispatch({
         type: "SET_MODEL_ERROR",
@@ -434,8 +483,8 @@ export function useOnboardingController(): OnboardingController {
 
   const handleSkipModel = useCallback(() => {
     dispatch({ type: "SET_STEP", payload: OnboardingStep.Memory });
-    navigate("/onboarding/memory");
-  }, [navigate]);
+    window.history.replaceState(null, "", "/onboarding/memory");
+  }, []);
 
   const handleSelectMemoryType = useCallback((type: MemoryType) => {
     dispatch({ type: "SET_MEMORY_TYPE", payload: type });
@@ -461,6 +510,16 @@ export function useOnboardingController(): OnboardingController {
 
         dynamicMemory.enabled = enableDynamic;
 
+        if (enableDynamic && !advancedSettings.summarisationModelId) {
+          const latestModelId =
+            [...(currentSettings.models || [])]
+              .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0]
+              ?.id ?? null;
+
+          advancedSettings.summarisationModelId =
+            state.savedModelId || currentSettings.defaultModelId || latestModelId || undefined;
+        }
+
         await storageBridge.settingsSetAdvanced({
           ...advancedSettings,
           dynamicMemory,
@@ -472,7 +531,7 @@ export function useOnboardingController(): OnboardingController {
     } finally {
       dispatch({ type: "SET_PROCESSING_MEMORY", payload: false });
     }
-  }, []);
+  }, [state.savedModelId]);
 
   const handleFinish = useCallback(async () => {
     if (!state.memoryType) return;
@@ -519,7 +578,9 @@ export function useOnboardingController(): OnboardingController {
       "lmstudio",
       "intenserp",
     ].includes(state.selectedProviderId || "");
-    const requiresBaseUrl = state.selectedProviderId === "lettuce-host";
+    const requiresBaseUrl =
+      state.selectedProviderId === "lettuce-host" ||
+      isLocalProvider;
     return Boolean(
       state.selectedProviderId &&
       state.providerLabel.trim().length > 0 &&

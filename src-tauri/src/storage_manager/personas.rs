@@ -8,7 +8,7 @@ where
     T: serde::de::DeserializeOwned,
 {
     let conn = open_db(app)?;
-    let mut stmt = conn.prepare("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, is_default, created_at, updated_at FROM personas ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut stmt = conn.prepare("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, COALESCE(active_lorebook_ids, '[]'), is_default, created_at, updated_at FROM personas ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -22,9 +22,10 @@ where
                 r.get::<_, Option<f64>>(7)?,
                 r.get::<_, Option<String>>(8)?,
                 r.get::<_, Option<String>>(9)?,
-                r.get::<_, i64>(10)?,
+                r.get::<_, String>(10)?,
                 r.get::<_, i64>(11)?,
                 r.get::<_, i64>(12)?,
+                r.get::<_, i64>(13)?,
             ))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -42,12 +43,30 @@ where
             avatar_crop_scale,
             design_description,
             design_reference_image_ids,
+            active_lorebook_ids,
             is_default,
             created_at,
             updated_at,
         ) = row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
         let mut obj = JsonMap::new();
+        if let Ok((lora_name, lora_strength)) = conn.query_row(
+            "SELECT lora_name, lora_strength FROM personas WHERE id = ?",
+            params![&id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<f64>>(1)?,
+                ))
+            },
+        ) {
+            if let Some(value) = lora_name {
+                obj.insert("loraName".into(), JsonValue::String(value));
+            }
+            if let Some(value) = lora_strength {
+                obj.insert("loraStrength".into(), JsonValue::from(value));
+            }
+        }
         obj.insert("id".into(), JsonValue::String(id));
         obj.insert("title".into(), JsonValue::String(title));
         obj.insert("description".into(), JsonValue::String(description));
@@ -71,6 +90,9 @@ where
             if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&value) {
                 obj.insert("designReferenceImageIds".into(), serde_json::json!(parsed));
             }
+        }
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&active_lorebook_ids) {
+            obj.insert("activeLorebookIds".into(), serde_json::json!(parsed));
         }
         obj.insert("isDefault".into(), JsonValue::Bool(is_default != 0));
         obj.insert("createdAt".into(), JsonValue::from(created_at));
@@ -128,7 +150,7 @@ pub fn default_persona_id(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command]
 pub fn personas_list(app: tauri::AppHandle) -> Result<String, String> {
     let conn = open_db(&app)?;
-    let mut stmt = conn.prepare("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, is_default, created_at, updated_at FROM personas ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut stmt = conn.prepare("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, COALESCE(active_lorebook_ids, '[]'), is_default, created_at, updated_at FROM personas ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let rows = stmt
         .query_map([], |r| {
             Ok((
@@ -142,9 +164,10 @@ pub fn personas_list(app: tauri::AppHandle) -> Result<String, String> {
                 r.get::<_, Option<f64>>(7)?,
                 r.get::<_, Option<String>>(8)?,
                 r.get::<_, Option<String>>(9)?,
-                r.get::<_, i64>(10)?,
+                r.get::<_, String>(10)?,
                 r.get::<_, i64>(11)?,
                 r.get::<_, i64>(12)?,
+                r.get::<_, i64>(13)?,
             ))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -161,11 +184,29 @@ pub fn personas_list(app: tauri::AppHandle) -> Result<String, String> {
             avatar_crop_scale,
             design_description,
             design_reference_image_ids,
+            active_lorebook_ids,
             is_default,
             created_at,
             updated_at,
         ) = row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let mut obj = JsonMap::new();
+        if let Ok((lora_name, lora_strength)) = conn.query_row(
+            "SELECT lora_name, lora_strength FROM personas WHERE id = ?",
+            params![&id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<f64>>(1)?,
+                ))
+            },
+        ) {
+            if let Some(value) = lora_name {
+                obj.insert("loraName".into(), JsonValue::String(value));
+            }
+            if let Some(value) = lora_strength {
+                obj.insert("loraStrength".into(), JsonValue::from(value));
+            }
+        }
         obj.insert("id".into(), JsonValue::String(id));
         obj.insert("title".into(), JsonValue::String(title.to_string()));
         obj.insert(
@@ -193,13 +234,15 @@ pub fn personas_list(app: tauri::AppHandle) -> Result<String, String> {
                 obj.insert("designReferenceImageIds".into(), serde_json::json!(parsed));
             }
         }
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&active_lorebook_ids) {
+            obj.insert("activeLorebookIds".into(), serde_json::json!(parsed));
+        }
         obj.insert("isDefault".into(), JsonValue::Bool(is_default != 0));
         obj.insert("createdAt".into(), JsonValue::from(created_at));
         obj.insert("updatedAt".into(), JsonValue::from(updated_at));
         out.push(JsonValue::Object(obj));
     }
-    Ok(serde_json::to_string(&out)
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?)
+    serde_json::to_string(&out).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
 #[tauri::command]
@@ -246,6 +289,10 @@ fn upsert_persona_value(app: &tauri::AppHandle, p: &JsonValue) -> Result<JsonVal
         .get("designReferenceImageIds")
         .and_then(|v| v.as_array())
         .and_then(|arr| serde_json::to_string(arr).ok());
+    let active_lorebook_ids: Option<String> = p
+        .get("activeLorebookIds")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| serde_json::to_string(arr).ok());
     let is_default = p
         .get("isDefault")
         .and_then(|v| v.as_bool())
@@ -266,8 +313,8 @@ fn upsert_persona_value(app: &tauri::AppHandle, p: &JsonValue) -> Result<JsonVal
     let created_at = existing_created.unwrap_or(now);
 
     tx.execute(
-        r#"INSERT INTO personas (id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, is_default, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        r#"INSERT INTO personas (id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, active_lorebook_ids, is_default, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               title=excluded.title,
               description=excluded.description,
@@ -278,6 +325,7 @@ fn upsert_persona_value(app: &tauri::AppHandle, p: &JsonValue) -> Result<JsonVal
               avatar_crop_scale=excluded.avatar_crop_scale,
               design_description=excluded.design_description,
               design_reference_image_ids=excluded.design_reference_image_ids,
+              active_lorebook_ids=excluded.active_lorebook_ids,
               is_default=excluded.is_default,
               updated_at=excluded.updated_at"#,
         params![
@@ -291,11 +339,23 @@ fn upsert_persona_value(app: &tauri::AppHandle, p: &JsonValue) -> Result<JsonVal
             avatar_crop_scale,
             design_description,
             design_reference_image_ids,
+            active_lorebook_ids,
             is_default,
             created_at,
             now
         ],
     ).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let lora_name = p
+        .get("loraName")
+        .and_then(|v| v.as_str())
+        .map(|value| value.to_string());
+    let lora_strength = p.get("loraStrength").and_then(|v| v.as_f64());
+    tx.execute(
+        "UPDATE personas SET lora_name = ?, lora_strength = ? WHERE id = ?",
+        params![&lora_name, lora_strength, &id],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     if is_default != 0 {
         tx.execute(
@@ -335,6 +395,17 @@ fn upsert_persona_value(app: &tauri::AppHandle, p: &JsonValue) -> Result<JsonVal
             obj.insert("designReferenceImageIds".into(), serde_json::json!(parsed));
         }
     }
+    if let Some(value) = active_lorebook_ids {
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&value) {
+            obj.insert("activeLorebookIds".into(), serde_json::json!(parsed));
+        }
+    }
+    if let Some(value) = lora_name {
+        obj.insert("loraName".into(), JsonValue::String(value));
+    }
+    if let Some(value) = lora_strength {
+        obj.insert("loraStrength".into(), JsonValue::from(value));
+    }
     obj.insert("isDefault".into(), JsonValue::Bool(is_default != 0));
     obj.insert("createdAt".into(), JsonValue::from(created_at));
     obj.insert("updatedAt".into(), JsonValue::from(now));
@@ -352,8 +423,8 @@ pub fn persona_delete(app: tauri::AppHandle, id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn persona_default_get(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let conn = open_db(&app)?;
-    let row = conn.query_row("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, is_default, created_at, updated_at FROM personas WHERE is_default = 1 LIMIT 1", [], |r| Ok((
-        r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<f64>>(5)?, r.get::<_, Option<f64>>(6)?, r.get::<_, Option<f64>>(7)?, r.get::<_, Option<String>>(8)?, r.get::<_, Option<String>>(9)?, r.get::<_, i64>(10)?, r.get::<_, i64>(11)?, r.get::<_, i64>(12)?
+    let row = conn.query_row("SELECT id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, COALESCE(active_lorebook_ids, '[]'), is_default, created_at, updated_at FROM personas WHERE is_default = 1 LIMIT 1", [], |r| Ok((
+        r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, Option<String>>(4)?, r.get::<_, Option<f64>>(5)?, r.get::<_, Option<f64>>(6)?, r.get::<_, Option<f64>>(7)?, r.get::<_, Option<String>>(8)?, r.get::<_, Option<String>>(9)?, r.get::<_, String>(10)?, r.get::<_, i64>(11)?, r.get::<_, i64>(12)?, r.get::<_, i64>(13)?
     ))).optional().map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     if let Some((
         id,
@@ -366,12 +437,30 @@ pub fn persona_default_get(app: tauri::AppHandle) -> Result<Option<String>, Stri
         avatar_crop_scale,
         design_description,
         design_reference_image_ids,
+        active_lorebook_ids,
         is_default,
         created_at,
         updated_at,
     )) = row
     {
         let mut obj = JsonMap::new();
+        if let Ok((lora_name, lora_strength)) = conn.query_row(
+            "SELECT lora_name, lora_strength FROM personas WHERE id = ?",
+            params![&id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<f64>>(1)?,
+                ))
+            },
+        ) {
+            if let Some(value) = lora_name {
+                obj.insert("loraName".into(), JsonValue::String(value));
+            }
+            if let Some(value) = lora_strength {
+                obj.insert("loraStrength".into(), JsonValue::from(value));
+            }
+        }
         obj.insert("id".into(), JsonValue::String(id));
         obj.insert("title".into(), JsonValue::String(title.to_string()));
         obj.insert(
@@ -398,6 +487,9 @@ pub fn persona_default_get(app: tauri::AppHandle) -> Result<Option<String>, Stri
             if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&value) {
                 obj.insert("designReferenceImageIds".into(), serde_json::json!(parsed));
             }
+        }
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&active_lorebook_ids) {
+            obj.insert("activeLorebookIds".into(), serde_json::json!(parsed));
         }
         obj.insert("isDefault".into(), JsonValue::Bool(is_default != 0));
         obj.insert("createdAt".into(), JsonValue::from(created_at));

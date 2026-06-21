@@ -16,105 +16,124 @@ import {
   FileCode,
   RefreshCw,
   Volume2,
-  Accessibility,
+  Palette,
+  Mic,
   HelpCircle,
   ArrowLeftRight,
   Image,
   Info,
+  Sparkles,
 } from "lucide-react";
-import { typography, radius, spacing, interactive, cn } from "../../design-tokens";
+import { typography, cn } from "../../design-tokens";
 import { useSettingsSummary } from "./hooks/useSettingsSummary";
 import { isDevelopmentMode } from "../../../core/utils/env";
 import { useNavigationManager } from "../../navigation";
 import { useI18n } from "../../../core/i18n/context";
 
-interface RowProps {
+interface Item {
+  key: string;
   icon: React.ReactNode;
   title: string;
   subtitle?: string;
-  onClick: () => void;
   count?: number | null;
-  tone?:
-    | "default"
-    | "danger"
-    | "intelligence"
-    | "experience"
-    | "connectivity"
-    | "security"
-    | "support"
-    | "developer";
+  danger?: boolean;
+  onClick: () => void;
 }
 
-function Row({ icon, title, subtitle, onClick, count, tone = "default" }: RowProps) {
-  const toneStyles = {
-    intelligence: "border-accent/30 bg-accent/15 text-accent group-hover:border-accent/50",
-    experience: "border-warning/30 bg-warning/15 text-warning group-hover:border-warning/50",
-    connectivity: "border-info/30 bg-info/15 text-info group-hover:border-info/50",
-    security: "border-accent/30 bg-accent/15 text-accent group-hover:border-accent/50",
-    support: "border-info/30 bg-info/15 text-info group-hover:border-info/50",
-    danger: "border-danger/30 bg-danger/15 text-danger group-hover:border-danger/50",
-    developer: "border-warning/30 bg-warning/15 text-warning group-hover:border-warning/50",
-    default: "border-fg/10 bg-fg/10 text-fg/70 group-hover:border-fg/20",
-  };
+interface RowProps extends Omit<Item, "key"> {}
 
+function Row({ icon, title, subtitle, count, danger, onClick }: RowProps) {
   return (
     <button
       onClick={onClick}
       className={cn(
-        "group w-full px-4 py-3 text-left",
-        radius.md,
-        "border border-fg/10 bg-fg/5",
-        interactive.transition.default,
-        "hover:border-fg/20 hover:bg-fg/8",
-        interactive.active.scale,
-        interactive.focus.ring,
+        "group relative flex w-full items-center gap-3 px-4 py-3 text-left",
+        "transition-colors duration-150",
+        "hover:bg-fg/[0.04] focus:bg-fg/[0.04]",
+        "focus:outline-none",
       )}
     >
-      <div className="flex items-center gap-3">
-        <div
+      <span
+        className={cn(
+          "flex h-7 w-7 shrink-0 items-center justify-center",
+          danger ? "text-danger" : "text-fg/55",
+          "transition-colors group-hover:text-fg/80",
+          danger && "group-hover:text-danger",
+        )}
+      >
+        <span className="[&_svg]:h-[18px] [&_svg]:w-[18px]">{icon}</span>
+      </span>
+      <span className="min-w-0 flex-1">
+        <span
           className={cn(
-            "flex h-8 w-8 shrink-0 items-center justify-center",
-            radius.full,
-            "border text-fg/70",
-            interactive.transition.default,
-            toneStyles[tone],
+            "truncate block",
+            typography.body.size,
+            "font-medium",
+            danger ? "text-danger" : "text-fg",
           )}
         >
-          <span className="[&_svg]:h-4 [&_svg]:w-4">{icon}</span>
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span
-              className={cn("truncate", typography.body.size, typography.body.weight, "text-fg")}
-            >
-              {title}
-            </span>
-            {typeof count === "number" && (
-              <span
-                className={cn(
-                  "px-1.5 py-0.5",
-                  radius.sm,
-                  "border border-fg/10 bg-fg/10",
-                  typography.caption.size,
-                  typography.caption.weight,
-                  "leading-none text-fg/70",
-                )}
-              >
-                {count}
-              </span>
+          {title}
+        </span>
+        {subtitle && (
+          <span
+            className={cn(
+              "mt-0.5 line-clamp-1 block",
+              typography.caption.size,
+              "font-normal text-fg/45",
             )}
-          </div>
-          {subtitle && (
-            <div className={cn("mt-0.5 line-clamp-1", typography.caption.size, "text-fg/45")}>
-              {subtitle}
-            </div>
+          >
+            {subtitle}
+          </span>
+        )}
+      </span>
+      {typeof count === "number" && (
+        <span
+          className={cn(
+            "shrink-0 tabular-nums",
+            typography.caption.size,
+            "font-medium text-fg/45",
           )}
-        </div>
-        <ChevronRight
-          className={cn("h-4 w-4 shrink-0 text-fg/30", "transition-colors group-hover:text-fg/60")}
-        />
-      </div>
+        >
+          {count}
+        </span>
+      )}
+      <ChevronRight className="h-4 w-4 shrink-0 text-fg/25 transition-colors group-hover:text-fg/45" />
     </button>
+  );
+}
+
+interface SectionProps {
+  label: string;
+  items: Item[];
+}
+
+function Section({ label, items }: SectionProps) {
+  if (items.length === 0) return null;
+  return (
+    <section className="flex flex-col gap-2">
+      <h2 className={cn("px-1", typography.bodySmall.size, "font-medium text-fg/50")}>
+        {label}
+      </h2>
+      <div
+        className={cn(
+          "overflow-hidden rounded-xl",
+          "border border-fg/10 bg-fg/[0.025]",
+          "divide-y divide-fg/[0.06]",
+        )}
+      >
+        {items.map((item) => (
+          <Row
+            key={item.key}
+            icon={item.icon}
+            title={item.title}
+            subtitle={item.subtitle}
+            count={item.count ?? undefined}
+            danger={item.danger}
+            onClick={item.onClick}
+          />
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -123,125 +142,141 @@ export function SettingsPage() {
   const { t } = useI18n();
   const { toModelsList } = useNavigationManager();
   const {
-    state: { providers, models, characterCount, isLoading },
+    state: { providers, models, characterCount },
   } = useSettingsSummary();
 
   const providerCount = providers.length;
   const modelCount = models.length;
-  const items = useMemo(
-    () => [
-      {
+
+  const itemsByKey = useMemo<Record<string, Item>>(
+    () => ({
+      providers: {
         key: "providers",
         icon: <EthernetPort />,
         title: t("settings.items.providers.title"),
         subtitle: t("settings.items.providers.subtitle"),
         count: providerCount,
-        tone: "intelligence" as const,
         onClick: () => navigate("/settings/providers"),
       },
-      {
+      models: {
         key: "models",
         icon: <Cpu />,
         title: t("settings.items.models.title"),
         subtitle: t("settings.items.models.subtitle"),
         count: modelCount,
-        tone: "intelligence" as const,
         onClick: () => toModelsList(),
       },
-      {
+      imageGeneration: {
         key: "imageGeneration",
         icon: <Image />,
         title: t("settings.items.imageGeneration.title"),
         subtitle: t("settings.items.imageGeneration.subtitle"),
-        tone: "intelligence" as const,
         onClick: () => navigate("/settings/image-generation"),
       },
-      {
-        key: "voices",
-        icon: <Volume2 />,
-        title: t("settings.items.voices.title"),
-        subtitle: t("settings.items.voices.subtitle"),
-        tone: "experience" as const,
-        onClick: () => navigate("/settings/providers?tab=audio"),
-      },
-      {
-        key: "accessibility",
-        icon: <Accessibility />,
-        title: t("settings.items.accessibility.title"),
-        subtitle: t("settings.items.accessibility.subtitle"),
-        tone: "experience" as const,
-        onClick: () => navigate("/settings/accessibility"),
-      },
-      {
+      prompts: {
         key: "prompts",
         icon: <FileText />,
         title: t("settings.items.prompts.title"),
         subtitle: t("settings.items.prompts.subtitle"),
-        tone: "intelligence" as const,
         onClick: () => navigate("/settings/prompts"),
       },
-      {
-        key: "security",
-        icon: <Shield />,
-        title: t("settings.items.security.title"),
-        subtitle: t("settings.items.security.subtitle"),
-        tone: "security" as const,
-        onClick: () => navigate("/settings/security"),
-      },
-      {
-        key: "backup",
-        icon: <HardDrive />,
-        title: t("settings.items.backup.title"),
-        subtitle: t("settings.items.backup.subtitle"),
-        tone: "connectivity" as const,
-        onClick: () => navigate("/settings/backup"),
-      },
-      {
-        key: "convert",
-        icon: <ArrowLeftRight />,
-        title: t("settings.items.convert.title"),
-        subtitle: t("settings.items.convert.subtitle"),
-        tone: "support" as const,
-        onClick: () => navigate("/settings/convert"),
-      },
-      {
-        key: "sync",
-        icon: <RefreshCw />,
-        title: t("settings.items.sync.title"),
-        subtitle: t("settings.items.sync.subtitle"),
-        tone: "connectivity" as const,
-        onClick: () => navigate("/settings/sync"),
-      },
-      {
-        key: "usage",
-        icon: <BarChart3 />,
-        title: t("settings.items.usage.title"),
-        subtitle: t("settings.items.usage.subtitle"),
-        tone: "security" as const,
-        onClick: () => navigate("/settings/usage"),
-      },
-      {
+      advanced: {
         key: "advanced",
         icon: <Sliders />,
         title: t("settings.items.advanced.title"),
         subtitle: t("settings.items.advanced.subtitle"),
-        tone: "intelligence" as const,
         onClick: () => navigate("/settings/advanced"),
       },
-      {
+      voices: {
+        key: "voices",
+        icon: <Volume2 />,
+        title: t("settings.items.voices.title"),
+        subtitle: t("settings.items.voices.subtitle"),
+        onClick: () => navigate("/settings/providers?tab=audio"),
+      },
+      customization: {
+        key: "customization",
+        icon: <Palette />,
+        title: t("settings.items.accessibility.title"),
+        subtitle: t("settings.items.accessibility.subtitle"),
+        onClick: () => navigate("/settings/customization"),
+      },
+      speechRecognition: {
+        key: "speechRecognition",
+        icon: <Mic />,
+        title: t("settings.items.speechRecognition.title"),
+        subtitle: t("settings.items.speechRecognition.subtitle"),
+        onClick: () => navigate("/settings/speech-recognition"),
+      },
+      sync: {
+        key: "sync",
+        icon: <RefreshCw />,
+        title: t("settings.items.sync.title"),
+        subtitle: t("settings.items.sync.subtitle"),
+        onClick: () => navigate("/settings/sync"),
+      },
+      backup: {
+        key: "backup",
+        icon: <HardDrive />,
+        title: t("settings.items.backup.title"),
+        subtitle: t("settings.items.backup.subtitle"),
+        onClick: () => navigate("/settings/backup"),
+      },
+      convert: {
+        key: "convert",
+        icon: <ArrowLeftRight />,
+        title: t("settings.items.convert.title"),
+        subtitle: t("settings.items.convert.subtitle"),
+        onClick: async () => {
+          const url = "https://www.lettuceai.app/convert";
+          try {
+            const { openUrl } = await import("@tauri-apps/plugin-opener");
+            await openUrl(url);
+          } catch {
+            window.open(url, "_blank");
+          }
+        },
+      },
+      security: {
+        key: "security",
+        icon: <Shield />,
+        title: t("settings.items.security.title"),
+        subtitle: t("settings.items.security.subtitle"),
+        onClick: () => navigate("/settings/security"),
+      },
+      usage: {
+        key: "usage",
+        icon: <BarChart3 />,
+        title: t("settings.items.usage.title"),
+        subtitle: t("settings.items.usage.subtitle"),
+        onClick: () => navigate("/settings/usage"),
+      },
+      help: {
+        key: "help",
+        icon: <HelpCircle />,
+        title: t("settings.items.help.title"),
+        subtitle: t("settings.items.help.subtitle"),
+        onClick: () => navigate("/settings/help"),
+      },
+      whatsNew: {
+        key: "whatsNew",
+        icon: <Sparkles />,
+        title: t("settings.items.whatsNew.title"),
+        subtitle: t("settings.items.whatsNew.subtitle"),
+        onClick: () => window.dispatchEvent(new Event("whatsnew:open")),
+      },
+      about: {
         key: "about",
         icon: <Info />,
         title: t("settings.items.about.title"),
         subtitle: t("settings.items.about.subtitle"),
-        tone: "support" as const,
         onClick: () => navigate("/settings/about"),
       },
-      {
+      changelog: {
         key: "changelog",
         icon: <ScrollText />,
         title: t("settings.items.changelog.title"),
         subtitle: t("settings.items.changelog.subtitle"),
-        tone: "support" as const,
         onClick: async () => {
           try {
             const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -252,12 +287,11 @@ export function SettingsPage() {
           }
         },
       },
-      {
+      docs: {
         key: "docs",
         icon: <HelpCircle />,
         title: t("settings.items.docs.title"),
         subtitle: t("settings.items.docs.subtitle"),
-        tone: "support" as const,
         onClick: async () => {
           try {
             const { openUrl } = await import("@tauri-apps/plugin-opener");
@@ -268,278 +302,98 @@ export function SettingsPage() {
           }
         },
       },
-      {
+      logs: {
         key: "logs",
         icon: <FileCode />,
         title: t("settings.items.logs.title"),
         subtitle: t("settings.items.logs.subtitle"),
-        tone: "support" as const,
         onClick: () => navigate("/settings/logs"),
       },
-      {
+      guide: {
         key: "guide",
         icon: <BookOpen />,
         title: t("settings.items.guide.title"),
         subtitle: t("settings.items.guide.subtitle"),
-        tone: "support" as const,
         onClick: () => navigate("/welcome"),
       },
-      {
+      reset: {
         key: "reset",
         icon: <RotateCcw />,
         title: t("settings.items.reset.title"),
         subtitle: t("settings.items.reset.subtitle"),
-        tone: "danger" as const,
+        danger: true,
         onClick: () => navigate("/settings/reset"),
+      },
+      developer: {
+        key: "developer",
+        icon: <Wrench />,
+        title: t("settings.items.developer.title"),
+        subtitle: t("settings.items.developer.subtitle"),
+        onClick: () => navigate("/settings/developer"),
+      },
+    }),
+    [providerCount, modelCount, characterCount, navigate, t, toModelsList],
+  );
+
+  const sections = useMemo(
+    () => [
+      {
+        key: "intelligence",
+        label: t("settings.sections.intelligence"),
+        keys: ["providers", "models", "imageGeneration", "prompts", "advanced"],
+      },
+      {
+        key: "experience",
+        label: t("settings.sections.experience"),
+        keys: ["voices", "customization", "speechRecognition"],
+      },
+      {
+        key: "connectivity",
+        label: t("settings.sections.connectivity"),
+        keys: ["sync", "backup", "convert"],
+      },
+      {
+        key: "security",
+        label: t("settings.sections.securityPrivacy"),
+        keys: ["security", "usage"],
+      },
+      {
+        key: "support",
+        label: t("settings.sections.supportInfo"),
+        keys: ["help", "whatsNew", "about", "changelog", "docs", "logs", "guide"],
+      },
+      {
+        key: "danger",
+        label: t("settings.sections.dangerZone"),
+        keys: ["reset"],
       },
       ...(isDevelopmentMode()
         ? [
             {
               key: "developer",
-              icon: <Wrench />,
-              title: t("settings.items.developer.title"),
-              subtitle: t("settings.items.developer.subtitle"),
-              tone: "developer" as const,
-              onClick: () => navigate("/settings/developer"),
+              label: t("settings.sections.developer"),
+              keys: ["developer"],
             },
           ]
         : []),
     ],
-    [providerCount, modelCount, characterCount, navigate, t, toModelsList],
+    [t],
   );
 
   return (
-    <div className="flex h-full flex-col pb-16 text-fg/90">
-      <section className={cn("flex-1 overflow-y-auto px-1 pt-4", spacing.section)}>
-        {/* Section: Intelligence */}
-        <div>
-          <h2
-            className={cn(
-              "mb-2 px-1",
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              typography.overline.transform,
-              "text-fg/35",
-            )}
-          >
-            {t("settings.sections.intelligence")}
-          </h2>
-          <div className={spacing.field}>
-            {items
-              .filter((i) =>
-                ["providers", "models", "imageGeneration", "prompts", "advanced"].includes(i.key),
-              )
-              .map((item) => (
-                <Row
-                  key={item.key}
-                  icon={item.icon}
-                  title={item.title}
-                  subtitle={item.subtitle}
-                  count={item.count as number | undefined}
-                  onClick={item.onClick}
-                  tone={item.tone}
-                />
-              ))}
+    <div className="flex h-full flex-col text-fg/90 lg:hidden">
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-2xl px-3 pt-4 pb-16 sm:px-4">
+          <div className="flex flex-col gap-7">
+            {sections.map((section) => {
+              const items = section.keys
+                .map((k) => itemsByKey[k])
+                .filter((x): x is Item => Boolean(x));
+              return <Section key={section.key} label={section.label} items={items} />;
+            })}
           </div>
         </div>
-
-        {/* Section: Experience */}
-        <div>
-          <h2
-            className={cn(
-              "mb-2 px-1",
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              typography.overline.transform,
-              "text-fg/35",
-            )}
-          >
-            {t("settings.sections.experience")}
-          </h2>
-          <div className={spacing.field}>
-            {items
-              .filter((i) => ["voices", "accessibility"].includes(i.key))
-              .map((item) => (
-                <Row
-                  key={item.key}
-                  icon={item.icon}
-                  title={item.title}
-                  subtitle={item.subtitle}
-                  count={item.count as number | undefined}
-                  onClick={item.onClick}
-                  tone={item.tone}
-                />
-              ))}
-          </div>
-        </div>
-
-        {/* Section: Connectivity */}
-        <div>
-          <h2
-            className={cn(
-              "mb-2 px-1",
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              typography.overline.transform,
-              "text-fg/35",
-            )}
-          >
-            {t("settings.sections.connectivity")}
-          </h2>
-          <div className={spacing.field}>
-            {items
-              .filter((i) => ["sync", "backup", "convert"].includes(i.key))
-              .map((item) => (
-                <Row
-                  key={item.key}
-                  icon={item.icon}
-                  title={item.title}
-                  subtitle={item.subtitle}
-                  count={item.count as number | undefined}
-                  onClick={item.onClick}
-                  tone={item.tone}
-                />
-              ))}
-          </div>
-        </div>
-
-        {/* Section: Security & Privacy */}
-        <div>
-          <h2
-            className={cn(
-              "mb-2 px-1",
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              typography.overline.transform,
-              "text-fg/35",
-            )}
-          >
-            {t("settings.sections.securityPrivacy")}
-          </h2>
-          <div className={spacing.field}>
-            {items
-              .filter((i) => ["security", "usage"].includes(i.key))
-              .map((item) => (
-                <Row
-                  key={item.key}
-                  icon={item.icon}
-                  title={item.title}
-                  subtitle={item.subtitle}
-                  count={item.count as number | undefined}
-                  onClick={item.onClick}
-                  tone={item.tone}
-                />
-              ))}
-          </div>
-        </div>
-
-        {/* Section: Support & Info */}
-        <div>
-          <h2
-            className={cn(
-              "mb-2 px-1",
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              typography.overline.transform,
-              "text-fg/35",
-            )}
-          >
-            {t("settings.sections.supportInfo")}
-          </h2>
-          <div className={spacing.field}>
-            {items
-              .filter((i) => ["about", "changelog", "docs", "logs", "guide"].includes(i.key))
-              .map((item) => (
-                <Row
-                  key={item.key}
-                  icon={item.icon}
-                  title={item.title}
-                  subtitle={item.subtitle}
-                  onClick={item.onClick}
-                  tone={item.tone}
-                />
-              ))}
-          </div>
-        </div>
-
-        {/* Section: Danger Zone */}
-        <div>
-          <h2
-            className={cn(
-              "mb-2 px-1",
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              typography.overline.transform,
-              "text-fg/35",
-            )}
-          >
-            {t("settings.sections.dangerZone")}
-          </h2>
-          <div className={spacing.field}>
-            {items
-              .filter((i) => ["reset"].includes(i.key))
-              .map((item) => (
-                <Row
-                  key={item.key}
-                  icon={item.icon}
-                  title={item.title}
-                  subtitle={item.subtitle}
-                  onClick={item.onClick}
-                  tone={item.tone}
-                />
-              ))}
-          </div>
-        </div>
-
-        {/* Section: Developer (only in dev mode) */}
-        {isDevelopmentMode() && (
-          <div>
-            <h2
-              className={cn(
-                "mb-2 px-1",
-                typography.overline.size,
-                typography.overline.weight,
-                typography.overline.tracking,
-                typography.overline.transform,
-                "text-fg/35",
-              )}
-            >
-              {t("settings.sections.developer")}
-            </h2>
-            <div className={spacing.field}>
-              {items
-                .filter((i) => ["developer"].includes(i.key))
-                .map((item) => (
-                  <Row
-                    key={item.key}
-                    icon={item.icon}
-                    title={item.title}
-                    subtitle={item.subtitle}
-                    onClick={item.onClick}
-                    tone={item.tone}
-                  />
-                ))}
-            </div>
-          </div>
-        )}
-
-        {/* Loading overlay */}
-        {isLoading && (
-          <div className="pointer-events-none absolute inset-x-0 top-0 px-4 pt-4">
-            <div className={spacing.field}>
-              {Array.from({ length: 5 }).map((_, i) => (
-                <div key={i} className={cn("h-13 w-full animate-pulse", radius.md, "bg-fg/5")} />
-              ))}
-            </div>
-          </div>
-        )}
-      </section>
+      </div>
     </div>
   );
 }

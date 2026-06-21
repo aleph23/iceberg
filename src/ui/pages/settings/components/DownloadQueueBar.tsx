@@ -6,19 +6,39 @@ import { cn, interactive } from "../../../design-tokens";
 import { Routes } from "../../../navigation";
 import {
   useDownloadQueue,
+  isCreateableModelDownload,
+  groupQueueDownloads,
   type QueuedDownload,
 } from "../../../../core/downloads/DownloadQueueContext";
+import { DownloadGroupCard } from "./DownloadGroupCard";
+import { useI18n, type TranslationKey } from "../../../../core/i18n/context";
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
+function formatBytes(bytes: number, units: string[]): string {
+  if (bytes === 0) return `0 ${units[0]}`;
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const value = bytes / Math.pow(1024, i);
   return `${value.toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
 }
 
-function formatSpeed(bytesPerSec: number): string {
-  return `${formatBytes(bytesPerSec)}/s`;
+function formatSpeed(bytesPerSec: number, units: string[]): string {
+  return `${formatBytes(bytesPerSec, units)}/s`;
+}
+
+function formatEta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "0s";
+
+  const totalSeconds = Math.ceil(seconds);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${secs}s`;
+  }
+  return `${secs}s`;
 }
 
 function extractShortName(modelId: string): string {
@@ -26,13 +46,27 @@ function extractShortName(modelId: string): string {
   return parts[parts.length - 1] || modelId;
 }
 
-function isMmprojFilename(filename: string): boolean {
-  return filename.toLowerCase().includes("mmproj");
+function queueSubtitle(
+  item: QueuedDownload,
+  t: (key: TranslationKey, params?: Record<string, string | number>) => string,
+): string {
+  if (item.queueKind === "kokoro") {
+    return item.displayName || t("models.downloadQueue.kokoroAsset" as TranslationKey);
+  }
+  return extractShortName(item.modelId);
 }
 
 function pct(d: QueuedDownload): number {
   if (d.total === 0) return 0;
   return Math.min(100, Math.round((d.downloaded / d.total) * 100));
+}
+
+function etaSeconds(d: QueuedDownload): number | null {
+  if (d.status !== "downloading") return null;
+  if (d.total <= 0 || d.speedBytesPerSec <= 0) return null;
+  const remainingBytes = d.total - d.downloaded;
+  if (remainingBytes <= 0) return 0;
+  return remainingBytes / d.speedBytesPerSec;
 }
 
 /**
@@ -47,17 +81,28 @@ export function InlineDownloadCards({
   showDivider = false,
   dividerLabel,
   compact = false,
+  filter,
 }: {
   showDivider?: boolean;
   dividerLabel?: string;
   compact?: boolean;
+  filter?: (item: QueuedDownload) => boolean;
 }) {
   const navigate = useNavigate();
-  const { queue, cancelItem, dismissItem } = useDownloadQueue();
+  const { t } = useI18n();
+  const sizeUnits = [
+    t("common.units.bytes"),
+    t("common.units.kb"),
+    t("common.units.mb"),
+    t("common.units.gb"),
+    t("common.units.tb"),
+  ];
+  const { queue: fullQueue, cancelItem, dismissItem } = useDownloadQueue();
+  const queue = filter ? fullQueue.filter(filter) : fullQueue;
 
   const createModel = useCallback(
     (item: QueuedDownload) => {
-      if (isMmprojFilename(item.filename)) return;
+      if (!isCreateableModelDownload(item)) return;
       if (!item.resultPath) return;
       const displayName = extractShortName(item.modelId).replace(/-GGUF$/i, "");
       const params = new URLSearchParams();
@@ -70,9 +115,12 @@ export function InlineDownloadCards({
     [navigate, dismissItem],
   );
 
-  const activeDownloads = queue.filter((d) => d.status === "downloading" || d.status === "queued");
-  const completedDownloads = queue.filter((d) => d.status === "complete");
-  const failedDownloads = queue.filter((d) => d.status === "error" || d.status === "cancelled");
+  const { groups, singles } = groupQueueDownloads(queue);
+  const activeDownloads = singles.filter(
+    (d) => d.status === "downloading" || d.status === "queued",
+  );
+  const completedDownloads = singles.filter((d) => d.status === "complete");
+  const failedDownloads = singles.filter((d) => d.status === "error" || d.status === "cancelled");
 
   if (queue.length === 0) return null;
 
@@ -82,16 +130,31 @@ export function InlineDownloadCards({
   return (
     <div className="space-y-2 pb-1">
       <AnimatePresence mode="popLayout">
-        {/* Active downloads */}
-        {activeDownloads.map((item) => (
+        {groups.map((group) => (
           <motion.div
-            key={`dl-${item.id}`}
+            key={`grp-${group.installId}`}
             initial={{ opacity: 0, height: 0 }}
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, height: 0 }}
             transition={{ duration: 0.15 }}
             className="overflow-hidden"
           >
+            <DownloadGroupCard group={group} compact={compact} />
+          </motion.div>
+        ))}
+
+        {/* Active downloads */}
+        {activeDownloads.map((item) => {
+          const eta = etaSeconds(item);
+          return (
+            <motion.div
+              key={`dl-${item.id}`}
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.15 }}
+              className="overflow-hidden"
+            >
             <div
               className={cn(
                 "rounded-xl border border-accent/20 bg-accent/5",
@@ -111,11 +174,7 @@ export function InlineDownloadCards({
                 )}
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[12px] font-medium text-fg/80">{item.filename}</p>
-                  {!compact && (
-                    <p className="truncate text-[10px] text-fg/40">
-                      {extractShortName(item.modelId)}
-                    </p>
-                  )}
+                  {!compact && <p className="truncate text-[10px] text-fg/40">{queueSubtitle(item, t)}</p>}
                 </div>
                 <button
                   onClick={() => cancelItem(item.id)}
@@ -124,7 +183,7 @@ export function InlineDownloadCards({
                     interactive.transition.fast,
                     "hover:bg-fg/10 hover:text-danger/70 active:scale-90",
                   )}
-                  title="Cancel"
+                  title={t("models.downloadQueue.cancel" as TranslationKey)}
                 >
                   <X size={13} />
                 </button>
@@ -141,23 +200,34 @@ export function InlineDownloadCards({
                     {pct(item)}%
                     {item.total > 0 && (
                       <span className="ml-1 text-fg/25">
-                        {formatBytes(item.downloaded)}/{formatBytes(item.total)}
+                        {formatBytes(item.downloaded, sizeUnits)}/
+                        {formatBytes(item.total, sizeUnits)}
                       </span>
                     )}
                     {item.speedBytesPerSec > 0 && (
                       <span className="ml-1 text-fg/25">
-                        · {formatSpeed(item.speedBytesPerSec)}
+                        · {formatSpeed(item.speedBytesPerSec, sizeUnits)}
+                      </span>
+                    )}
+                    {eta !== null && (
+                      <span className="ml-1 text-fg/25">
+                        · {t("models.downloadQueue.eta" as TranslationKey, {
+                          time: formatEta(eta),
+                        })}
                       </span>
                     )}
                   </span>
                 </div>
               )}
               {item.status === "queued" && (
-                <p className="mt-1.5 text-[10px] text-fg/30">Waiting in queue...</p>
+                <p className="mt-1.5 text-[10px] text-fg/30">
+                  {t("models.downloadQueue.waiting" as TranslationKey)}
+                </p>
               )}
             </div>
-          </motion.div>
-        ))}
+            </motion.div>
+          );
+        })}
 
         {/* Completed downloads */}
         {completedDownloads.map((item) => (
@@ -175,11 +245,13 @@ export function InlineDownloadCards({
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[12px] font-medium text-fg/80">{item.filename}</p>
                   <p className="text-[10px] text-emerald-400/60">
-                    {formatBytes(item.total)} — Ready to use
+                    {t("models.downloadQueue.completed" as TranslationKey, {
+                      size: formatBytes(item.total, sizeUnits),
+                    })}
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  {!isMmprojFilename(item.filename) && (
+                  {isCreateableModelDownload(item) && (
                     <button
                       onClick={() => createModel(item)}
                       className={cn(
@@ -190,7 +262,7 @@ export function InlineDownloadCards({
                       )}
                     >
                       <Cpu size={compact ? 10 : 11} />
-                      Create
+                      {t("installedModels.downloads.create")}
                     </button>
                   )}
                   <button
@@ -200,7 +272,7 @@ export function InlineDownloadCards({
                       interactive.transition.fast,
                       "hover:bg-fg/10 hover:text-fg/50 active:scale-90",
                     )}
-                    title="Dismiss"
+                    title={t("installedModels.downloads.dismiss")}
                   >
                     <X size={12} />
                   </button>
@@ -232,7 +304,9 @@ export function InlineDownloadCards({
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[11px] font-medium text-fg/60">{item.filename}</p>
                   <p className="truncate text-[10px] text-danger/50">
-                    {item.status === "cancelled" ? "Cancelled" : item.error || "Download failed"}
+                    {item.status === "cancelled"
+                      ? t("installedModels.downloads.cancelled")
+                      : item.error || t("installedModels.downloads.failed")}
                   </p>
                 </div>
                 <button
@@ -242,7 +316,7 @@ export function InlineDownloadCards({
                     interactive.transition.fast,
                     "hover:bg-fg/10 hover:text-fg/50 active:scale-90",
                   )}
-                  title="Dismiss"
+                  title={t("installedModels.downloads.dismiss")}
                 >
                   <X size={12} />
                 </button>

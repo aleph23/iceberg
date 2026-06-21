@@ -1,4 +1,12 @@
 import { z } from "zod";
+import { widgetNodeSchema } from "./chatWidgetSchemas";
+export type {
+  WidgetNode,
+  BoxVariant,
+  SelectorKind,
+  ButtonAction,
+  ImageSource,
+} from "./chatWidgetSchemas";
 
 const TokenCount = z.number().int().nonnegative();
 const OptionalTokenCount = z.preprocess((v) => (v === null ? undefined : v), TokenCount.optional());
@@ -23,6 +31,7 @@ export const LLAMA_SAMPLER_ORDER_STAGE_VALUES = [
   "top_k",
   "top_p",
   "min_p",
+  "dry",
   "typical",
   "temp",
 ] as const;
@@ -39,15 +48,16 @@ export const DEFAULT_LLAMA_SAMPLER_ORDER: readonly LlamaSamplerOrderStage[] = [
   "top_k",
   "top_p",
   "min_p",
+  "dry",
   "typical",
   "temp",
 ];
 
 export const LLAMA_SAMPLER_ORDER_PRESETS = {
   default: DEFAULT_LLAMA_SAMPLER_ORDER,
-  unsloth: ["top_k", "top_p", "min_p", "temp", "typical", "penalties", "grammar"],
-  focused: ["penalties", "grammar", "min_p", "top_k", "top_p", "typical", "temp"],
-  creative: ["penalties", "grammar", "top_k", "typical", "top_p", "temp", "min_p"],
+  unsloth: ["top_k", "top_p", "min_p", "temp", "dry", "typical", "penalties", "grammar"],
+  focused: ["penalties", "grammar", "min_p", "top_k", "top_p", "dry", "typical", "temp"],
+  creative: ["penalties", "grammar", "top_k", "typical", "top_p", "dry", "temp", "min_p"],
 } as const satisfies Record<string, readonly LlamaSamplerOrderStage[]>;
 
 export type LlamaSamplerOrderPreset = keyof typeof LLAMA_SAMPLER_ORDER_PRESETS;
@@ -82,16 +92,25 @@ export function normalizeLlamaSamplerOrder(value: unknown): LlamaSamplerOrderSta
 export const PromptTemplateTypeSchema = z.enum([
   "undefined",
   "directChat",
+  "companionChat",
   "groupChatRoleplay",
   "groupChatConversational",
   "dynamicMemorySummarizer",
   "dynamicMemoryManager",
   "replyHelperRoleplay",
   "replyHelperConversational",
+  "lorebookEntryWriter",
+  "lorebookKeywordGenerator",
+  "lorebookGeneratorPlanner",
+  "lorebookGeneratorWriter",
+  "lorebookGeneratorRefine",
+  "lorebookGeneratorCoherence",
   "avatarGeneration",
   "avatarEditRequest",
   "sceneGeneration",
+  "scenePromptWriter",
   "designReferenceWriter",
+  "companionSoulWriter",
 ]);
 export type PromptTemplateType = z.infer<typeof PromptTemplateTypeSchema>;
 
@@ -117,9 +136,12 @@ export type PromptEntryCondition =
   | { type: "keywordAll"; values: string[] }
   | { type: "keywordNone"; values: string[] }
   | { type: "dynamicMemoryEnabled"; value: boolean }
+  | { type: "infoSource"; value: "messages" | "memory" | "mixed" }
   | { type: "hasMemorySummary"; value: boolean }
   | { type: "hasKeyMemories"; value: boolean }
   | { type: "hasLorebookContent"; value: boolean }
+  | { type: "doesAuthorNoteExists"; value: boolean }
+  | { type: "hasActiveScheduledNote"; value: boolean }
   | { type: "hasSubjectDescription"; value: boolean }
   | { type: "hasCurrentDescription"; value: boolean }
   | { type: "hasCharacterReferenceImages"; value: boolean }
@@ -132,6 +154,8 @@ export type PromptEntryCondition =
   | { type: "providerIdAny"; values: string[] }
   | { type: "reasoningEnabled"; value: boolean }
   | { type: "visionEnabled"; value: boolean }
+  | { type: "isTimeAwarenessEnabled"; value: boolean }
+  | { type: "isCompanionMode"; value: boolean }
   | { type: "all"; conditions: PromptEntryCondition[] }
   | { type: "any"; conditions: PromptEntryCondition[] }
   | { type: "not"; condition: PromptEntryCondition };
@@ -150,9 +174,15 @@ export const PromptEntryConditionSchema: z.ZodType<PromptEntryCondition> = z.laz
     z.object({ type: z.literal("keywordAll"), values: z.array(z.string().trim().min(1)).min(1) }),
     z.object({ type: z.literal("keywordNone"), values: z.array(z.string().trim().min(1)).min(1) }),
     z.object({ type: z.literal("dynamicMemoryEnabled"), value: z.boolean() }),
+    z.object({
+      type: z.literal("infoSource"),
+      value: z.enum(["messages", "memory", "mixed"]),
+    }),
     z.object({ type: z.literal("hasMemorySummary"), value: z.boolean() }),
     z.object({ type: z.literal("hasKeyMemories"), value: z.boolean() }),
     z.object({ type: z.literal("hasLorebookContent"), value: z.boolean() }),
+    z.object({ type: z.literal("doesAuthorNoteExists"), value: z.boolean() }),
+    z.object({ type: z.literal("hasActiveScheduledNote"), value: z.boolean() }),
     z.object({ type: z.literal("hasSubjectDescription"), value: z.boolean() }),
     z.object({ type: z.literal("hasCurrentDescription"), value: z.boolean() }),
     z.object({ type: z.literal("hasCharacterReferenceImages"), value: z.boolean() }),
@@ -174,6 +204,8 @@ export const PromptEntryConditionSchema: z.ZodType<PromptEntryCondition> = z.laz
     }),
     z.object({ type: z.literal("reasoningEnabled"), value: z.boolean() }),
     z.object({ type: z.literal("visionEnabled"), value: z.boolean() }),
+    z.object({ type: z.literal("isTimeAwarenessEnabled"), value: z.boolean() }),
+    z.object({ type: z.literal("isCompanionMode"), value: z.boolean() }),
     z.object({
       type: z.literal("all"),
       conditions: z.array(PromptEntryConditionSchema).default([]),
@@ -326,6 +358,9 @@ export const AdvancedModelSettingsSchema = z.object({
   sdNegativePrompt: z.string().trim().min(1).nullable().optional(),
   sdDenoisingStrength: z.number().min(0).max(1).nullable().optional(),
   sdSize: z.string().trim().min(3).nullable().optional(),
+  sdOffloadMode: z.enum(["auto", "gpu", "mixed"]).nullable().optional(),
+  sdExtraPrompt: z.string().trim().min(1).nullable().optional(),
+  sdPromptWriterInstructions: z.string().trim().min(1).nullable().optional(),
   // llama.cpp specific settings
   llamaGpuLayers: z.number().int().min(0).max(512).nullable().optional(),
   llamaThreads: z.number().int().min(1).max(256).nullable().optional(),
@@ -360,15 +395,25 @@ export const AdvancedModelSettingsSchema = z.object({
     .nullable()
     .optional(),
   llamaFlashAttention: z.enum(["auto", "enabled", "disabled"]).nullable().optional(),
+  llamaSwaFull: z.boolean().nullable().optional(),
   llamaChatTemplateOverride: z.string().trim().min(1).nullable().optional(),
   llamaMmprojPath: z.string().trim().min(1).nullable().optional(),
   llamaChatTemplatePreset: z.string().trim().min(1).nullable().optional(),
   llamaRawCompletionFallback: z.boolean().nullable().optional(),
   llamaStrictMode: z.boolean().nullable().optional(),
+  llamaMtpEnabled: z.boolean().nullable().optional(),
+  llamaMtpDraftTokens: z.number().int().min(1).max(8).nullable().optional(),
+  llamaMtpModelPath: z.string().trim().min(1).nullable().optional(),
+  llamaStreamingEnabled: z.boolean().nullable().optional(),
   llamaSamplerProfile: LlamaSamplerProfileSchema.nullable().optional(),
   llamaSamplerOrder: z.array(LlamaSamplerOrderStageSchema).min(1).nullable().optional(),
   llamaMinP: z.number().min(0).max(1).nullable().optional(),
   llamaTypicalP: z.number().min(0).max(1).nullable().optional(),
+  llamaDryMultiplier: z.number().min(0).max(10).nullable().optional(),
+  llamaDryBase: z.number().min(0).max(10).nullable().optional(),
+  llamaDryAllowedLength: z.number().int().min(0).max(128).nullable().optional(),
+  llamaDryPenaltyLastN: z.number().int().min(-1).max(262_144).nullable().optional(),
+  llamaDrySequenceBreakers: z.array(z.string()).nullable().optional(),
   llamaLastRuntimeReport: LlamaLastRuntimeReportSchema.nullish().optional(),
   // Ollama specific settings
   ollamaNumCtx: z.number().int().min(0).max(262_144).nullable().optional(),
@@ -390,6 +435,7 @@ export const AdvancedModelSettingsSchema = z.object({
   reasoningEnabled: z.boolean().nullable().optional(),
   reasoningEffort: z.enum(["low", "medium", "high"]).nullable().optional(),
   reasoningBudgetTokens: z.number().int().min(1024).nullable().optional(),
+  forceSendThinkingState: z.boolean().nullable().optional(),
   // Caching settings
   promptCachingEnabled: z.boolean().nullable().optional(),
   promptCachingTtl: z.string().nullish().optional(),
@@ -440,6 +486,14 @@ export type ReasoningCapability =
 
 export const PROVIDER_REASONING_CAPABILITIES: Record<string, ReasoningCapability> = {
   openai: {
+    type: "effort",
+    options: [
+      { value: "low", label: "Low", description: "Quick responses with less reasoning" },
+      { value: "medium", label: "Medium", description: "Balanced reasoning depth" },
+      { value: "high", label: "High", description: "Maximum reasoning depth" },
+    ],
+  },
+  cerebras: {
     type: "effort",
     options: [
       { value: "low", label: "Low", description: "Quick responses with less reasoning" },
@@ -704,10 +758,15 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaMmprojPath: false,
       llamaChatTemplatePreset: false,
       llamaRawCompletionFallback: false,
-      llamaSamplerProfile: false,
-      llamaSamplerOrder: false,
-      llamaMinP: false,
-      llamaTypicalP: false,
+    llamaSamplerProfile: false,
+    llamaSamplerOrder: false,
+    llamaMinP: false,
+    llamaTypicalP: false,
+    llamaDryMultiplier: false,
+    llamaDryBase: false,
+    llamaDryAllowedLength: false,
+    llamaDryPenaltyLastN: false,
+    llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -740,6 +799,8 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       reasoningEnabled: true,
       reasoningEffort: true,
       reasoningBudgetTokens: true,
+      promptCachingEnabled: true,
+      promptCachingTtl: true,
       llamaGpuLayers: false,
       llamaThreads: false,
       llamaThreadsBatch: false,
@@ -758,6 +819,68 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
+      ollamaNumCtx: false,
+      ollamaNumPredict: false,
+      ollamaNumKeep: false,
+      ollamaNumBatch: false,
+      ollamaNumGpu: false,
+      ollamaNumThread: false,
+      ollamaTfsZ: false,
+      ollamaTypicalP: false,
+      ollamaMinP: false,
+      ollamaMirostat: false,
+      ollamaMirostatTau: false,
+      ollamaMirostatEta: false,
+      ollamaRepeatPenalty: false,
+      ollamaSeed: false,
+      ollamaStop: false,
+    },
+  },
+  cerebras: {
+    providerId: "cerebras",
+    displayName: "Cerebras",
+    reasoningSupport: "effort" as ReasoningSupport,
+    supportedParameters: {
+      temperature: true,
+      topP: true,
+      maxOutputTokens: true,
+      contextLength: false,
+      frequencyPenalty: true,
+      presencePenalty: true,
+      topK: false,
+      reasoningEnabled: true,
+      reasoningEffort: true,
+      reasoningBudgetTokens: true,
+      promptCachingEnabled: false,
+      promptCachingTtl: false,
+      llamaGpuLayers: false,
+      llamaThreads: false,
+      llamaThreadsBatch: false,
+      llamaSeed: false,
+      llamaRopeFreqBase: false,
+      llamaRopeFreqScale: false,
+      llamaOffloadKqv: false,
+      llamaBatchSize: false,
+      llamaKvType: false,
+      llamaFlashAttention: false,
+      llamaChatTemplateOverride: false,
+      llamaMmprojPath: false,
+      llamaChatTemplatePreset: false,
+      llamaRawCompletionFallback: false,
+      llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
+      llamaMinP: false,
+      llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -810,6 +933,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: true,
       ollamaNumPredict: true,
       ollamaNumKeep: true,
@@ -825,6 +953,63 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       ollamaRepeatPenalty: true,
       ollamaSeed: true,
       ollamaStop: true,
+    },
+  },
+  pollinations: {
+    providerId: "pollinations",
+    displayName: "Pollinations AI",
+    reasoningSupport: "effort" as ReasoningSupport,
+    supportedParameters: {
+      temperature: true,
+      topP: true,
+      maxOutputTokens: true,
+      contextLength: false,
+      frequencyPenalty: true,
+      presencePenalty: true,
+      topK: false,
+      reasoningEnabled: true,
+      reasoningEffort: true,
+      reasoningBudgetTokens: false,
+      promptCachingEnabled: false,
+      promptCachingTtl: false,
+      llamaGpuLayers: false,
+      llamaThreads: false,
+      llamaThreadsBatch: false,
+      llamaSeed: false,
+      llamaRopeFreqBase: false,
+      llamaRopeFreqScale: false,
+      llamaOffloadKqv: false,
+      llamaBatchSize: false,
+      llamaKvType: false,
+      llamaFlashAttention: false,
+      llamaChatTemplateOverride: false,
+      llamaMmprojPath: false,
+      llamaChatTemplatePreset: false,
+      llamaRawCompletionFallback: false,
+      llamaSamplerProfile: false,
+      llamaSamplerOrder: false,
+      llamaMinP: false,
+      llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
+      ollamaNumCtx: false,
+      ollamaNumPredict: false,
+      ollamaNumKeep: false,
+      ollamaNumBatch: false,
+      ollamaNumGpu: false,
+      ollamaNumThread: false,
+      ollamaTfsZ: false,
+      ollamaTypicalP: false,
+      ollamaMinP: false,
+      ollamaMirostat: false,
+      ollamaMirostatTau: false,
+      ollamaMirostatEta: false,
+      ollamaRepeatPenalty: false,
+      ollamaSeed: false,
+      ollamaStop: false,
     },
   },
   anthropic: {
@@ -862,6 +1047,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -894,8 +1084,8 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       reasoningEnabled: true,
       reasoningEffort: true,
       reasoningBudgetTokens: true,
-      promptCachingEnabled: true,
-      promptCachingTtl: true,
+      promptCachingEnabled: false,
+      promptCachingTtl: false,
       llamaGpuLayers: false,
       llamaThreads: false,
       llamaThreadsBatch: false,
@@ -914,6 +1104,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -964,6 +1159,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -996,6 +1196,8 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       reasoningEnabled: true,
       reasoningEffort: true,
       reasoningBudgetTokens: true,
+      promptCachingEnabled: true,
+      promptCachingTtl: true,
       llamaGpuLayers: false,
       llamaThreads: false,
       llamaThreadsBatch: false,
@@ -1014,6 +1216,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1046,6 +1253,8 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       reasoningEnabled: true,
       reasoningEffort: true,
       reasoningBudgetTokens: true,
+      promptCachingEnabled: true,
+      promptCachingTtl: true,
       llamaGpuLayers: false,
       llamaThreads: false,
       llamaThreadsBatch: false,
@@ -1064,6 +1273,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1114,6 +1328,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1164,6 +1383,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1214,6 +1438,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1264,6 +1493,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1314,6 +1548,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1364,6 +1603,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1658,10 +1902,16 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaChatTemplatePreset: true,
       llamaRawCompletionFallback: true,
       llamaStrictMode: true,
+      llamaStreamingEnabled: true,
       llamaSamplerProfile: true,
       llamaSamplerOrder: true,
       llamaMinP: true,
       llamaTypicalP: true,
+      llamaDryMultiplier: true,
+      llamaDryBase: true,
+      llamaDryAllowedLength: true,
+      llamaDryPenaltyLastN: true,
+      llamaDrySequenceBreakers: true,
       reasoningEnabled: true,
       reasoningEffort: true,
       reasoningBudgetTokens: true,
@@ -1715,6 +1965,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1765,6 +2020,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1815,6 +2075,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1867,6 +2132,11 @@ export const PROVIDER_PARAMETER_SUPPORT = {
       llamaSamplerOrder: false,
       llamaMinP: false,
       llamaTypicalP: false,
+      llamaDryMultiplier: false,
+      llamaDryBase: false,
+      llamaDryAllowedLength: false,
+      llamaDryPenaltyLastN: false,
+      llamaDrySequenceBreakers: false,
       ollamaNumCtx: false,
       ollamaNumPredict: false,
       ollamaNumKeep: false,
@@ -1947,12 +2217,16 @@ export function getSupportedParameters(providerId: string): (keyof AdvancedModel
 /**
  * Caching Support Types
  */
-export type CachingSupport = "none" | "supported";
+export type CachingSupport = "none" | "supported" | "automatic";
 
 /**
  * Gets the caching support type for a specific provider
  */
 export function getProviderCachingSupport(providerId: string): CachingSupport {
+  if (providerId === "groq") {
+    return "automatic";
+  }
+
   const provider =
     PROVIDER_PARAMETER_SUPPORT[providerId as ProviderId] ||
     (providerId === "google-gemini" ? PROVIDER_PARAMETER_SUPPORT.gemini : null) ||
@@ -2001,6 +2275,8 @@ export const MessageSchema = z.object({
   role: z.enum(["system", "user", "assistant", "scene"]),
   content: z.string(),
   createdAt: z.number().int(),
+  /** Opt-in visibility for system messages that should render in chat UI. */
+  visibleInChat: z.boolean().optional(),
   /** Session-only override for scene messages so reloads do not snap back to the character scene. */
   sceneEdited: z.boolean().optional(),
   usage: UsageSummarySchema.optional().nullable(),
@@ -2051,6 +2327,7 @@ export const SceneSchema = z.object({
   id: z.string().uuid(),
   content: z.string(),
   direction: z.string().optional(),
+  backgroundImagePath: z.string().nullish().optional(),
   createdAt: z.number().int(),
   variants: z.array(SceneVariantSchema).optional(),
   selectedVariantId: z.string().uuid().nullish(),
@@ -2070,6 +2347,7 @@ export const ChatTemplateSchema = z.object({
   messages: z.array(ChatTemplateMessageSchema).default([]),
   sceneId: z.string().uuid().nullish(),
   promptTemplateId: z.string().nullish().optional(),
+  lorebookIdsOverride: z.array(z.string().uuid()).nullable().optional(),
   createdAt: z.number().int(),
 });
 export type ChatTemplate = z.infer<typeof ChatTemplateSchema>;
@@ -2078,7 +2356,7 @@ export const DynamicMemorySettingsSchema = z.object({
   enabled: z.boolean().default(false),
   summaryMessageInterval: z.number().min(1).default(20),
   maxEntries: z.number().min(10).max(500).default(50),
-  minSimilarityThreshold: z.number().min(0).max(1).default(0.35),
+  minSimilarityThreshold: z.number().min(0).max(1).default(0.32),
   retrievalLimit: z.number().min(1).max(20).default(5),
   retrievalStrategy: z.enum(["smart", "cosine"]).default("smart"),
   hotMemoryTokenBudget: z.number().min(500).max(16384).default(2000),
@@ -2125,9 +2403,11 @@ export const GroupSessionSchema = z.object({
   /** Token count of the memory summary */
   memorySummaryTokenCount: z.number().int().default(0),
   /** Speaker selection method for group chat */
-  speakerSelectionMethod: z.enum(["llm", "heuristic", "round_robin"]).default("llm"),
+  speakerSelectionMethod: z.enum(["llm", "heuristic", "round_robin", "director", "director_action"]).default("llm"),
   /** Memory mode: "manual" or "dynamic" */
   memoryType: z.enum(["manual", "dynamic"]).default("manual"),
+  /** Private session-level author note injected into the prompt */
+  authorNote: z.string().nullish().optional(),
   /** Memory tool events tracking (for dynamic memory cycle gating) */
   memoryToolEvents: z
     .array(
@@ -2183,8 +2463,9 @@ export const GroupSchema = z.object({
   backgroundImagePath: z.string().nullish().optional(),
   lorebookIds: z.array(z.string().uuid()).default([]),
   disableCharacterLorebooks: z.boolean().default(false),
-  speakerSelectionMethod: z.enum(["llm", "heuristic", "round_robin"]).default("llm"),
+  speakerSelectionMethod: z.enum(["llm", "heuristic", "round_robin", "director", "director_action"]).default("llm"),
   memoryType: z.enum(["manual", "dynamic"]).default("manual"),
+  chatAppearance: z.lazy(() => ChatAppearanceOverrideSchema).nullish(),
 });
 export type Group = z.infer<typeof GroupSchema>;
 
@@ -2241,6 +2522,7 @@ export const GroupMessageSchema = z.object({
   isPinned: z.boolean().optional(),
   attachments: z.array(ImageAttachmentSchema).default([]),
   usedLorebookEntries: z.array(z.string()).optional(),
+  memoryRefs: z.array(z.string()).optional(),
   reasoning: z.string().nullish(),
   selectionReasoning: z.string().nullish(),
   modelId: z.string().uuid().nullish(),
@@ -2293,7 +2575,7 @@ function normalizeModelScopes(value: unknown): ModelScope[] {
   for (const item of fromValue) {
     if (item === "text" || item === "image" || item === "audio") set.add(item);
   }
-  set.add("text");
+  if (set.size === 0) set.add("text");
   return scopeOrder.filter((s) => set.has(s));
 }
 
@@ -2309,7 +2591,6 @@ export const ModelSchema = z.object({
   providerLabel: z.string().min(1),
   displayName: z.string().min(1),
   createdAt: z.number().int(),
-  // Input/output modality scopes for chat models. Text is always enabled.
   inputScopes: ModelScopesSchema,
   outputScopes: ModelScopesSchema,
   advancedModelSettings: AdvancedModelSettingsSchema.nullish().optional(),
@@ -2371,6 +2652,14 @@ export type CustomColorPreset = z.infer<typeof CustomColorPresetSchema>;
 export const ChatsViewModeSchema = z.enum(["hero", "gallery", "list"]);
 export type ChatsViewMode = z.infer<typeof ChatsViewModeSchema>;
 
+export const TrustedCertificateSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  pem: z.string().min(1),
+  importedAt: z.number().int().nonnegative(),
+});
+export type TrustedCertificate = z.infer<typeof TrustedCertificateSchema>;
+
 export const AppStateSchema = z.object({
   onboarding: OnboardingStateSchema,
   theme: z.enum(["light", "dark"]),
@@ -2387,6 +2676,8 @@ export const AppStateSchema = z.object({
   customColors: CustomColorsSchema.optional(),
   customColorPresets: z.array(CustomColorPresetSchema).default([]),
   chatsViewMode: ChatsViewModeSchema.default("hero"),
+  trustedCertificates: z.array(TrustedCertificateSchema).default([]),
+  lastSeenAppVersion: z.string().optional(),
 });
 export type AppState = z.infer<typeof AppStateSchema>;
 
@@ -2443,16 +2734,61 @@ export const ChatAppearanceSettingsSchema = z.object({
   bubbleMaxWidth: z.enum(["compact", "normal", "wide"]).default("normal"),
   bubblePadding: z.enum(["compact", "normal", "spacious"]).default("normal"),
 
+  // Message header (Discord-style author name + timestamp above message text)
+  showMessageAuthor: z.boolean().default(false),
+  showMessageTimestamp: z.boolean().default(false),
+  timestampFormat: z.enum(["relative", "time", "datetime"]).default("relative"),
+  messageHeaderPlacement: z.enum(["inside", "above"]).default("inside"),
+
+  // Advanced per-message info (model name + token counts)
+  showMessageModel: z.boolean().default(false),
+  showMessageInputTokens: z.boolean().default(false),
+  showMessageOutputTokens: z.boolean().default(false),
+  showMessageTotalTokens: z.boolean().default(false),
+  showMessageTtft: z.boolean().default(false),
+  showMessageTokensPerSecond: z.boolean().default(false),
+  messageInfoPlacement: z
+    .enum(["belowHeader", "belowHeaderOutside", "insideBubble", "belowBubble"])
+    .default("belowBubble"),
+  messageInfoSize: z.enum(["small", "medium", "large"]).default("small"),
+
   // Layout
   messageGap: z.enum(["tight", "normal", "relaxed"]).default("relaxed"),
   avatarShape: z.enum(["circle", "rounded", "hidden"]).default("circle"),
   avatarSize: z.enum(["small", "medium", "large"]).default("medium"),
+
+  chatColumnWidth: z
+    .enum(["narrow", "normal", "wide", "xl", "full", "custom"])
+    .default("full"),
+  chatColumnWidthPx: z.number().int().min(400).max(2400).optional(),
+  chatColumnAlign: z.enum(["left", "center", "right"]).default("center"),
+  chatHeaderMoves: z.boolean().default(false),
+  chatFooterMoves: z.boolean().default(false),
+
+  // Group chat participants bar (avatar row above the composer)
+  participantsBarEnabled: z.boolean().default(true),
+  participantsBarAvatarSize: z.enum(["small", "medium", "large"]).default("medium"),
+  participantsBarAvatarShape: z.enum(["round", "boxed", "rounded_box"]).default("round"),
+  participantsBarBackground: z.enum(["solid", "fading", "transparent"]).default("fading"),
+  participantsBarGap: z.enum(["tight", "normal", "relaxed"]).default("normal"),
+  participantsBarAlign: z.enum(["left", "center", "right"]).default("left"),
+  participantsBarHintPosition: z.enum(["top", "bottom", "hidden"]).default("bottom"),
+
+  chatWidgetAreaEnabled: z.boolean().default(false),
+  chatWidgetCenterMode: z.enum(["both", "left", "right"]).default("both"),
+  chatWidgetSlots: z
+    .object({
+      left: z.array(widgetNodeSchema).default([]),
+      right: z.array(widgetNodeSchema).default([]),
+    })
+    .default({ left: [], right: [] }),
 
   // Bubble colors (token names)
   userBubbleColor: z.enum(["accent", "info", "secondary", "warning"]).default("accent"),
   assistantBubbleColor: z.enum(["neutral", "accent", "info", "secondary"]).default("neutral"),
   userBubbleColorHex: z.string().optional(),
   assistantBubbleColorHex: z.string().optional(),
+  footerInputColorHex: z.string().optional(),
 
   // Text colors (inline hex overrides per text style)
   messageTextColorHex: z.string().optional(),
@@ -2462,6 +2798,7 @@ export const ChatAppearanceSettingsSchema = z.object({
   inlineCodeTextColorHex: z.string().optional(),
 
   // Background handling (only active when character has a background image)
+  transparentHeader: z.boolean().default(false),
   backgroundDim: z.number().min(0).max(80).default(0),
   backgroundBlur: z.number().min(0).max(20).default(0),
   bubbleBlur: z.enum(["none", "light", "medium", "heavy"]).default("none"),
@@ -2481,18 +2818,47 @@ export function createDefaultChatAppearanceSettings(): ChatAppearanceSettings {
     bubbleRadius: "rounded",
     bubbleMaxWidth: "normal",
     bubblePadding: "normal",
+    showMessageAuthor: false,
+    showMessageTimestamp: false,
+    timestampFormat: "relative",
+    messageHeaderPlacement: "inside",
+    showMessageModel: false,
+    showMessageInputTokens: false,
+    showMessageOutputTokens: false,
+    showMessageTotalTokens: false,
+    showMessageTtft: false,
+    showMessageTokensPerSecond: false,
+    messageInfoPlacement: "belowBubble",
+    messageInfoSize: "small",
     messageGap: "relaxed",
     avatarShape: "circle",
     avatarSize: "medium",
+    chatColumnWidth: "full",
+    chatColumnWidthPx: undefined,
+    chatColumnAlign: "center",
+    chatHeaderMoves: false,
+    chatFooterMoves: false,
+    participantsBarEnabled: true,
+    participantsBarAvatarSize: "medium",
+    participantsBarAvatarShape: "round",
+    participantsBarBackground: "fading",
+    participantsBarGap: "normal",
+    participantsBarAlign: "left",
+    participantsBarHintPosition: "bottom",
+    chatWidgetAreaEnabled: false,
+    chatWidgetCenterMode: "both",
+    chatWidgetSlots: { left: [], right: [] },
     userBubbleColor: "accent",
     assistantBubbleColor: "neutral",
     userBubbleColorHex: undefined,
     assistantBubbleColorHex: undefined,
+    footerInputColorHex: undefined,
     messageTextColorHex: undefined,
     plainTextColorHex: undefined,
     italicTextColorHex: undefined,
     quotedTextColorHex: undefined,
     inlineCodeTextColorHex: undefined,
+    transparentHeader: false,
     backgroundDim: 0,
     backgroundBlur: 0,
     bubbleBlur: "none",
@@ -2526,6 +2892,7 @@ export function createDefaultAppState(): AppState {
     settingsCardOpacity: 5,
     customColorPresets: [],
     chatsViewMode: "hero",
+    trustedCertificates: [],
   };
 }
 
@@ -2539,9 +2906,17 @@ export const SettingsSchema = z.object({
   advancedSettings: z
     .object({
       summarisationModelId: z.string().optional(),
+      dynamicMemorySummarizerPromptTemplateId: z.string().optional(),
+      dynamicMemoryManagerPromptTemplateId: z.string().optional(),
       dynamicMemoryStructuredFallbackFormat:
         DynamicMemoryStructuredFallbackFormatSchema.optional(),
       dynamicMemoryLlamaSamplerOverwriteEnabled: z.boolean().optional(),
+      customLlmModelsDir: z.string().optional(),
+      customSdModelsDir: z.string().optional(),
+      llamaDefaultContextLength: z.number().int().min(512).max(1048576).optional(),
+      llamaDefaultKvCacheType: z.enum(["auto", "f16", "q8_0", "q4_0"]).optional(),
+      sdDefaultOffloadMode: z.enum(["auto", "gpu", "mixed"]).optional(),
+      sdDefaultSize: z.string().optional(),
       avatarGenerationEnabled: z.boolean().optional(),
       avatarGenerationModelId: z.string().optional(),
       sceneGenerationEnabled: z.boolean().optional(),
@@ -2560,10 +2935,33 @@ export const SettingsSchema = z.object({
       helpMeReplyModelId: z.string().optional(),
       helpMeReplyStreaming: z.boolean().optional(),
       helpMeReplyMaxTokens: z.number().optional(),
+      helpMeReplyHistoryCount: z.number().int().min(1).max(100).optional(),
       helpMeReplyStyle: z.enum(["conversational", "roleplay"]).optional(),
+      helpMeReplyRoleplayPromptTemplateId: z.string().optional(),
+      helpMeReplyConversationalPromptTemplateId: z.string().optional(),
+      lorebookEntryGeneratorModelId: z.string().optional(),
+      lorebookEntryGeneratorStructuredFallbackFormat:
+        DynamicMemoryStructuredFallbackFormatSchema.optional(),
+      lorebookEntryGeneratorPromptTemplateId: z.string().optional(),
+      lorebookKeywordGeneratorPromptTemplateId: z.string().optional(),
+      lorebookGeneratorModelId: z.string().optional(),
+      lorebookGeneratorStructuredFallbackFormat:
+        DynamicMemoryStructuredFallbackFormatSchema.optional(),
+      lorebookGeneratorDefaultTargetCount: z.number().optional(),
+      lorebookGeneratorMaxTokens: z.number().optional(),
+      lorebookGeneratorPlannerPromptTemplateId: z.string().optional(),
+      lorebookGeneratorWriterPromptTemplateId: z.string().optional(),
+      lorebookGeneratorRefinePromptTemplateId: z.string().optional(),
+      lorebookGeneratorCoherencePromptTemplateId: z.string().optional(),
+      companionSoulWriterModelId: z.string().optional(),
+      companionSoulWriterFallbackModelId: z.string().optional(),
+      companionSoulWriterPromptTemplateId: z.string().optional(),
+      companionSoulWriterStructuredFallbackFormat:
+        DynamicMemoryStructuredFallbackFormatSchema.optional(),
       manualModeContextWindow: z.number().optional(),
       embeddingMaxTokens: z.number().optional(), // 1024, 2048, or 4096
-      embeddingModelVersion: z.enum(["v2", "v3"]).optional(),
+      embeddingModelVersion: z.enum(["v3", "v4"]).optional(),
+      embeddingDimensions: z.number().optional(),
       embeddingKeepModelLoaded: z.boolean().optional(),
       hostApi: HostApiSettingsSchema.optional(),
       dynamicMemory: DynamicMemorySettingsSchema.optional(),
@@ -2588,6 +2986,8 @@ export function createDefaultSettings(): Settings {
     appState: createDefaultAppState(),
     advancedSettings: {
       dynamicMemoryStructuredFallbackFormat: "xml",
+      lorebookEntryGeneratorStructuredFallbackFormat: "json",
+      companionSoulWriterStructuredFallbackFormat: "json",
       dynamicMemoryLlamaSamplerOverwriteEnabled: true,
       avatarGenerationEnabled: true,
       creationHelperEnabled: false,
@@ -2658,8 +3058,334 @@ export const AvatarCropSchema = z.object({
 });
 export type AvatarCrop = z.infer<typeof AvatarCropSchema>;
 
+export const CharacterCardTypeSchema = z.enum(["circle", "banner"]);
+export type CharacterCardType = z.infer<typeof CharacterCardTypeSchema>;
+
+export const AvatarGradientSourceSchema = z.enum(["base", "round"]);
+export type AvatarGradientSource = z.infer<typeof AvatarGradientSourceSchema>;
+
 export const DesignReferenceImageIdsSchema = z.array(z.string()).default([]);
 export type DesignReferenceImageIds = z.infer<typeof DesignReferenceImageIdsSchema>;
+
+export const CharacterModeSchema = z.enum(["roleplay", "companion"]);
+export type CharacterMode = z.infer<typeof CharacterModeSchema>;
+
+export const CompanionSoulSchema = z.object({
+  essence: z.string().default(""),
+  traits: z.string().default(""),
+  backstory: z.string().default(""),
+  appearance: z.string().default(""),
+  goals: z.string().default(""),
+  likes: z.string().default(""),
+  voice: z.string().default(""),
+  relationalStyle: z.string().default(""),
+  vulnerabilities: z.string().default(""),
+  habits: z.string().default(""),
+  boundaries: z.string().default(""),
+  baselineAffect: z
+    .object({
+      warmth: z.number().min(0).max(1).default(0.45),
+      trust: z.number().min(0).max(1).default(0.35),
+      calm: z.number().min(0).max(1).default(0.65),
+      vulnerability: z.number().min(0).max(1).default(0.2),
+      longing: z.number().min(0).max(1).default(0.15),
+      hurt: z.number().min(0).max(1).default(0.05),
+      tension: z.number().min(0).max(1).default(0.1),
+      irritation: z.number().min(0).max(1).default(0.05),
+      affectionIntensity: z.number().min(0).max(1).default(0.25),
+      reassuranceNeed: z.number().min(0).max(1).default(0.15),
+    })
+    .default({
+      warmth: 0.45,
+      trust: 0.35,
+      calm: 0.65,
+      vulnerability: 0.2,
+      longing: 0.15,
+      hurt: 0.05,
+      tension: 0.1,
+      irritation: 0.05,
+      affectionIntensity: 0.25,
+      reassuranceNeed: 0.15,
+    }),
+  regulationStyle: z
+    .object({
+      suppression: z.number().min(0).max(1).default(0.35),
+      volatility: z.number().min(0).max(1).default(0.25),
+      recoverySpeed: z.number().min(0).max(1).default(0.55),
+      conflictAvoidance: z.number().min(0).max(1).default(0.45),
+      reassuranceSeeking: z.number().min(0).max(1).default(0.4),
+      protestBehavior: z.number().min(0).max(1).default(0.2),
+      emotionalTransparency: z.number().min(0).max(1).default(0.55),
+      attachmentActivation: z.number().min(0).max(1).default(0.45),
+      pride: z.number().min(0).max(1).default(0.3),
+    })
+    .default({
+      suppression: 0.35,
+      volatility: 0.25,
+      recoverySpeed: 0.55,
+      conflictAvoidance: 0.45,
+      reassuranceSeeking: 0.4,
+      protestBehavior: 0.2,
+      emotionalTransparency: 0.55,
+      attachmentActivation: 0.45,
+      pride: 0.3,
+    }),
+});
+export type CompanionSoul = z.infer<typeof CompanionSoulSchema>;
+
+export const CompanionRelationshipDefaultsSchema = z.object({
+  closeness: z.number().min(-1).max(1).default(0.1),
+  trust: z.number().min(-1).max(1).default(0.1),
+  affection: z.number().min(-1).max(1).default(0.05),
+  tension: z.number().min(0).max(1).default(0),
+});
+export type CompanionRelationshipDefaults = z.infer<typeof CompanionRelationshipDefaultsSchema>;
+
+export const CompanionMemoryConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  retrievalLimit: z.number().int().min(1).max(24).default(8),
+  maxEntries: z.number().int().min(1).max(500).default(120),
+  prioritizeRelationship: z.boolean().default(true),
+  prioritizeEpisodic: z.boolean().default(true),
+  useEmotionalSnapshots: z.boolean().default(true),
+  sharedAcrossSessions: z.boolean().default(false),
+});
+export type CompanionMemoryConfig = z.infer<typeof CompanionMemoryConfigSchema>;
+
+export const CompanionPromptingConfigSchema = z.object({
+  promptTemplateId: z.string().nullish().optional(),
+  styleNotes: z.string().default(""),
+});
+export type CompanionPromptingConfig = z.infer<typeof CompanionPromptingConfigSchema>;
+
+export const CompanionScheduledNoteRecurrenceSchema = z.enum([
+  "none",
+  "daily",
+  "weekly",
+  "monthly",
+  "yearly",
+]);
+export type CompanionScheduledNoteRecurrence = z.infer<typeof CompanionScheduledNoteRecurrenceSchema>;
+
+export const CompanionScheduledNoteSchema = z.object({
+  id: z.string().uuid(),
+  characterId: z.string().uuid(),
+  label: z.string().default(""),
+  content: z.string(),
+  availableAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().nonnegative().nullable().optional(),
+  recurrence: CompanionScheduledNoteRecurrenceSchema.default("none"),
+  recurrenceWindowMs: z.number().int().nonnegative().nullable().optional(),
+  enabled: z.boolean().default(true),
+  createdAt: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+export type CompanionScheduledNote = z.infer<typeof CompanionScheduledNoteSchema>;
+
+export const CompanionConfigSchema = z.object({
+  soul: CompanionSoulSchema.default({
+    essence: "",
+    traits: "",
+    backstory: "",
+    appearance: "",
+    goals: "",
+    likes: "",
+    voice: "",
+    relationalStyle: "",
+    vulnerabilities: "",
+    habits: "",
+    boundaries: "",
+    baselineAffect: {
+      warmth: 0.45,
+      trust: 0.35,
+      calm: 0.65,
+      vulnerability: 0.2,
+      longing: 0.15,
+      hurt: 0.05,
+      tension: 0.1,
+      irritation: 0.05,
+      affectionIntensity: 0.25,
+      reassuranceNeed: 0.15,
+    },
+    regulationStyle: {
+      suppression: 0.35,
+      volatility: 0.25,
+      recoverySpeed: 0.55,
+      conflictAvoidance: 0.45,
+      reassuranceSeeking: 0.4,
+      protestBehavior: 0.2,
+      emotionalTransparency: 0.55,
+      attachmentActivation: 0.45,
+      pride: 0.3,
+    },
+  }),
+  relationshipDefaults: CompanionRelationshipDefaultsSchema.default({
+    closeness: 0.2,
+    trust: 0.3,
+    affection: 0.15,
+    tension: 0,
+  }),
+  memory: CompanionMemoryConfigSchema.default({
+    enabled: true,
+    retrievalLimit: 8,
+    maxEntries: 120,
+    prioritizeRelationship: true,
+    prioritizeEpisodic: true,
+    useEmotionalSnapshots: true,
+    sharedAcrossSessions: false,
+  }),
+  prompting: CompanionPromptingConfigSchema.default({
+    promptTemplateId: null,
+    styleNotes: "",
+  }),
+  timeAwareness: z.boolean().default(false),
+});
+export type CompanionConfig = z.infer<typeof CompanionConfigSchema>;
+
+export const CompanionEmotionVectorSchema = z.object({
+  warmth: z.number().min(0).max(1).default(0),
+  trust: z.number().min(0).max(1).default(0),
+  calm: z.number().min(0).max(1).default(0),
+  vulnerability: z.number().min(0).max(1).default(0),
+  longing: z.number().min(0).max(1).default(0),
+  hurt: z.number().min(0).max(1).default(0),
+  tension: z.number().min(0).max(1).default(0),
+  irritation: z.number().min(0).max(1).default(0),
+  affectionIntensity: z.number().min(0).max(1).default(0),
+  reassuranceNeed: z.number().min(0).max(1).default(0),
+});
+export type CompanionEmotionVector = z.infer<typeof CompanionEmotionVectorSchema>;
+
+export const SignedCompanionEmotionVectorSchema = z.object({
+  warmth: z.number().min(-1).max(1).default(0),
+  trust: z.number().min(-1).max(1).default(0),
+  calm: z.number().min(-1).max(1).default(0),
+  vulnerability: z.number().min(-1).max(1).default(0),
+  longing: z.number().min(-1).max(1).default(0),
+  hurt: z.number().min(-1).max(1).default(0),
+  tension: z.number().min(-1).max(1).default(0),
+  irritation: z.number().min(-1).max(1).default(0),
+  affectionIntensity: z.number().min(-1).max(1).default(0),
+  reassuranceNeed: z.number().min(-1).max(1).default(0),
+});
+export type SignedCompanionEmotionVector = z.infer<typeof SignedCompanionEmotionVectorSchema>;
+
+const DEFAULT_COMPANION_EMOTION_VECTOR: CompanionEmotionVector = {
+  warmth: 0,
+  trust: 0,
+  calm: 0,
+  vulnerability: 0,
+  longing: 0,
+  hurt: 0,
+  tension: 0,
+  irritation: 0,
+  affectionIntensity: 0,
+  reassuranceNeed: 0,
+};
+
+export const CompanionEmotionalStateSchema = z.object({
+  felt: CompanionEmotionVectorSchema.default(DEFAULT_COMPANION_EMOTION_VECTOR),
+  expressed: CompanionEmotionVectorSchema.default(DEFAULT_COMPANION_EMOTION_VECTOR),
+  blocked: CompanionEmotionVectorSchema.default(DEFAULT_COMPANION_EMOTION_VECTOR),
+  momentum: SignedCompanionEmotionVectorSchema.default(DEFAULT_COMPANION_EMOTION_VECTOR),
+  activeDrivers: z.array(z.string()).default([]),
+  confidence: z.number().min(0).max(1).default(0.5),
+  updatedAt: z.number().int().default(0),
+});
+export type CompanionEmotionalState = z.infer<typeof CompanionEmotionalStateSchema>;
+
+const DEFAULT_COMPANION_EMOTIONAL_STATE: CompanionEmotionalState = {
+  felt: DEFAULT_COMPANION_EMOTION_VECTOR,
+  expressed: DEFAULT_COMPANION_EMOTION_VECTOR,
+  blocked: DEFAULT_COMPANION_EMOTION_VECTOR,
+  momentum: DEFAULT_COMPANION_EMOTION_VECTOR,
+  activeDrivers: [],
+  confidence: 0.5,
+  updatedAt: 0,
+};
+
+export const CompanionRelationshipStateSchema = z.object({
+  closeness: z.number().min(-1).max(1).default(0.1),
+  trust: z.number().min(-1).max(1).default(0.1),
+  affection: z.number().min(-1).max(1).default(0.05),
+  tension: z.number().min(0).max(1).default(0),
+  stability: z.number().min(0).max(1).default(0.5),
+  interactionCount: z.number().int().min(0).default(0),
+  lastInteractionAt: z.number().int().default(0),
+});
+export type CompanionRelationshipState = z.infer<typeof CompanionRelationshipStateSchema>;
+
+const DEFAULT_COMPANION_RELATIONSHIP_STATE: CompanionRelationshipState = {
+  closeness: 0.1,
+  trust: 0.1,
+  affection: 0.05,
+  tension: 0,
+  stability: 0.5,
+  interactionCount: 0,
+  lastInteractionAt: 0,
+};
+
+export const CompanionSessionStateSchema = z.object({
+  emotionalState: CompanionEmotionalStateSchema.default(DEFAULT_COMPANION_EMOTIONAL_STATE),
+  relationshipState: CompanionRelationshipStateSchema.default(DEFAULT_COMPANION_RELATIONSHIP_STATE),
+  activeSignals: z.array(z.string()).default([]),
+  preferences: z
+    .object({
+      timeAwarenessEnabled: z.boolean().default(false),
+      timeOverride: z
+        .object({
+          mode: z.enum(["off", "frozen", "ticking"]).default("off"),
+          anchorMs: z.number().int().default(0),
+          setAtMs: z.number().int().default(0),
+        })
+        .optional(),
+    })
+    .default({
+      timeAwarenessEnabled: false,
+    }),
+  updatedAt: z.number().int().default(0),
+});
+export type CompanionSessionState = z.infer<typeof CompanionSessionStateSchema>;
+export type CompanionTimeOverride = NonNullable<
+  CompanionSessionState["preferences"]["timeOverride"]
+>;
+
+export const CompanionTurnEffectSchema = z.object({
+  id: z.string(),
+  sessionId: z.string(),
+  userMessageId: z.string().nullable().optional(),
+  assistantMessageId: z.string(),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
+  status: z.enum(["processing", "ready", "failed"]),
+  summary: z.string().nullable().optional(),
+  relationshipDelta: z.record(z.string(), z.number()).default({}),
+  emotionDelta: z.record(z.string(), z.record(z.string(), z.number())).default({}),
+  signalChanges: z
+    .object({
+      added: z.array(z.string()).default([]),
+      removed: z.array(z.string()).default([]),
+    })
+    .default({ added: [], removed: [] }),
+  memoryChanges: z
+    .object({
+      added: z.array(z.any()).default([]),
+      updated: z.array(z.any()).default([]),
+      superseded: z.array(z.any()).default([]),
+    })
+    .default({ added: [], updated: [], superseded: [] }),
+  sourceWindow: z.record(z.string(), z.any()).default({}),
+});
+export type CompanionTurnEffect = z.infer<typeof CompanionTurnEffectSchema>;
+
+export const MemoryEntityAnchorSchema = z.object({
+  label: z.string(),
+  surface: z.string(),
+  canonicalKey: z.string(),
+  canonicalName: z.string(),
+  confidence: z.number().default(0),
+});
+export type MemoryEntityAnchor = z.infer<typeof MemoryEntityAnchorSchema>;
 
 export const CharacterSchema = z.object({
   id: z.string().uuid(),
@@ -2667,8 +3393,12 @@ export const CharacterSchema = z.object({
   nickname: z.string().nullish(),
   avatarPath: z.string().optional(),
   avatarCrop: AvatarCropSchema.optional(),
+  bannerCrop: AvatarCropSchema.optional(),
+  cardType: CharacterCardTypeSchema.default("circle").optional(),
   designDescription: z.string().optional(),
   designReferenceImageIds: DesignReferenceImageIdsSchema.optional(),
+  loraName: z.string().nullable().optional(),
+  loraStrength: z.number().min(0).max(2).nullable().optional(),
   backgroundImagePath: z.string().optional(),
   definition: z.string().optional(),
   description: z.string().optional(),
@@ -2685,11 +3415,15 @@ export const CharacterSchema = z.object({
   defaultChatTemplateId: z.string().uuid().nullish(),
   defaultModelId: z.string().uuid().nullable().optional(),
   fallbackModelId: z.string().uuid().nullable().optional(),
+  mode: CharacterModeSchema.default("roleplay"),
+  companion: CompanionConfigSchema.nullable().optional(),
   memoryType: z.enum(["manual", "dynamic"]).default("manual"),
+  activeLorebookIds: z.array(z.string().uuid()).default([]),
   promptTemplateId: z.string().nullish().optional(),
   groupChatPromptTemplateId: z.string().nullish().optional(),
   groupChatRoleplayPromptTemplateId: z.string().nullish().optional(),
   disableAvatarGradient: z.boolean().default(false).optional(),
+  avatarGradientSource: AvatarGradientSourceSchema.default("base").optional(),
   customGradientEnabled: z.boolean().default(false).optional(),
   customGradientColors: z.array(z.string()).optional(), // Array of hex colors, e.g. ["#ff6b6b", "#4ecdc4"]
   customTextColor: z.string().optional(), // Custom text color hex
@@ -2707,12 +3441,16 @@ export const SessionSchema = z.object({
   characterId: z.string().uuid(),
   title: z.string(),
   backgroundImagePath: z.string().nullish().optional(),
+  mode: CharacterModeSchema.default("roleplay"),
   selectedSceneId: z.string().uuid().nullish(), // ID of the scene from character.scenes array
   promptTemplateId: z.string().nullish().optional(),
+  lorebookIdsOverride: z.array(z.string().uuid()).nullable().optional(),
+  authorNote: z.string().nullish().optional(),
   personaId: z.union([z.string().uuid(), z.literal(""), z.null(), z.undefined()]).optional(),
   personaDisabled: z.boolean().optional().default(false),
   voiceAutoplay: z.boolean().nullable().optional(),
   advancedModelSettings: AdvancedModelSettingsSchema.nullish().optional(),
+  companionState: CompanionSessionStateSchema.nullish().optional(),
   memories: z.array(z.string()).default([]),
   memoryEmbeddings: z
     .array(
@@ -2724,9 +3462,24 @@ export const SessionSchema = z.object({
         tokenCount: z.number().int().nonnegative().default(0),
         isCold: z.boolean().default(false),
         importanceScore: z.number().default(1.0),
+        persistenceImportance: z.number().default(1.0),
+        promptImportance: z.number().default(1.0),
+        volatility: z.number().default(0.4),
         lastAccessedAt: z.number().int().default(0),
         isPinned: z.boolean().default(false),
+        accessCount: z.number().int().nonnegative().default(0),
+        matchScore: z.number().nullable().optional(),
         category: z.string().nullable().optional(),
+        observedAt: z.number().int().nullable().optional(),
+        observedTimePrecision: z.string().nullable().optional(),
+        canonicalEntities: z.array(MemoryEntityAnchorSchema).default([]),
+        factSignature: z.string().nullable().optional(),
+        factPolarity: z.number().int().nullable().optional(),
+        sourceRole: z.string().nullable().optional(),
+        sourceMessageId: z.string().nullable().optional(),
+        supersededBy: z.string().nullable().optional(),
+        supersededAt: z.number().int().nullable().optional(),
+        supersedes: z.array(z.string()).default([]),
       }),
     )
     .default([])
@@ -2781,6 +3534,9 @@ export const PersonaSchema = z.object({
   avatarCrop: AvatarCropSchema.optional(),
   designDescription: z.string().optional(),
   designReferenceImageIds: DesignReferenceImageIdsSchema.optional(),
+  loraName: z.string().nullable().optional(),
+  loraStrength: z.number().min(0).max(2).nullable().optional(),
+  activeLorebookIds: z.array(z.string().uuid()).default([]).optional(),
   isDefault: z.boolean().default(false),
   createdAt: z.number().int(),
   updatedAt: z.number().int(),
@@ -2792,7 +3548,9 @@ export function createDefaultAdvancedModelSettings(): AdvancedModelSettings {
     maxOutputTokens: 2048,
     llamaLastRuntimeReport: null,
     llamaStrictMode: null,
+    llamaStreamingEnabled: null,
     llamaSamplerOrder: null,
+    llamaDrySequenceBreakers: null,
     sdSteps: null,
     sdCfgScale: null,
     sdSampler: null,
@@ -2800,5 +3558,8 @@ export function createDefaultAdvancedModelSettings(): AdvancedModelSettings {
     sdNegativePrompt: null,
     sdDenoisingStrength: null,
     sdSize: null,
+    sdOffloadMode: null,
+    sdExtraPrompt: null,
+    sdPromptWriterInstructions: null,
   };
 }

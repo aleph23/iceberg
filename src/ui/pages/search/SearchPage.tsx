@@ -11,7 +11,6 @@ import {
 } from "../../../core/storage/repo";
 import type { Character, Persona } from "../../../core/storage/schemas";
 import { cn } from "../../design-tokens";
-import { WindowControlButtons, useDragRegionProps, hasCustomWindowControls } from "../../components/App/TopNav";
 import { useI18n } from "../../../core/i18n/context";
 import { useAvatar } from "../../hooks/useAvatar";
 import { useAvatarGradient } from "../../hooks/useAvatarGradient";
@@ -23,7 +22,6 @@ type SearchTab = "characters" | "personas";
 
 export function SearchPage() {
   const { t } = useI18n();
-  const dragRegionProps = useDragRegionProps();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<SearchTab>("characters");
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -72,7 +70,7 @@ export function SearchPage() {
 
       const session = await createSession(
         character.id,
-        "New Chat",
+        t("search.session.newChatTitle"),
         character.defaultSceneId ?? character.scenes?.[0]?.id,
       );
       navigate(`/chat/${character.id}?sessionId=${session.id}`);
@@ -92,16 +90,15 @@ export function SearchPage() {
     <div className="flex h-screen flex-col bg-surface text-fg/80">
       {/* Minimal Header */}
       <header
-        className={cn("shrink-0 pl-3", hasCustomWindowControls ? "pr-0" : "px-3")}
+        className={cn("shrink-0 pl-3", "px-3")}
         style={{ paddingTop: "calc(env(safe-area-inset-top) + 8px)" }}
-        {...dragRegionProps}
       >
         {/* Search Bar Row */}
         <div className="flex items-center gap-2">
           <button
             onClick={() => navigate(-1)}
             className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full text-fg/60 transition hover:bg-fg/10 hover:text-fg active:scale-95"
-            aria-label="Go back"
+            aria-label={t("search.a11y.goBack")}
           >
             <ArrowLeft size={20} />
           </button>
@@ -120,13 +117,12 @@ export function SearchPage() {
               <button
                 onClick={() => setSearchQuery("")}
                 className="shrink-0 rounded-full p-1 transition hover:bg-fg/10 active:scale-95"
-                aria-label="Clear search"
+                aria-label={t("search.a11y.clearSearch")}
               >
                 <X size={16} className="text-fg/50" />
               </button>
             )}
           </div>
-          <WindowControlButtons />
         </div>
 
         {/* Compact Inline Tabs */}
@@ -232,13 +228,14 @@ function TabButton({
 
 // Character Avatar with gradient support
 const CharacterAvatar = memo(({ character }: { character: Character }) => {
+  const { t } = useI18n();
   const avatarUrl = useAvatar("character", character.id, character.avatarPath, "round");
 
   if (avatarUrl && isImageLike(avatarUrl)) {
     return (
       <AvatarImage
         src={avatarUrl}
-        alt={`${character.name} avatar`}
+        alt={t("search.a11y.characterAvatar", { name: character.name })}
         crop={character.avatarCrop}
         applyCrop
       />
@@ -258,8 +255,9 @@ CharacterAvatar.displayName = "CharacterAvatar";
 // Character Card matching Chats.tsx style
 const CharacterCard = memo(
   ({ character, onSelect }: { character: Character; onSelect: (c: Character) => void }) => {
+    const { t } = useI18n();
     const descriptionPreview =
-      (character.description || character.definition || "").trim() || "No description";
+      (character.description || character.definition || "").trim() || t("search.noDescription");
     const { gradientCss, hasGradient, textColor, textSecondary } = useAvatarGradient(
       "character",
       character.id,
@@ -273,6 +271,7 @@ const CharacterCard = memo(
             textSecondary: character.customTextSecondary,
           }
         : undefined,
+      character.avatarGradientSource ?? "base",
     );
 
     return (
@@ -363,6 +362,7 @@ function CharacterList({
 // Persona Card
 const PersonaCard = memo(
   ({ persona, onSelect }: { persona: Persona; onSelect: (p: Persona) => void }) => {
+    const { t } = useI18n();
     const avatarUrl = useAvatar("persona", persona.id, persona.avatarPath, "round");
 
     return (
@@ -395,7 +395,7 @@ const PersonaCard = memo(
             )}
             {persona.isDefault && (
               <span className="shrink-0 rounded-full bg-accent/20 px-2 py-0.5 text-[10px] font-semibold text-accent">
-                Default
+                {t("search.defaultBadge")}
               </span>
             )}
           </div>

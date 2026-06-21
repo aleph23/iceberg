@@ -1,8 +1,12 @@
 import { z } from "zod";
 import { storageBridge } from "./files";
 import { getDefaultCharacterRules } from "./defaults";
+import { convertToImageRef } from "./images";
+import { logManager } from "../utils/logger";
 import {
   CharacterSchema,
+  CompanionScheduledNoteSchema,
+  CompanionTurnEffectSchema,
   LorebookSchema,
   LorebookEntrySchema,
   SessionSchema,
@@ -16,6 +20,8 @@ import {
   GroupSchema,
   GroupSessionSchema,
   type Character,
+  type CompanionScheduledNote,
+  type CompanionTurnEffect,
   type Session,
   type Settings,
   type Persona,
@@ -33,6 +39,9 @@ import {
   createDefaultAccessibilitySettings,
 } from "./schemas";
 import { setDeveloperModeOverride } from "../utils/env";
+import { APP_COMPANION_TEMPLATE_ID } from "../prompts/constants";
+
+const logger = logManager({ component: "storage/repo" });
 
 const SessionPreviewSchema = z.object({
   id: z.string(),
@@ -48,6 +57,7 @@ export type SessionPreview = z.infer<typeof SessionPreviewSchema>;
 
 const ImageLibraryItemSchema = z.object({
   id: z.string(),
+  groupKey: z.string(),
   bucket: z.string(),
   filePath: z.string(),
   storagePath: z.string(),
@@ -277,7 +287,7 @@ type SessionMemoryEmbedding = NonNullable<Session["memoryEmbeddings"]>[number];
 type SessionMemoryToolEvent = NonNullable<Session["memoryToolEvents"]>[number];
 type SessionMemoryToolAction = NonNullable<SessionMemoryToolEvent["actions"]>[number];
 
-function uuidv4(): string {
+export function uuidv4(): string {
   const bytes = new Uint8Array(16);
   (globalThis.crypto || ({} as any)).getRandomValues?.(bytes);
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
@@ -427,6 +437,14 @@ function buildMemoryFromCreateAction(
       isPinned:
         typeof args.important === "boolean" ? Boolean(args.important) : sourceMemory.isPinned,
       category: typeof args.category === "string" ? args.category : (sourceMemory.category ?? null),
+      observedAt:
+        typeof action.observedAt === "number"
+          ? action.observedAt
+          : (sourceMemory.observedAt ?? null),
+      observedTimePrecision:
+        typeof action.observedTimePrecision === "string"
+          ? action.observedTimePrecision
+          : (sourceMemory.observedTimePrecision ?? null),
     };
   }
 
@@ -439,9 +457,24 @@ function buildMemoryFromCreateAction(
     tokenCount: 0,
     isCold: false,
     importanceScore: 1,
+    persistenceImportance: 1,
+    promptImportance: 1,
+    volatility: 0.4,
     lastAccessedAt: createdAt,
     isPinned: Boolean(args.important),
+    accessCount: 0,
+    matchScore: null,
     category: typeof args.category === "string" ? args.category : null,
+    observedAt: typeof action.observedAt === "number" ? action.observedAt : null,
+    observedTimePrecision:
+      typeof action.observedTimePrecision === "string" ? action.observedTimePrecision : null,
+    canonicalEntities: [],
+    factSignature: null,
+    factPolarity: null,
+    sourceRole: null,
+    supersededBy: null,
+    supersededAt: null,
+    supersedes: [],
   };
 }
 
@@ -582,12 +615,44 @@ function hasDynamicMemoryState(
   );
 }
 
+function sourceSessionHasDynamicMemoryState(sourceSession: Session): boolean {
+  return hasDynamicMemoryState({
+    memoryEmbeddings: sourceSession.memoryEmbeddings,
+    memorySummary: sourceSession.memorySummary,
+    memorySummaryTokenCount: sourceSession.memorySummaryTokenCount,
+    memoryToolEvents: sourceSession.memoryToolEvents,
+  });
+}
+
+function resolveBranchedVisibleMemories(
+  sourceSession: Session,
+  branchedDynamicMemoryState: Pick<
+    Session,
+    "memoryEmbeddings" | "memorySummary" | "memorySummaryTokenCount" | "memoryToolEvents"
+  >,
+): string[] {
+  if (sourceSessionHasDynamicMemoryState(sourceSession)) {
+    return (branchedDynamicMemoryState.memoryEmbeddings ?? []).map((memory) => memory.text);
+  }
+
+  return [...sourceSession.memories];
+}
+
 /**
  * Return the last successfully loaded settings snapshot, or null if none exists yet.
  * Use this to render immediately on page mount, then call readSettings() to refresh.
  */
 export function readSettingsCached(): Settings | null {
   return lastKnownGoodSettings ? cloneSettingsSnapshot(lastKnownGoodSettings) : null;
+}
+
+export async function hasConfiguredModel(): Promise<boolean> {
+  if ((readSettingsCached()?.models.length ?? 0) > 0) return true;
+  try {
+    return (await readSettings()).models.length > 0;
+  } catch {
+    return true;
+  }
 }
 
 export async function readSettings(): Promise<Settings> {
@@ -674,6 +739,12 @@ export async function readSettings(): Promise<Settings> {
   return fallback;
 }
 
+export async function refreshSettingsFromStorage(): Promise<Settings> {
+  const settings = await readSettings();
+  broadcastSettingsUpdated();
+  return settings;
+}
+
 export async function writeSettings(s: Settings, suppressBroadcast = false): Promise<void> {
   SettingsSchema.parse(s);
   await storageBridge.writeSettings(s);
@@ -742,7 +813,7 @@ export async function addOrUpdateProviderCredential(
     }
     settings.providerCredentials.push(cloneSerializable(entity));
   });
-  // Ensure a default provider is set if missing
+
   const current = await readSettings();
   if (!current.defaultProviderCredentialId) {
     await setDefaultProvider(entity.id);
@@ -806,7 +877,33 @@ export async function setDefaultModelId(id: string): Promise<void> {
 
 export async function listCharacters(): Promise<Character[]> {
   const data = await storageBridge.charactersList();
-  return z.array(CharacterSchema).parse(data);
+  const parsed: Character[] = [];
+
+  for (const item of data) {
+    const result = CharacterSchema.safeParse(item);
+    if (result.success) {
+      parsed.push(result.data);
+      continue;
+    }
+
+    const characterId =
+      item && typeof item === "object" && "id" in item && typeof item.id === "string"
+        ? item.id
+        : "<unknown>";
+    logger.warn(`Skipping invalid character payload ${characterId}`, result.error);
+  }
+
+  return parsed;
+}
+
+export async function getCharacter(id: string): Promise<Character | null> {
+  try {
+    const data = await storageBridge.characterGet(id);
+    return CharacterSchema.parse(data);
+  } catch (error) {
+    logger.warn(`Failed to load character ${id}`, error);
+    return null;
+  }
 }
 
 export async function listImageLibraryItems(): Promise<ImageLibraryItem[]> {
@@ -835,6 +932,7 @@ export async function listReferencedBackgroundImagePaths(): Promise<string[]> {
 
   return [
     ...characters.map((item) => item.backgroundImagePath),
+    ...characters.flatMap((item) => item.scenes.map((scene) => scene.backgroundImagePath)),
     ...z
       .array(BackgroundImageRefSchema)
       .parse(groups)
@@ -848,14 +946,32 @@ export async function listReferencedBackgroundImagePaths(): Promise<string[]> {
 
 export async function saveCharacter(c: Partial<Character>): Promise<Character> {
   const settings = await readSettings();
+  const chatAppearanceProvided = Object.prototype.hasOwnProperty.call(c, "chatAppearance");
+  const shouldClearChatAppearance = chatAppearanceProvided && c.chatAppearance === undefined;
+  let resolvedChatAppearance = c.chatAppearance;
+  if (!chatAppearanceProvided && c.id) {
+    resolvedChatAppearance = (await getCharacter(c.id))?.chatAppearance;
+  }
   const pureModeLevel =
     settings.appState.pureModeLevel ?? (settings.appState.pureModeEnabled ? "standard" : "off");
   const defaultRules =
     c.rules && c.rules.length > 0 ? c.rules : await getDefaultCharacterRules(pureModeLevel);
   const timestamp = now();
 
-  const scenes = c.scenes ?? [];
-  const defaultSceneId = c.defaultSceneId ?? (scenes.length === 1 ? scenes[0].id : null);
+  const scenes = (
+    await Promise.all(
+      (c.scenes ?? []).map(async (scene) => ({
+        ...scene,
+        backgroundImagePath: scene.backgroundImagePath?.startsWith("data:")
+          ? ((await convertToImageRef(scene.backgroundImagePath)) ?? scene.backgroundImagePath)
+          : scene.backgroundImagePath,
+      })),
+    )
+  ).map((scene) => ({
+    ...scene,
+    backgroundImagePath: scene.backgroundImagePath || undefined,
+  }));
+  const defaultSceneId = c.defaultSceneId ?? null;
   const derivedScenario =
     scenes.find((scene) => scene.id === defaultSceneId)?.direction?.trim() || undefined;
   const entity: Character = {
@@ -864,6 +980,8 @@ export async function saveCharacter(c: Partial<Character>): Promise<Character> {
     nickname: c.nickname,
     avatarPath: c.avatarPath,
     avatarCrop: c.avatarCrop,
+    bannerCrop: c.bannerCrop,
+    cardType: c.cardType ?? "circle",
     designDescription: c.designDescription,
     designReferenceImageIds: c.designReferenceImageIds ?? [],
     backgroundImagePath: c.backgroundImagePath,
@@ -880,18 +998,22 @@ export async function saveCharacter(c: Partial<Character>): Promise<Character> {
     rules: defaultRules,
     defaultModelId: c.defaultModelId ?? null,
     fallbackModelId: c.fallbackModelId ?? null,
+    mode: c.mode ?? "roleplay",
+    companion: c.companion ?? null,
     memoryType: c.memoryType ?? "manual",
+    activeLorebookIds: c.activeLorebookIds ?? [],
     promptTemplateId: c.promptTemplateId ?? null,
     groupChatPromptTemplateId: c.groupChatPromptTemplateId ?? null,
     groupChatRoleplayPromptTemplateId: c.groupChatRoleplayPromptTemplateId ?? null,
     disableAvatarGradient: c.disableAvatarGradient ?? false,
+    avatarGradientSource: c.avatarGradientSource ?? "base",
     customGradientEnabled: c.customGradientEnabled ?? false,
     customGradientColors: c.customGradientColors,
     customTextColor: c.customTextColor,
     customTextSecondary: c.customTextSecondary,
     voiceConfig: c.voiceConfig,
     voiceAutoplay: c.voiceAutoplay ?? false,
-    chatAppearance: c.chatAppearance,
+    chatAppearance: shouldClearChatAppearance ? (null as any) : resolvedChatAppearance,
     chatTemplates: c.chatTemplates ?? [],
     defaultChatTemplateId: c.defaultChatTemplateId ?? null,
     createdAt: c.createdAt ?? timestamp,
@@ -899,6 +1021,19 @@ export async function saveCharacter(c: Partial<Character>): Promise<Character> {
   } as Character;
 
   const stored = await storageBridge.characterUpsert(entity);
+  const parsed = CharacterSchema.parse(stored);
+  broadcastSettingsUpdated();
+  return parsed;
+}
+
+export async function updateCharacterChatAppearance(
+  id: string,
+  chatAppearance: Record<string, unknown> | null,
+): Promise<Character> {
+  const stored = await storageBridge.characterUpdateChatAppearance(
+    id,
+    chatAppearance ? JSON.stringify(chatAppearance) : null,
+  );
   return CharacterSchema.parse(stored);
 }
 
@@ -906,9 +1041,36 @@ export async function deleteCharacter(id: string): Promise<void> {
   await storageBridge.characterDelete(id);
 }
 
-// ============================================================================
-// Lorebook
-// ============================================================================
+export async function cloneCharacterDeep(id: string): Promise<Character> {
+  const data = await storageBridge.characterCloneDeep(id);
+  return CharacterSchema.parse(data);
+}
+
+export async function listCompanionScheduledNotes(
+  characterId: string,
+): Promise<CompanionScheduledNote[]> {
+  const data = await storageBridge.companionScheduledNotesList(characterId);
+  return z.array(CompanionScheduledNoteSchema).parse(data);
+}
+
+export async function saveCompanionScheduledNote(
+  note: CompanionScheduledNote,
+): Promise<CompanionScheduledNote> {
+  const stored = await storageBridge.companionScheduledNotesUpsert(note);
+  return CompanionScheduledNoteSchema.parse(stored);
+}
+
+export async function deleteCompanionScheduledNote(id: string): Promise<void> {
+  await storageBridge.companionScheduledNotesDelete(id);
+}
+
+export async function previewActiveCompanionScheduledNotes(
+  characterId: string,
+  asOfMs: number,
+): Promise<CompanionScheduledNote[]> {
+  const data = await storageBridge.companionScheduledNotesPreviewActive(characterId, asOfMs);
+  return z.array(CompanionScheduledNoteSchema).parse(data);
+}
 
 export async function listLorebooks(): Promise<Lorebook[]> {
   const data = await storageBridge.lorebooksList();
@@ -983,6 +1145,26 @@ export async function updateGroupDisableCharacterLorebooks(
     disableCharacterLorebooks,
   );
   broadcastSessionUpdated();
+  return GroupSchema.parse(data);
+}
+
+export async function updateGroupSessionAuthorNote(
+  sessionId: string,
+  authorNote: string | null,
+): Promise<GroupSession> {
+  const nextAuthorNote = authorNote?.trim() || null;
+  const data = await storageBridge.groupSessionUpdateAuthorNote(sessionId, nextAuthorNote);
+  return GroupSessionSchema.parse(data);
+}
+
+export async function updateGroupChatAppearance(
+  groupId: string,
+  chatAppearance: Record<string, unknown> | null,
+): Promise<Group> {
+  const data = await storageBridge.groupUpdateChatAppearance(
+    groupId,
+    chatAppearance ? JSON.stringify(chatAppearance) : null,
+  );
   return GroupSchema.parse(data);
 }
 
@@ -1112,6 +1294,14 @@ export async function getSessionMessageCount(sessionId: string): Promise<number>
   return storageBridge.sessionMessageCount(sessionId);
 }
 
+export async function getMessageCompanionEffect(
+  sessionId: string,
+  assistantMessageId: string,
+): Promise<CompanionTurnEffect | null> {
+  const data = await storageBridge.messageCompanionEffect(sessionId, assistantMessageId);
+  return data ? CompanionTurnEffectSchema.parse(data) : null;
+}
+
 export async function listMessages(
   sessionId: string,
   options: { limit: number; before?: { createdAt: number; id: string } } = { limit: 120 },
@@ -1147,6 +1337,10 @@ interface SaveSessionOptions {
 function mergePreservedDynamicMemoryState(latest: Session, next: Session): Session {
   return {
     ...next,
+    companionState:
+      next.companionState !== undefined
+        ? cloneSerializable(next.companionState)
+        : (latest.companionState == null ? latest.companionState : cloneSerializable(latest.companionState)),
     memories: cloneSerializable(latest.memories ?? []),
     memoryEmbeddings: cloneSerializable(latest.memoryEmbeddings ?? []),
     memorySummary: latest.memorySummary ?? "",
@@ -1207,6 +1401,16 @@ export async function updateSessionTitle(id: string, title: string): Promise<Ses
   return getSession(id);
 }
 
+export async function updateSessionAuthorNote(
+  id: string,
+  authorNote: string | null,
+): Promise<Session | null> {
+  const nextAuthorNote = authorNote?.trim() || null;
+  await storageBridge.sessionUpdateAuthorNote(id, nextAuthorNote);
+  broadcastSessionUpdated();
+  return getSessionMeta(id);
+}
+
 export async function deleteSession(id: string): Promise<void> {
   await storageBridge.sessionDelete(id);
 }
@@ -1222,20 +1426,22 @@ export async function createSession(
 
   const messages: StoredMessage[] = [];
   let sessionPromptTemplateId: string | null | undefined = undefined;
+  let sessionLorebookIdsOverride: string[] | null = null;
 
   const characters = await listCharacters();
   const character = characters.find((c) => c.id === characterId);
+  const sessionMode = character?.mode ?? "roleplay";
 
-  const fallbackSceneId = character
-    ? (selectedSceneId ?? character.defaultSceneId ?? character.scenes[0]?.id)
-    : selectedSceneId;
-  let sessionSceneId = fallbackSceneId;
+  let sessionSceneId = selectedSceneId ?? character?.defaultSceneId ?? undefined;
 
   if (character && templateId) {
     const template = character.chatTemplates?.find((t) => t.id === templateId);
     if (template) {
       sessionSceneId = template.sceneId ?? undefined;
       sessionPromptTemplateId = template.promptTemplateId ?? character.promptTemplateId ?? null;
+      sessionLorebookIdsOverride = Array.isArray(template.lorebookIdsOverride)
+        ? template.lorebookIdsOverride
+        : null;
 
       for (let i = 0; i < template.messages.length; i++) {
         const msg = template.messages[i];
@@ -1250,7 +1456,10 @@ export async function createSession(
     }
   }
   if (sessionPromptTemplateId === undefined) {
-    sessionPromptTemplateId = character?.promptTemplateId ?? null;
+    sessionPromptTemplateId =
+      sessionMode === "companion"
+        ? (character?.companion?.prompting?.promptTemplateId ?? APP_COMPANION_TEMPLATE_ID)
+        : (character?.promptTemplateId ?? null);
   }
 
   if (character && sessionSceneId) {
@@ -1278,8 +1487,10 @@ export async function createSession(
     id,
     characterId,
     title,
+    mode: sessionMode,
     selectedSceneId: sessionSceneId,
     promptTemplateId: sessionPromptTemplateId,
+    lorebookIdsOverride: sessionLorebookIdsOverride,
     personaDisabled: false,
     memories: [],
     memorySummaryTokenCount: 0,
@@ -1314,17 +1525,23 @@ export async function createBranchedSession(
     messageIndex,
     messageIdMap,
   );
+  const branchedVisibleMemories = resolveBranchedVisibleMemories(
+    sourceSession,
+    branchedDynamicMemoryState,
+  );
 
   const s: Session = {
     id,
     characterId: sourceSession.characterId,
     title: `${sourceSession.title} (branch)`,
     backgroundImagePath: sourceSession.backgroundImagePath,
+    mode: sourceSession.mode ?? "roleplay",
     selectedSceneId: sourceSession.selectedSceneId,
     promptTemplateId: sourceSession.promptTemplateId,
     personaId: sourceSession.personaId,
     personaDisabled: sourceSession.personaDisabled ?? false,
-    memories: [...sourceSession.memories],
+    companionState: sourceSession.companionState,
+    memories: branchedVisibleMemories,
     memoryEmbeddings: branchedDynamicMemoryState.memoryEmbeddings,
     memorySummary: branchedDynamicMemoryState.memorySummary,
     memorySummaryTokenCount: branchedDynamicMemoryState.memorySummaryTokenCount,
@@ -1367,17 +1584,27 @@ export async function createBranchedSessionToCharacter(
     messageIndex,
     messageIdMap,
   );
+  const branchedVisibleMemories = resolveBranchedVisibleMemories(
+    sourceSession,
+    branchedDynamicMemoryState,
+  );
 
   const s: Session = {
     id,
     characterId: targetCharacterId,
     title: `Branch to ${characterName}`,
     backgroundImagePath: undefined,
-    selectedSceneId: targetCharacter?.defaultSceneId ?? targetCharacter?.scenes?.[0]?.id,
-    promptTemplateId: targetCharacter?.promptTemplateId ?? null,
+    mode: targetCharacter?.mode ?? "roleplay",
+    selectedSceneId:
+      targetCharacter?.defaultSceneId ?? undefined,
+    promptTemplateId:
+      targetCharacter?.mode === "companion"
+        ? (targetCharacter?.companion?.prompting?.promptTemplateId ?? APP_COMPANION_TEMPLATE_ID)
+        : (targetCharacter?.promptTemplateId ?? null),
     personaId: sourceSession.personaId,
     personaDisabled: sourceSession.personaDisabled ?? false,
-    memories: [...sourceSession.memories],
+    companionState: undefined,
+    memories: branchedVisibleMemories,
     memoryEmbeddings: branchedDynamicMemoryState.memoryEmbeddings,
     memorySummary: branchedDynamicMemoryState.memorySummary,
     memorySummaryTokenCount: branchedDynamicMemoryState.memorySummaryTokenCount,
@@ -1450,12 +1677,16 @@ export async function createBranchedGroupSession(
     messageIndex,
     messageIdMap,
   );
+  const branchedVisibleMemories = resolveBranchedVisibleMemories(
+    sourceSession,
+    branchedDynamicMemoryState,
+  );
   const shouldUseDynamicMemory = hasDynamicMemoryState(branchedDynamicMemoryState);
 
   if (shouldUseDynamicMemory) {
     await storageBridge.groupSessionUpdateMemoryState(
       groupSession.id,
-      sourceSession.memories,
+      branchedVisibleMemories,
       (branchedDynamicMemoryState.memoryEmbeddings ?? []).map((memory) => ({
         ...memory,
         accessCount: 0,
@@ -1468,7 +1699,7 @@ export async function createBranchedGroupSession(
     );
     await storageBridge.groupSessionUpdateMemoryType(groupSession.id, "dynamic");
   } else {
-    await storageBridge.groupSessionUpdateManualMemories(groupSession.id, sourceSession.memories);
+    await storageBridge.groupSessionUpdateManualMemories(groupSession.id, branchedVisibleMemories);
   }
 
   const updatedGroupSession = await storageBridge.groupSessionGet(groupSession.id);
@@ -1483,7 +1714,9 @@ export async function toggleMessagePin(
   sessionId: string,
   messageId: string,
 ): Promise<boolean | null> {
-  return storageBridge.messageTogglePin(sessionId, messageId);
+  const nextPinned = await storageBridge.messageTogglePin(sessionId, messageId);
+  broadcastSessionUpdated();
+  return nextPinned;
 }
 
 export async function setMemoryColdState(
@@ -1537,6 +1770,20 @@ export async function toggleMemoryPin(
   memoryIndex: number,
 ): Promise<Session | null> {
   const updated = await storageBridge.sessionToggleMemoryPin(sessionId, memoryIndex);
+  broadcastSessionUpdated();
+  return updated ? SessionSchema.parse(updated) : null;
+}
+
+export async function setMemoryObservedAt(
+  sessionId: string,
+  memoryIndex: number,
+  observedAt: number | null,
+): Promise<Session | null> {
+  const updated = await storageBridge.sessionSetMemoryObservedAt(
+    sessionId,
+    memoryIndex,
+    observedAt,
+  );
   broadcastSessionUpdated();
   return updated ? SessionSchema.parse(updated) : null;
 }
@@ -1635,6 +1882,7 @@ export async function savePersona(
     avatarCrop: p.avatarCrop,
     designDescription: p.designDescription,
     designReferenceImageIds: p.designReferenceImageIds ?? [],
+    activeLorebookIds: p.activeLorebookIds ?? [],
     isDefault: p.isDefault ?? false,
     createdAt: p.createdAt ?? now(),
     updatedAt: now(),
@@ -1664,28 +1912,15 @@ export async function getEmbeddingModelInfo(): Promise<{
   selectedSourceVersion?: string | null;
   availableVersions?: string[];
   maxTokens: number;
+  companionEmotionInstalled?: boolean;
+  companionNerInstalled?: boolean;
+  companionRouterInstalled?: boolean;
+  installBundleComplete?: boolean;
 }> {
   return storageBridge.getEmbeddingModelInfo();
 }
 
-export async function runEmbeddingTest(): Promise<{
-  success: boolean;
-  message: string;
-  scores: Array<{
-    pairName: string;
-    textA: string;
-    textB: string;
-    similarityScore: number;
-    expected: string;
-    passed: boolean;
-    category: string;
-  }>;
-  modelInfo: {
-    version: string;
-    maxTokens: number;
-    embeddingDimensions: number;
-  };
-}> {
+export async function runEmbeddingTest() {
   return storageBridge.runEmbeddingTest();
 }
 

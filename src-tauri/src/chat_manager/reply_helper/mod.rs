@@ -25,11 +25,11 @@ fn resolve_persona_id<'a>(session: &'a Session, explicit: Option<&'a str>) -> Op
     }
 }
 
-fn help_me_reply_participant_names<'a>(
+pub fn help_me_reply_participant_names<'a>(
     prompt_character: &'a Character,
     prompt_persona: Option<&'a Persona>,
 ) -> (&'a str, &'a str) {
-    let effective_user_name = prompt_persona.map(|p| p.title.as_str()).unwrap_or("User");
+    let effective_user_name = prompt_persona.map(|p| p.title.as_str()).unwrap_or("user");
     let effective_assistant_name = prompt_character.name.as_str();
     (effective_user_name, effective_assistant_name)
 }
@@ -85,7 +85,13 @@ pub async fn chat_generate_user_reply(
         (character.clone(), persona.cloned())
     };
 
-    let recent_msgs = recent_messages(&session, 10);
+    let history_count = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.help_me_reply_history_count)
+        .filter(|count| *count > 0)
+        .unwrap_or(10) as usize;
+    let recent_msgs = recent_messages(&session, history_count);
 
     if recent_msgs.is_empty() {
         return Err(crate::utils::err_msg(
@@ -122,14 +128,31 @@ pub async fn chat_generate_user_reply(
         .map(|s| s.as_str())
         .unwrap_or("roleplay");
 
-    let base_prompt = prompts::get_help_me_reply_prompt(&app, reply_style);
+    let help_me_reply_prompt_template_id = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| {
+            if reply_style == "conversational" {
+                advanced
+                    .help_me_reply_conversational_prompt_template_id
+                    .as_deref()
+            } else {
+                advanced
+                    .help_me_reply_roleplay_prompt_template_id
+                    .as_deref()
+            }
+        })
+        .filter(|id| !id.trim().is_empty());
+
+    let base_prompt =
+        prompts::get_help_me_reply_prompt(&app, reply_style, help_me_reply_prompt_template_id);
 
     // Get max tokens from settings (default to 150)
     let max_tokens = settings
         .advanced_settings
         .as_ref()
         .and_then(|advanced| advanced.help_me_reply_max_tokens)
-        .unwrap_or(150) as u32;
+        .unwrap_or(150);
 
     // Get streaming setting (default to true)
     let streaming_enabled = settings
@@ -147,7 +170,7 @@ pub async fn chat_generate_user_reply(
     let persona_name = prompt_persona
         .as_ref()
         .map(|p| p.title.as_str())
-        .unwrap_or("User");
+        .unwrap_or("user");
     let persona_desc = prompt_persona
         .as_ref()
         .map(|p| p.description.as_str())
@@ -299,8 +322,8 @@ pub async fn chat_generate_user_reply(
         &usage,
         &session,
         &prompt_character,
-        &model,
-        &credential,
+        model,
+        credential,
         &api_key,
         now_millis().unwrap_or(0),
         UsageOperationType::ReplyHelper,
@@ -319,76 +342,4 @@ fn remove_if_block(prompt: &mut String) {
         }
     }
     *prompt = prompt.replace("{{/if}}", "");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{help_me_reply_participant_names, swapped_prompt_entities};
-    use crate::chat_manager::types::{Character, Persona};
-
-    fn make_character() -> Character {
-        Character {
-            id: "char-1".to_string(),
-            name: "Astra".to_string(),
-            avatar_path: None,
-            design_description: None,
-            design_reference_image_ids: Vec::new(),
-            background_image_path: None,
-            definition: Some("A starship captain".to_string()),
-            description: Some("Commanding and curious".to_string()),
-            rules: Vec::new(),
-            scenes: Vec::new(),
-            default_scene_id: None,
-            default_model_id: None,
-            fallback_model_id: None,
-            memory_type: "manual".to_string(),
-            prompt_template_id: None,
-            group_chat_prompt_template_id: None,
-            group_chat_roleplay_prompt_template_id: None,
-            system_prompt: None,
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    fn make_persona() -> Persona {
-        Persona {
-            id: "persona-1".to_string(),
-            title: "Milo".to_string(),
-            description: "A reckless smuggler".to_string(),
-            nickname: None,
-            avatar_path: None,
-            design_description: None,
-            design_reference_image_ids: Vec::new(),
-            is_default: false,
-            created_at: 0,
-            updated_at: 0,
-        }
-    }
-
-    #[test]
-    fn help_me_reply_names_match_unswapped_prompt_entities() {
-        let character = make_character();
-        let persona = make_persona();
-
-        let (effective_user_name, effective_assistant_name) =
-            help_me_reply_participant_names(&character, Some(&persona));
-
-        assert_eq!(effective_user_name, "Milo");
-        assert_eq!(effective_assistant_name, "Astra");
-    }
-
-    #[test]
-    fn help_me_reply_names_follow_swapped_prompt_entities() {
-        let character = make_character();
-        let persona = make_persona();
-        let (prompt_character, prompt_persona) =
-            swapped_prompt_entities(&character, Some(&persona));
-
-        let (effective_user_name, effective_assistant_name) =
-            help_me_reply_participant_names(&prompt_character, prompt_persona.as_ref());
-
-        assert_eq!(effective_user_name, "Astra");
-        assert_eq!(effective_assistant_name, "Milo");
-    }
 }

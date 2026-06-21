@@ -1,8 +1,9 @@
+import { useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { Users } from "lucide-react";
+import { Search, Upload, Users } from "lucide-react";
 import { useI18n } from "../../../../../core/i18n/context";
 import type { Character } from "../../../../../core/storage/schemas";
-import { typography, radius, spacing, interactive, shadows, cn } from "../../../../design-tokens";
+import { typography, radius, spacing, interactive, cn } from "../../../../design-tokens";
 import { CharacterSelectItem } from "./CharacterSelectItem";
 
 interface CharacterSelectStepProps {
@@ -10,8 +11,7 @@ interface CharacterSelectStepProps {
   selectedIds: Set<string>;
   onToggleCharacter: (id: string) => void;
   loading: boolean;
-  onContinue: () => void;
-  canContinue: boolean;
+  onImport: () => void;
 }
 
 export function CharacterSelectStep({
@@ -19,11 +19,19 @@ export function CharacterSelectStep({
   selectedIds,
   onToggleCharacter,
   loading,
-  onContinue,
-  canContinue,
+  onImport,
 }: CharacterSelectStepProps) {
   const { t } = useI18n();
-  const selectedCount = selectedIds.size;
+  const [query, setQuery] = useState("");
+
+  const filteredCharacters = useMemo(() => {
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) return characters;
+    return characters.filter((c) => {
+      const description = `${c.description ?? ""} ${c.definition ?? ""}`.toLowerCase();
+      return c.name.toLowerCase().includes(trimmed) || description.includes(trimmed);
+    });
+  }, [characters, query]);
 
   return (
     <motion.div
@@ -31,109 +39,99 @@ export function CharacterSelectStep({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -16 }}
       transition={{ duration: 0.2, ease: "easeOut" }}
-      className={cn(spacing.section, "flex flex-col flex-1 min-h-0")}
+      className={spacing.group}
     >
-      {/* Title */}
-      <div className={spacing.tight}>
-        <div className="flex items-center gap-2">
-          <div className="rounded-lg border border-accent/30 bg-accent/10 p-1.5">
-            <Users className="h-4 w-4 text-accent" />
-          </div>
-          <h2 className={cn(typography.h1.size, typography.h1.weight, "text-fg")}>
-            {t("groupChats.create.characterSelect.title")}
-          </h2>
-        </div>
-        <p className={cn(typography.body.size, "mt-2 text-fg/50")}>
+      <div>
+        <h1 className={cn(typography.h1.size, typography.h1.weight, "text-fg")}>
+          {t("groupChats.create.characterSelect.title")}
+        </h1>
+        <p className={cn(typography.body.size, "mt-1 text-fg/50")}>
           {t("groupChats.create.characterSelect.subtitle")}
         </p>
       </div>
 
-      {/* Selection Count */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <span className={cn(typography.label.size, typography.label.weight, "text-fg/70")}>
-            {selectedCount} {t("groupChats.create.characterSelect.selected")}
-          </span>
-          {selectedCount > 0 && (
-            <div
-              className={cn(
-                "px-2 py-0.5 text-xs font-medium rounded-full",
-                selectedCount >= 2
-                  ? "bg-accent/20 text-accent/80 border border-accent/30"
-                  : "bg-warning/20 text-warning border border-warning/30",
-              )}
-            >
-              {selectedCount >= 2 ? t("groupChats.create.characterSelect.ready") : t("groupChats.create.characterSelect.minRequired")}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Character List */}
-      <div className="flex-1 overflow-y-auto -mx-4 px-4">
-        {loading ? (
-          <div className="space-y-2">
-            {[0, 1, 2, 3].map((i) => (
-              <div
-                key={i}
-                className={cn(
-                  "h-16 animate-pulse",
-                  radius.md,
-                  "border border-fg/5 bg-fg/5",
-                )}
-              />
-            ))}
-          </div>
-        ) : characters.length === 0 ? (
-          <div
+      <div className="flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/40" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={t("groupChats.create.characterSelect.searchPlaceholder")}
             className={cn(
-              "p-8 text-center",
+              "w-full border border-fg/10 bg-surface-el/85 py-2.5 pl-9 pr-3",
               radius.lg,
-              "border border-dashed border-fg/10 bg-fg/2",
+              typography.body.size,
+              "text-fg placeholder:text-fg/40",
+              interactive.transition.default,
+              "focus:border-fg/30 focus:outline-none",
             )}
-          >
-            <Users className="mx-auto h-10 w-10 text-fg/20 mb-3" />
-            <p className={cn(typography.body.size, "text-fg/50 mb-1")}>{t("groupChats.create.characterSelect.noCharactersYet")}</p>
-            <p className={cn(typography.bodySmall.size, "text-fg/40")}>
-              {t("groupChats.create.characterSelect.noCharactersDesc")}
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2 pb-4">
-            {characters.map((character) => (
-              <CharacterSelectItem
-                key={character.id}
-                character={character}
-                selected={selectedIds.has(character.id)}
-                onToggle={() => onToggleCharacter(character.id)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Continue Button */}
-      <div className="pt-4 mt-auto">
-        <motion.button
-          disabled={!canContinue}
-          onClick={onContinue}
-          whileTap={{ scale: canContinue ? 0.97 : 1 }}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={onImport}
           className={cn(
-            "w-full py-4 text-base font-semibold",
-            radius.md,
+            "flex shrink-0 items-center gap-1.5 border border-fg/10 bg-surface-el/85 px-3 py-2.5",
+            radius.lg,
+            "text-xs font-medium text-fg/70",
             interactive.transition.fast,
-            canContinue
-              ? cn(
-                  "border border-accent/40 bg-accent/20 text-accent",
-                  shadows.glow,
-                  "active:border-accent/60 active:bg-accent/30",
-                )
-              : "cursor-not-allowed border border-fg/5 bg-fg/5 text-fg/30",
+            "hover:border-fg/20 hover:text-fg active:scale-[0.97]",
           )}
         >
-          {t("groupChats.create.characterSelect.continueToSetup")}
-        </motion.button>
+          <Upload className="h-3.5 w-3.5" />
+          {t("groupChats.create.importChatpkg")}
+        </button>
       </div>
+
+      {loading ? (
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+          {[0, 1, 2, 3].map((i) => (
+            <div
+              key={i}
+              className={cn("h-16 animate-pulse", radius.lg, "border border-fg/5 bg-fg/5")}
+            />
+          ))}
+        </div>
+      ) : characters.length === 0 ? (
+        <div
+          className={cn(
+            "p-8 text-center",
+            radius.lg,
+            "border border-dashed border-fg/10 bg-fg/2",
+          )}
+        >
+          <Users className="mx-auto mb-3 h-10 w-10 text-fg/20" />
+          <p className={cn(typography.body.size, "mb-1 text-fg/50")}>
+            {t("groupChats.create.characterSelect.noCharactersYet")}
+          </p>
+          <p className={cn(typography.bodySmall.size, "text-fg/40")}>
+            {t("groupChats.create.characterSelect.noCharactersDesc")}
+          </p>
+        </div>
+      ) : filteredCharacters.length === 0 ? (
+        <div
+          className={cn(
+            "p-8 text-center",
+            radius.lg,
+            "border border-dashed border-fg/10 bg-fg/2",
+          )}
+        >
+          <p className={cn(typography.body.size, "text-fg/50")}>
+            {t("groupChats.create.characterSelect.noResults")}
+          </p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-2 pb-2 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
+          {filteredCharacters.map((character) => (
+            <CharacterSelectItem
+              key={character.id}
+              character={character}
+              selected={selectedIds.has(character.id)}
+              onToggle={() => onToggleCharacter(character.id)}
+            />
+          ))}
+        </div>
+      )}
     </motion.div>
   );
 }

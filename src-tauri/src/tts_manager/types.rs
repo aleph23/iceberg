@@ -6,7 +6,10 @@ use std::collections::HashMap;
 pub enum AudioProviderType {
     GeminiTts,
     Elevenlabs,
+    FishTts,
+    FishSpeech,
     OpenAiTts,
+    Kokoro,
 }
 
 impl AudioProviderType {
@@ -14,7 +17,10 @@ impl AudioProviderType {
         match s {
             "gemini_tts" => Some(Self::GeminiTts),
             "elevenlabs" => Some(Self::Elevenlabs),
+            "fish_tts" => Some(Self::FishTts),
+            "fish_speech" => Some(Self::FishSpeech),
             "openai_tts" => Some(Self::OpenAiTts),
+            "kokoro" => Some(Self::Kokoro),
             _ => None,
         }
     }
@@ -36,6 +42,10 @@ pub struct AudioProvider {
     pub base_url: Option<String>,
     #[serde(default)]
     pub request_path: Option<String>,
+    #[serde(default)]
+    pub kokoro_variant: Option<String>,
+    #[serde(default)]
+    pub asset_root: Option<String>,
     #[serde(default)]
     pub created_at: u64,
     #[serde(default)]

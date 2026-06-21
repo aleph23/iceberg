@@ -1,6 +1,12 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type AudioProviderType = "gemini_tts" | "elevenlabs" | "openai_tts";
+export type AudioProviderType =
+  | "gemini_tts"
+  | "elevenlabs"
+  | "fish_tts"
+  | "fish_speech"
+  | "openai_tts"
+  | "kokoro";
 
 export interface AudioProvider {
   id: string;
@@ -11,6 +17,8 @@ export interface AudioProvider {
   location?: string; // Gemini only
   baseUrl?: string; // OpenAI-compatible TTS only
   requestPath?: string; // OpenAI-compatible TTS only
+  kokoroVariant?: KokoroModelVariant; // Kokoro only
+  assetRoot?: string; // Kokoro only
   createdAt?: number;
   updatedAt?: number;
   isSystem?: boolean;
@@ -48,6 +56,67 @@ export interface TtsPreviewResponse {
   format: string;
 }
 
+export type KokoroModelVariant = "fp32" | "fp16" | "int8";
+
+export interface KokoroSupportedVariant {
+  id: KokoroModelVariant;
+  label: string;
+  filename: string;
+  sizeMb: number;
+  mobileSupported: boolean;
+}
+
+export interface KokoroInstalledVoice {
+  id: string;
+  path: string;
+}
+
+export interface KokoroVoiceBlendEntry {
+  voiceId: string;
+  weight: number;
+}
+
+export interface KokoroAssetStatus {
+  variant: KokoroModelVariant;
+  variantAllowedOnPlatform: boolean;
+  resolvedModelPath: string | null;
+  installedVoices: KokoroInstalledVoice[];
+  selectedVoiceInstalled: boolean | null;
+}
+
+export interface KokoroAvailableVoice {
+  id: string;
+  installed: boolean;
+}
+
+export interface KokoroQueuedInstall {
+  installId: string;
+  queueIds: string[];
+}
+
+export interface KokoroTokenizePreviewSegment {
+  kind: string;
+  sourceText: string;
+  ipa: string;
+  tokenIds: number[];
+}
+
+export interface KokoroTokenizePreview {
+  language: string;
+  primaryVoiceId: string;
+  voiceBlend: KokoroVoiceBlendEntry[];
+  normalizedText: string;
+  effectiveText: string;
+  lexiconPath: string;
+  lexiconEntryCount: number;
+  usedLexiconEntries: string[];
+  tokenIds: number[];
+  tokenCount: number;
+  chunkLengths: number[];
+  warnings: string[];
+  segments: KokoroTokenizePreviewSegment[];
+}
+
 export async function listAudioProviders(): Promise<AudioProvider[]> {
   return invoke<AudioProvider[]>("audio_provider_list");
 }
@@ -64,13 +133,15 @@ export async function deleteAudioProvider(id: string): Promise<void> {
 
 export async function verifyAudioProvider(
   providerType: AudioProviderType,
-  apiKey: string,
+  apiKey?: string,
   projectId?: string,
+  baseUrl?: string,
 ): Promise<boolean> {
   return invoke<boolean>("audio_provider_verify", {
     providerType,
     apiKey,
     projectId,
+    baseUrl,
   });
 }
 
@@ -121,6 +192,130 @@ export async function generateTtsPreview(
     prompt,
     text,
     requestId: requestId ?? null,
+  });
+}
+
+export async function kokoroSupportedVariants(): Promise<KokoroSupportedVariant[]> {
+  return invoke<KokoroSupportedVariant[]>("kokoro_supported_variants");
+}
+
+export async function kokoroDefaultAssetRoot(): Promise<string> {
+  return invoke<string>("kokoro_default_asset_root");
+}
+
+export async function kokoroValidateAssets(
+  assetRoot: string,
+  variant: KokoroModelVariant,
+  selectedVoiceId?: string,
+): Promise<KokoroAssetStatus> {
+  return invoke<KokoroAssetStatus>("kokoro_validate_assets", {
+    assetRoot,
+    variant,
+    selectedVoiceId: selectedVoiceId ?? null,
+  });
+}
+
+export async function kokoroListInstalledVoices(
+  assetRoot: string,
+): Promise<KokoroInstalledVoice[]> {
+  return invoke<KokoroInstalledVoice[]>("kokoro_list_installed_voices", {
+    assetRoot,
+  });
+}
+
+export async function kokoroListAvailableVoices(
+  assetRoot: string,
+): Promise<KokoroAvailableVoice[]> {
+  return invoke<KokoroAvailableVoice[]>("kokoro_list_available_voices", {
+    assetRoot,
+  });
+}
+
+export async function kokoroInstallModel(
+  assetRoot: string,
+  variant: KokoroModelVariant,
+): Promise<KokoroQueuedInstall> {
+  return invoke<KokoroQueuedInstall>("kokoro_install_model", {
+    assetRoot,
+    variant,
+  });
+}
+
+export async function kokoroInstallVoice(
+  assetRoot: string,
+  voiceId: string,
+): Promise<KokoroQueuedInstall> {
+  return invoke<KokoroQueuedInstall>("kokoro_install_voice", {
+    assetRoot,
+    voiceId,
+  });
+}
+
+export async function kokoroUninstallModel(
+  assetRoot: string,
+  variant: KokoroModelVariant,
+): Promise<boolean> {
+  return invoke<boolean>("kokoro_uninstall_model", { assetRoot, variant });
+}
+
+export async function kokoroUninstallVoice(
+  assetRoot: string,
+  voiceId: string,
+): Promise<boolean> {
+  return invoke<boolean>("kokoro_uninstall_voice", { assetRoot, voiceId });
+}
+
+export async function kokoroInstallVoices(
+  assetRoot: string,
+  voiceIds: string[],
+): Promise<KokoroQueuedInstall> {
+  return invoke<KokoroQueuedInstall>("kokoro_install_voices", { assetRoot, voiceIds });
+}
+
+export interface KokoroStorageStats {
+  modelBytes: number;
+  voicesBytes: number;
+  totalBytes: number;
+  voiceCount: number;
+}
+
+export async function kokoroStorageStats(assetRoot: string): Promise<KokoroStorageStats> {
+  return invoke<KokoroStorageStats>("kokoro_storage_stats", { assetRoot });
+}
+
+export async function kokoroTokenizePreview(
+  assetRoot: string,
+  voiceBlend: KokoroVoiceBlendEntry[],
+  text: string,
+  espeakBinPath?: string,
+  espeakDataPath?: string,
+): Promise<KokoroTokenizePreview> {
+  return invoke<KokoroTokenizePreview>("kokoro_tokenize_preview", {
+    assetRoot,
+    voiceBlend,
+    text,
+    espeakBinPath: espeakBinPath ?? null,
+    espeakDataPath: espeakDataPath ?? null,
+  });
+}
+
+export async function kokoroPreview(
+  assetRoot: string,
+  variant: KokoroModelVariant,
+  voiceBlend: KokoroVoiceBlendEntry[],
+  text: string,
+  speed?: number,
+  espeakBinPath?: string,
+  espeakDataPath?: string,
+): Promise<TtsPreviewResponse> {
+  return invoke<TtsPreviewResponse>("kokoro_preview", {
+    assetRoot,
+    variant,
+    voiceBlend,
+    text,
+    speed: speed ?? null,
+    espeakBinPath: espeakBinPath ?? null,
+    espeakDataPath: espeakDataPath ?? null,
   });
 }
 

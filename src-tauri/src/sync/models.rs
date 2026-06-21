@@ -1,3 +1,4 @@
+use crate::chat_manager::types::MemoryEmbedding;
 use serde::{Deserialize, Serialize};
 
 fn default_speaker_selection_method() -> String {
@@ -6,6 +7,10 @@ fn default_speaker_selection_method() -> String {
 
 fn default_memory_type() -> String {
     "manual".to_string()
+}
+
+fn default_character_mode() -> String {
+    "roleplay".to_string()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,7 +48,9 @@ pub struct Persona {
     pub design_description: Option<String>,
     #[serde(default)]
     pub design_reference_image_ids: Option<String>,
-    pub is_default: i64, // Boolean as integer
+    #[serde(default)]
+    pub active_lorebook_ids: Option<String>,
+    pub is_default: i64,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -129,6 +136,10 @@ pub struct AudioProvider {
     pub location: Option<String>,
     pub base_url: Option<String>,
     pub request_path: Option<String>,
+    #[serde(default)]
+    pub kokoro_variant: Option<String>,
+    #[serde(default)]
+    pub asset_root: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -175,8 +186,6 @@ pub struct GroupCharacter {
     pub memory_type: String,
 }
 
-// Layer 2: Lorebooks
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SyncLorebook {
     pub id: String,
@@ -194,7 +203,7 @@ pub struct SyncLorebookEntry {
     pub title: String,
     pub enabled: i64,
     pub always_active: i64,
-    pub keywords: String, // JSON string
+    pub keywords: String,
     pub case_sensitive: i64,
     pub content: String,
     pub priority: i32,
@@ -202,8 +211,6 @@ pub struct SyncLorebookEntry {
     pub created_at: i64,
     pub updated_at: i64,
 }
-
-// Layer 3: Characters
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Character {
@@ -238,7 +245,13 @@ pub struct Character {
     pub default_model_id: Option<String>,
     #[serde(default)]
     pub fallback_model_id: Option<String>,
+    #[serde(default = "default_character_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub companion: Option<String>,
     pub memory_type: String,
+    #[serde(default)]
+    pub active_lorebook_ids: Option<String>,
     pub prompt_template_id: Option<String>,
     #[serde(default)]
     pub group_chat_prompt_template_id: Option<String>,
@@ -249,6 +262,8 @@ pub struct Character {
     #[serde(default)]
     pub voice_autoplay: i64,
     pub disable_avatar_gradient: i64,
+    #[serde(default)]
+    pub avatar_gradient_source: Option<String>,
     pub custom_gradient_enabled: Option<i64>,
     pub custom_gradient_colors: Option<String>,
     pub custom_text_color: Option<String>,
@@ -276,6 +291,8 @@ pub struct Scene {
     pub content: String,
     #[serde(default)]
     pub direction: Option<String>,
+    #[serde(default)]
+    pub background_image_path: Option<String>,
     pub created_at: i64,
     pub selected_variant_id: Option<String>,
 }
@@ -297,6 +314,8 @@ pub struct ChatTemplate {
     pub name: String,
     pub scene_id: Option<String>,
     pub prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_ids_override: Option<String>,
     pub created_at: i64,
 }
 
@@ -310,18 +329,6 @@ pub struct ChatTemplateMessage {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct CharacterLorebookLink {
-    pub character_id: String,
-    pub lorebook_id: String,
-    pub enabled: i64,
-    pub display_order: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
-}
-
-// Layer 4: Sessions
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub character_id: String,
@@ -329,9 +336,15 @@ pub struct Session {
     #[serde(default)]
     pub background_image_path: Option<String>,
     pub system_prompt: Option<String>,
+    #[serde(default)]
+    pub mode: String,
     pub selected_scene_id: Option<String>,
     #[serde(default)]
     pub prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_ids_override: Option<String>,
+    #[serde(default)]
+    pub author_note: Option<String>,
     pub persona_id: Option<String>,
     pub persona_disabled: Option<i64>,
     #[serde(default)]
@@ -342,6 +355,8 @@ pub struct Session {
     pub frequency_penalty: Option<f64>,
     pub presence_penalty: Option<f64>,
     pub top_k: Option<i64>,
+    #[serde(default)]
+    pub companion_state: Option<String>,
     pub memories: String,
     pub memory_embeddings: String,
     pub memory_summary: Option<String>,
@@ -357,12 +372,41 @@ pub struct Session {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct CompanionSharedMemory {
+    pub character_id: String,
+    pub memories: String,
+    pub memory_embeddings: String,
+    pub memory_summary: Option<String>,
+    pub memory_summary_token_count: i64,
+    pub memory_tool_events: String,
+    #[serde(default)]
+    pub memory_status: Option<String>,
+    #[serde(default)]
+    pub memory_error: Option<String>,
+    #[serde(default)]
+    pub memory_progress_step: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SyncedMemoryEmbedding {
+    pub session_id: String,
+    pub session_kind: String,
+    pub memory: MemoryEmbedding,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
     pub session_id: String,
     pub role: String,
     pub content: String,
     pub created_at: i64,
+    #[serde(default)]
+    pub visible_in_chat: i64,
+    #[serde(default)]
+    pub scene_edited: i64,
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
     pub total_tokens: Option<i64>,
@@ -421,8 +465,6 @@ pub struct UsageMetadata {
     pub key: String,
     pub value: String,
 }
-
-// Layer 5: Group Sessions
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GroupSession {

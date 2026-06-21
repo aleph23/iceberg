@@ -7,6 +7,7 @@ use crate::chat_manager::attachments::{
     cleanup_attachments, load_attachment_data, persist_attachments,
 };
 use crate::chat_manager::commands::take_aborted_request;
+use crate::chat_manager::companion;
 use crate::chat_manager::execution::{
     build_model_attempts, build_provider_extra_fields, emit_fallback_retry_toast, RequestSettings,
 };
@@ -15,7 +16,9 @@ use crate::chat_manager::memory::dynamic::{
     dynamic_retrieval_strategy, dynamic_window_size, ensure_pinned_hot, mark_memories_accessed,
     promote_cold_memories,
 };
-use crate::chat_manager::memory::flow::{process_dynamic_memory_cycle, select_relevant_memories};
+use crate::chat_manager::memory::flow::{
+    enqueue_post_turn_dynamic_memory, select_relevant_memories,
+};
 use crate::chat_manager::memory::manual::{has_manual_memories, render_manual_memory_lines};
 use crate::chat_manager::messages::{
     push_prompt_entry_message, push_system_message, push_user_or_assistant_message_with_context,
@@ -29,6 +32,10 @@ use crate::chat_manager::service::{
     record_failed_usage, record_usage_if_available, require_api_key, ChatService, PreparedChatTurn,
 };
 use crate::chat_manager::storage::recent_messages;
+use crate::chat_manager::temporal::{
+    companion_effective_now, companion_time_awareness_enabled, format_memory_for_prompt,
+    temporal_frame_delta,
+};
 use crate::chat_manager::turn_builder::{
     append_image_directive_instructions, build_enriched_query, conversation_window_with_pinned,
     insert_in_chat_prompt_entries, is_dynamic_memory_active, manual_window_size,
@@ -107,6 +114,7 @@ impl CompletionFlow {
         );
 
         let dynamic_memory_enabled = is_dynamic_memory_active(settings, &character);
+        let companion_mode_enabled = companion::is_companion_mode(&session, &character);
         let dynamic_window = dynamic_window_size(settings);
         if dynamic_memory_enabled {
             let _ = prompts::ensure_dynamic_memory_templates(&app);
@@ -150,6 +158,8 @@ impl CompletionFlow {
             role: "user".into(),
             content: user_message.clone(),
             created_at: now,
+            visible_in_chat: false,
+            scene_edited: false,
             usage: None,
             variants: Vec::new(),
             selected_variant_id: None,
@@ -163,6 +173,23 @@ impl CompletionFlow {
         };
         session.messages.push(user_msg.clone());
         session.updated_at = now;
+
+        if companion::update_state_for_user_message(
+            &app,
+            &mut session,
+            &character,
+            &user_message,
+            now,
+        )
+        .await
+        {
+            log_info(
+                &app,
+                "companion",
+                format!("updated companion state for session={}", session.id),
+            );
+        }
+
         context.save_session(&session)?;
 
         emit_debug(
@@ -199,6 +226,7 @@ impl CompletionFlow {
             crate::chat_manager::prompt_engine::resolve_used_lorebook_entries(
                 &app,
                 &character.id,
+                persona.as_ref(),
                 &session,
                 &prompt_entries,
             );
@@ -233,7 +261,11 @@ impl CompletionFlow {
 
             log_info(
                 &app,
-                "memory_retrieval",
+                if companion_mode_enabled {
+                    "companion_memory"
+                } else {
+                    "memory_retrieval"
+                },
                 format!(
                     "Search query ({} chars, enriched={})",
                     search_query.len(),
@@ -243,11 +275,12 @@ impl CompletionFlow {
 
             select_relevant_memories(
                 &app,
-                &session,
+                &mut session,
                 &search_query,
                 dynamic_retrieval_limit(settings),
                 dynamic_min_similarity(settings),
                 dynamic_retrieval_strategy(settings),
+                companion_mode_enabled,
             )
             .await
         } else {
@@ -258,19 +291,42 @@ impl CompletionFlow {
             let memory_ids: Vec<String> = relevant_memories.iter().map(|m| m.id.clone()).collect();
             let now = now_millis().unwrap_or_default();
             let promoted = promote_cold_memories(&mut session.memory_embeddings, &memory_ids, now);
-            let accessed = mark_memories_accessed(&mut session.memory_embeddings, &memory_ids, now);
-            if promoted > 0 {
+            let access_updates =
+                mark_memories_accessed(&mut session.memory_embeddings, &memory_ids, now);
+            let owner =
+                crate::storage_manager::companion_shared_memory::resolve_effective_memory_owner_for_session_app(
+                    &app,
+                    &session.id,
+                );
+            if !promoted.is_empty() {
+                if let Ok(owner) = &owner {
+                    let _ = crate::storage_manager::memory_embeddings::set_cold_many_app(
+                        &app,
+                        &owner.owner_id,
+                        owner.kind,
+                        &promoted,
+                        false,
+                    );
+                }
                 log_info(
                     &app,
                     "dynamic_memory",
-                    format!("Promoted {} cold memories to hot", promoted),
+                    format!("Promoted {} cold memories to hot", promoted.len()),
                 );
             }
-            if accessed > 0 {
+            if !access_updates.is_empty() {
+                if let Ok(owner) = &owner {
+                    let _ = crate::storage_manager::memory_embeddings::apply_access_updates_app(
+                        &app,
+                        &owner.owner_id,
+                        owner.kind,
+                        &access_updates,
+                    );
+                }
                 log_info(
                     &app,
                     "dynamic_memory",
-                    format!("Marked {} memories as accessed", accessed),
+                    format!("Marked {} memories as accessed", access_updates.len()),
                 );
             }
         }
@@ -299,10 +355,11 @@ impl CompletionFlow {
             if relevant_memories.is_empty() {
                 None
             } else {
+                let memory_now = companion_effective_now(&session);
                 Some(
                     relevant_memories
                         .iter()
-                        .map(|m| format!("- {}", m.text))
+                        .map(|mem| format_memory_for_prompt(mem, memory_now))
                         .collect::<Vec<_>>()
                         .join("\n"),
                 )
@@ -321,19 +378,33 @@ impl CompletionFlow {
         }
 
         let char_name = if swap_places {
-            persona.as_ref().map(|p| p.title.as_str()).unwrap_or("User")
+            persona.as_ref().map(|p| p.title.as_str()).unwrap_or("user")
         } else {
             character.name.as_str()
         };
         let persona_name = if swap_places {
             character.name.as_str()
         } else {
-            persona.as_ref().map(|p| p.title.as_str()).unwrap_or("")
+            persona.as_ref().map(|p| p.title.as_str()).unwrap_or("user")
         };
         let allow_image_input = model
             .input_scopes
             .iter()
             .any(|scope| scope.eq_ignore_ascii_case("image"));
+
+        let time_stamp_enabled =
+            companion_mode_enabled && companion_time_awareness_enabled(&session);
+        let time_frame_delta = if time_stamp_enabled {
+            let latest_created = pinned_msgs
+                .iter()
+                .chain(recent_msgs.iter())
+                .map(|msg| msg.created_at)
+                .max()
+                .unwrap_or(0);
+            temporal_frame_delta(&session, latest_created)
+        } else {
+            0
+        };
 
         let mut chat_messages = Vec::new();
         for msg in &pinned_msgs {
@@ -345,6 +416,8 @@ impl CompletionFlow {
                 char_name,
                 persona_name,
                 allow_image_input,
+                time_frame_delta,
+                time_stamp_enabled,
             );
         }
 
@@ -357,6 +430,8 @@ impl CompletionFlow {
                 char_name,
                 persona_name,
                 allow_image_input,
+                time_frame_delta,
+                time_stamp_enabled,
             );
         }
 
@@ -631,6 +706,11 @@ impl CompletionFlow {
 
         let text = extract_text(api_response.data(), Some(&selected_credential.provider_id))
             .unwrap_or_default();
+        let text = if time_stamp_enabled {
+            crate::chat_manager::temporal::strip_leading_time_stamp(&text)
+        } else {
+            text
+        };
         let usage = extract_usage(api_response.data());
         let reasoning =
             extract_reasoning(api_response.data(), Some(&selected_credential.provider_id));
@@ -727,6 +807,8 @@ impl CompletionFlow {
             role: "assistant".into(),
             content: text.clone(),
             created_at: assistant_created_at,
+            visible_in_chat: false,
+            scene_edited: false,
             usage: usage.clone(),
             variants: vec![variant],
             selected_variant_id: Some(variant_id),
@@ -799,15 +881,13 @@ impl CompletionFlow {
         .await;
 
         if dynamic_memory_enabled {
-            if let Err(err) =
-                process_dynamic_memory_cycle(&app, &mut session, settings, &character).await
-            {
-                log_error(
-                    &app,
-                    "chat_completion",
-                    format!("dynamic memory cycle failed: {}", err),
-                );
-            }
+            enqueue_post_turn_dynamic_memory(
+                app.clone(),
+                session.id.clone(),
+                Some(user_msg.id.clone()),
+                assistant_message.id.clone(),
+                companion_mode_enabled.then(Default::default),
+            );
         }
 
         Ok(ChatTurnResult {

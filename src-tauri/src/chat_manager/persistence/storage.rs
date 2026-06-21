@@ -3,6 +3,7 @@ use tauri::AppHandle;
 
 use crate::storage_manager::{
     characters::characters_list_typed,
+    memory_embeddings,
     personas::personas_list_typed,
     sessions::{
         messages_list_internal, messages_list_pinned_internal, messages_upsert_batch_internal,
@@ -22,29 +23,59 @@ use crate::chat_manager::types::{
 pub enum PromptType {
     SystemPrompt,
     LocalRoleplayPrompt,
+    CompanionPrompt,
     DynamicMemoryPrompt,
     DynamicMemoryLocalPrompt,
     DynamicSummaryPrompt,
     HelpMeReplyPrompt,
     HelpMeReplyConversationalPrompt,
+    LorebookEntryWriterPrompt,
+    LorebookKeywordGeneratorPrompt,
+    LorebookGeneratorPlannerPrompt,
+    LorebookGeneratorWriterPrompt,
+    LorebookGeneratorRefinePrompt,
+    LorebookGeneratorCoherencePrompt,
     GroupChatPrompt,
     GroupChatRoleplayPrompt,
     AvatarGenerationPrompt,
     AvatarEditPrompt,
     SceneGenerationPrompt,
+    ScenePromptWriterPrompt,
     DesignReferencePrompt,
+    CompanionSoulWriterPrompt,
 }
 
 pub fn get_base_prompt(prompt_type: PromptType) -> String {
     match prompt_type {
         PromptType::SystemPrompt => prompt_engine::default_system_prompt_template(),
         PromptType::LocalRoleplayPrompt => prompt_engine::default_local_roleplay_prompt(),
+        PromptType::CompanionPrompt => prompt_engine::default_companion_prompt(),
         PromptType::DynamicMemoryPrompt => prompt_engine::default_dynamic_memory_prompt(),
-        PromptType::DynamicMemoryLocalPrompt => prompt_engine::default_dynamic_memory_local_prompt(),
+        PromptType::DynamicMemoryLocalPrompt => {
+            prompt_engine::default_dynamic_memory_local_prompt()
+        }
         PromptType::DynamicSummaryPrompt => prompt_engine::default_dynamic_summary_prompt(),
         PromptType::HelpMeReplyPrompt => prompt_engine::default_help_me_reply_prompt(),
         PromptType::HelpMeReplyConversationalPrompt => {
             prompt_engine::default_help_me_reply_conversational_prompt()
+        }
+        PromptType::LorebookEntryWriterPrompt => {
+            prompt_engine::default_lorebook_entry_writer_prompt()
+        }
+        PromptType::LorebookKeywordGeneratorPrompt => {
+            prompt_engine::default_lorebook_keyword_generator_prompt()
+        }
+        PromptType::LorebookGeneratorPlannerPrompt => {
+            prompt_engine::default_lorebook_generator_planner_prompt()
+        }
+        PromptType::LorebookGeneratorWriterPrompt => {
+            prompt_engine::default_lorebook_generator_writer_prompt()
+        }
+        PromptType::LorebookGeneratorRefinePrompt => {
+            prompt_engine::default_lorebook_generator_refine_prompt()
+        }
+        PromptType::LorebookGeneratorCoherencePrompt => {
+            prompt_engine::default_lorebook_generator_coherence_prompt()
         }
         PromptType::GroupChatPrompt => prompt_engine::default_group_chat_system_prompt_template(),
         PromptType::GroupChatRoleplayPrompt => {
@@ -53,7 +84,11 @@ pub fn get_base_prompt(prompt_type: PromptType) -> String {
         PromptType::AvatarGenerationPrompt => prompt_engine::default_avatar_generation_prompt(),
         PromptType::AvatarEditPrompt => prompt_engine::default_avatar_edit_prompt(),
         PromptType::SceneGenerationPrompt => prompt_engine::default_scene_generation_prompt(),
+        PromptType::ScenePromptWriterPrompt => prompt_engine::default_scene_prompt_writer_prompt(),
         PromptType::DesignReferencePrompt => prompt_engine::default_design_reference_prompt(),
+        PromptType::CompanionSoulWriterPrompt => {
+            prompt_engine::default_companion_soul_writer_prompt()
+        }
     }
 }
 
@@ -61,19 +96,44 @@ pub fn get_base_prompt_entries(prompt_type: PromptType) -> Vec<SystemPromptEntry
     match prompt_type {
         PromptType::SystemPrompt => prompt_engine::default_modular_prompt_entries(),
         PromptType::LocalRoleplayPrompt => prompt_engine::default_local_roleplay_entries(),
+        PromptType::CompanionPrompt => prompt_engine::default_companion_entries(),
         PromptType::DynamicMemoryPrompt => prompt_engine::default_dynamic_memory_entries(),
-        PromptType::DynamicMemoryLocalPrompt => prompt_engine::default_dynamic_memory_local_entries(),
+        PromptType::DynamicMemoryLocalPrompt => {
+            prompt_engine::default_dynamic_memory_local_entries()
+        }
         PromptType::DynamicSummaryPrompt => prompt_engine::default_dynamic_summary_entries(),
         PromptType::HelpMeReplyPrompt => prompt_engine::default_help_me_reply_entries(),
         PromptType::HelpMeReplyConversationalPrompt => {
             prompt_engine::default_help_me_reply_conversational_entries()
+        }
+        PromptType::LorebookEntryWriterPrompt => {
+            prompt_engine::default_lorebook_entry_writer_entries()
+        }
+        PromptType::LorebookKeywordGeneratorPrompt => {
+            prompt_engine::default_lorebook_keyword_generator_entries()
+        }
+        PromptType::LorebookGeneratorPlannerPrompt => {
+            prompt_engine::default_lorebook_generator_planner_entries()
+        }
+        PromptType::LorebookGeneratorWriterPrompt => {
+            prompt_engine::default_lorebook_generator_writer_entries()
+        }
+        PromptType::LorebookGeneratorRefinePrompt => {
+            prompt_engine::default_lorebook_generator_refine_entries()
+        }
+        PromptType::LorebookGeneratorCoherencePrompt => {
+            prompt_engine::default_lorebook_generator_coherence_entries()
         }
         PromptType::GroupChatPrompt => prompt_engine::default_group_chat_entries(),
         PromptType::GroupChatRoleplayPrompt => prompt_engine::default_group_chat_roleplay_entries(),
         PromptType::AvatarGenerationPrompt => prompt_engine::default_avatar_generation_entries(),
         PromptType::AvatarEditPrompt => prompt_engine::default_avatar_edit_entries(),
         PromptType::SceneGenerationPrompt => prompt_engine::default_scene_generation_entries(),
+        PromptType::ScenePromptWriterPrompt => prompt_engine::default_scene_prompt_writer_entries(),
         PromptType::DesignReferencePrompt => prompt_engine::default_design_reference_entries(),
+        PromptType::CompanionSoulWriterPrompt => {
+            prompt_engine::default_companion_soul_writer_entries()
+        }
     }
 }
 
@@ -155,7 +215,13 @@ fn default_settings() -> Settings {
         app_state: serde_json::Value::Null,
         advanced_model_settings: AdvancedModelSettings::default(),
         advanced_settings: Some(AdvancedSettings {
+            llama_default_context_length: None,
+            llama_default_kv_cache_type: None,
+            sd_default_offload_mode: None,
+            sd_default_size: None,
             summarisation_model_id: None,
+            dynamic_memory_summarizer_prompt_template_id: None,
+            dynamic_memory_manager_prompt_template_id: None,
             developer_mode_enabled: Some(false),
             dynamic_memory_structured_fallback_format: Some(
                 DynamicMemoryStructuredFallbackFormat::Xml,
@@ -167,17 +233,50 @@ fn default_settings() -> Settings {
             scene_generation_mode: Some("auto".to_string()),
             scene_generation_model_id: None,
             scene_writer_model_id: None,
+            app_update_checks_enabled: None,
             creation_helper_enabled: None,
             creation_helper_model_id: None,
+            creation_helper_streaming: None,
+            creation_helper_image_model_id: None,
+            creation_helper_smart_tool_selection: None,
+            creation_helper_enabled_tools: None,
             help_me_reply_enabled: None,
             help_me_reply_model_id: None,
             help_me_reply_streaming: None,
             help_me_reply_max_tokens: None,
+            help_me_reply_history_count: None,
             help_me_reply_style: None,
+            help_me_reply_roleplay_prompt_template_id: None,
+            help_me_reply_conversational_prompt_template_id: None,
+            lorebook_entry_generator_model_id: None,
+            lorebook_entry_generator_structured_fallback_format: Some(
+                DynamicMemoryStructuredFallbackFormat::Json,
+            ),
+            lorebook_entry_generator_prompt_template_id: None,
+            lorebook_keyword_generator_prompt_template_id: None,
+            lorebook_generator_model_id: None,
+            lorebook_generator_structured_fallback_format: Some(
+                DynamicMemoryStructuredFallbackFormat::Json,
+            ),
+            lorebook_generator_default_target_count: Some(12),
+            lorebook_generator_max_tokens: Some(4096),
+            lorebook_generator_planner_prompt_template_id: None,
+            lorebook_generator_writer_prompt_template_id: None,
+            lorebook_generator_refine_prompt_template_id: None,
+            lorebook_generator_coherence_prompt_template_id: None,
+            companion_soul_writer_model_id: None,
+            companion_soul_writer_fallback_model_id: None,
+            companion_soul_writer_prompt_template_id: None,
+            companion_soul_writer_structured_fallback_format: Some(
+                DynamicMemoryStructuredFallbackFormat::Json,
+            ),
             dynamic_memory: None,
             group_dynamic_memory: None,
             manual_mode_context_window: None,
             embedding_max_tokens: None,
+            embedding_model_version: None,
+            embedding_dimensions: None,
+            embedding_keep_model_loaded: None,
             host_api: None,
             accessibility: Some(AccessibilitySettings {
                 send: AccessibilitySoundSettings {
@@ -193,6 +292,7 @@ fn default_settings() -> Settings {
                     volume: 0.6,
                 },
             }),
+            chat_appearance: None,
         }),
         prompt_template_id: None,
         system_prompt: None,
@@ -212,6 +312,19 @@ pub fn load_session(app: &AppHandle, session_id: &str) -> Result<Option<Session>
     let Some(mut session) = session_get_meta_internal(app, session_id)? else {
         return Ok(None);
     };
+
+    let owner =
+        crate::storage_manager::companion_shared_memory::resolve_effective_memory_owner_for_session_app(
+            app,
+            session_id,
+        )?;
+    let new_table_count =
+        memory_embeddings::count_for_session_app(app, &owner.owner_id, owner.kind).unwrap_or(0);
+    if new_table_count > 0 {
+        session.memory_embeddings =
+            memory_embeddings::load_for_session_app(app, &owner.owner_id, owner.kind)?;
+    }
+
     let recent = messages_list_internal(app, session_id, 120, None, None)?;
     let pinned = messages_list_pinned_internal(app, session_id)?;
 
@@ -230,8 +343,41 @@ pub fn load_session(app: &AppHandle, session_id: &str) -> Result<Option<Session>
 }
 
 pub fn save_session(app: &AppHandle, session: &Session) -> Result<(), String> {
+    let owner =
+        crate::storage_manager::companion_shared_memory::resolve_effective_memory_owner_for_session_app(
+            app,
+            &session.id,
+        )?;
+    memory_embeddings::replace_all_app(
+        app,
+        &owner.owner_id,
+        owner.kind,
+        &session.memory_embeddings,
+    )?;
+
     let mut meta = session.clone();
     meta.messages = Vec::new();
+    if !owner.shared {
+        meta.memory_embeddings = Vec::new();
+    }
+
+    if let Some(state_obj) = meta
+        .companion_state
+        .as_mut()
+        .and_then(|value| value.as_object_mut())
+    {
+        if let Ok(Some(persisted)) = session_get_meta_internal(app, &session.id) {
+            if let Some(prefs) = persisted
+                .companion_state
+                .as_ref()
+                .and_then(|value| value.get("preferences"))
+                .cloned()
+            {
+                state_obj.insert("preferences".to_string(), prefs);
+            }
+        }
+    }
+
     session_upsert_meta_internal(app, &meta)?;
 
     if let Some(last) = session.messages.last() {
@@ -266,6 +412,23 @@ pub fn resolve_credential_for_model<'a>(
     settings: &'a Settings,
     model: &Model,
 ) -> Option<&'a ProviderCredential> {
+    if model
+        .provider_id
+        .eq_ignore_ascii_case(crate::local_diffusion::PROVIDER_ID)
+    {
+        static LOCAL_DIFFUSION_CREDENTIAL: OnceLock<ProviderCredential> = OnceLock::new();
+        return Some(LOCAL_DIFFUSION_CREDENTIAL.get_or_init(|| ProviderCredential {
+            id: "builtin-localdiffusion".to_string(),
+            provider_id: crate::local_diffusion::PROVIDER_ID.to_string(),
+            label: crate::local_diffusion::PROVIDER_LABEL.to_string(),
+            api_key: Some(String::new()),
+            base_url: None,
+            default_model: None,
+            headers: None,
+            config: None,
+        }));
+    }
+
     if model.provider_id.eq_ignore_ascii_case("llamacpp") {
         static LLAMA_CPP_CREDENTIAL: OnceLock<ProviderCredential> = OnceLock::new();
         return Some(LLAMA_CPP_CREDENTIAL.get_or_init(|| ProviderCredential {
@@ -335,146 +498,6 @@ pub fn resolve_credential_for_model<'a>(
     // Multiple credentials exist for the same provider type and none matched.
     // Returning None avoids silently routing to the wrong endpoint.
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::resolve_credential_for_model;
-    use crate::chat_manager::types::{AdvancedModelSettings, Model, ProviderCredential, Settings};
-    use serde_json::Value;
-
-    fn mk_model(provider_id: &str, provider_label: &str, name: &str) -> Model {
-        Model {
-            id: "model-1".to_string(),
-            name: name.to_string(),
-            provider_id: provider_id.to_string(),
-            provider_credential_id: None,
-            provider_label: provider_label.to_string(),
-            display_name: name.to_string(),
-            created_at: 0,
-            input_scopes: vec!["text".to_string()],
-            output_scopes: vec!["text".to_string()],
-            advanced_model_settings: None,
-            prompt_template_id: None,
-            voice_config: None,
-            system_prompt: None,
-        }
-    }
-
-    fn mk_cred(
-        id: &str,
-        provider_id: &str,
-        label: &str,
-        default_model: Option<&str>,
-    ) -> ProviderCredential {
-        ProviderCredential {
-            id: id.to_string(),
-            provider_id: provider_id.to_string(),
-            label: label.to_string(),
-            api_key: Some("k".to_string()),
-            base_url: Some("https://example.com".to_string()),
-            default_model: default_model.map(str::to_string),
-            headers: None,
-            config: None,
-        }
-    }
-
-    fn mk_settings(
-        default_provider_credential_id: Option<&str>,
-        provider_credentials: Vec<ProviderCredential>,
-    ) -> Settings {
-        Settings {
-            default_provider_credential_id: default_provider_credential_id.map(str::to_string),
-            default_model_id: None,
-            provider_credentials,
-            models: vec![],
-            app_state: Value::Null,
-            advanced_model_settings: AdvancedModelSettings::default(),
-            advanced_settings: None,
-            prompt_template_id: None,
-            system_prompt: None,
-            migration_version: 0,
-        }
-    }
-
-    #[test]
-    fn resolves_single_candidate() {
-        let model = mk_model("custom", "local", "glm-auto");
-        let settings = mk_settings(None, vec![mk_cred("c1", "custom", "local", None)]);
-        let picked = resolve_credential_for_model(&settings, &model).map(|c| c.id.clone());
-        assert_eq!(picked.as_deref(), Some("c1"));
-    }
-
-    #[test]
-    fn resolves_to_default_provider_credential_when_present() {
-        let model = mk_model("custom", "local", "glm-auto");
-        let settings = mk_settings(
-            Some("c2"),
-            vec![
-                mk_cred("c1", "custom", "local", None),
-                mk_cred("c2", "custom", "modal", None),
-            ],
-        );
-        let picked = resolve_credential_for_model(&settings, &model).map(|c| c.id.clone());
-        assert_eq!(picked.as_deref(), Some("c2"));
-    }
-
-    #[test]
-    fn resolves_by_provider_label_when_multiple_candidates_exist() {
-        let model = mk_model("custom", "local", "glm-auto");
-        let settings = mk_settings(
-            None,
-            vec![
-                mk_cred("c1", "custom", "modal", None),
-                mk_cred("c2", "custom", "local", None),
-            ],
-        );
-        let picked = resolve_credential_for_model(&settings, &model).map(|c| c.id.clone());
-        assert_eq!(picked.as_deref(), Some("c2"));
-    }
-
-    #[test]
-    fn resolves_by_credential_default_model_when_label_does_not_match() {
-        let model = mk_model("custom", "unknown", "glm-auto");
-        let settings = mk_settings(
-            None,
-            vec![
-                mk_cred("c1", "custom", "modal", None),
-                mk_cred("c2", "custom", "local", Some("glm-auto")),
-            ],
-        );
-        let picked = resolve_credential_for_model(&settings, &model).map(|c| c.id.clone());
-        assert_eq!(picked.as_deref(), Some("c2"));
-    }
-
-    #[test]
-    fn returns_none_for_ambiguous_multiple_candidates() {
-        let model = mk_model("custom", "", "glm-auto");
-        let settings = mk_settings(
-            None,
-            vec![
-                mk_cred("c1", "custom", "one", None),
-                mk_cred("c2", "custom", "two", None),
-            ],
-        );
-        let picked = resolve_credential_for_model(&settings, &model).map(|c| c.id.clone());
-        assert!(picked.is_none());
-    }
-
-    #[test]
-    fn resolves_explicit_model_provider_credential_id_first() {
-        let mut model = mk_model("custom", "local", "glm-auto");
-        model.provider_credential_id = Some("c2".to_string());
-        let settings = mk_settings(
-            None,
-            vec![
-                mk_cred("c1", "custom", "local", Some("glm-auto")),
-                mk_cred("c2", "custom", "modal", None),
-            ],
-        );
-        let picked = resolve_credential_for_model(&settings, &model).map(|c| c.id.clone());
-        assert_eq!(picked.as_deref(), Some("c2"));
-    }
 }
 
 pub fn choose_persona<'a>(

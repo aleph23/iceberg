@@ -6,10 +6,14 @@ import {
   saveLorebookEntry,
   setCharacterLorebooks,
 } from "../../../../core/storage";
-import { saveAvatar } from "../../../../core/storage/avatars";
+import { uuidv4 } from "../../../../core/storage/repo";
+import { saveAvatar, recalculateGradient } from "../../../../core/storage/avatars";
 import { convertToImageRef, convertToImageUrl } from "../../../../core/storage/images";
 import type {
   AvatarCrop,
+  CharacterCardType,
+  CharacterMode,
+  CompanionConfig,
   Model,
   Scene,
   SystemPromptTemplate,
@@ -25,11 +29,16 @@ import {
 } from "../../../../core/storage/characterTransfer";
 import { toast } from "../../../components/toast";
 import { APP_DEFAULT_TEMPLATE_ID } from "../../../../core/prompts/constants";
+import {
+  createDefaultCompanionConfig,
+  withCompanionPromptTemplate,
+} from "../utils/companionDefaults";
 export enum Step {
   Identity = 1,
   Description = 2,
-  StartingScene = 3,
-  Extras = 4,
+  CompanionSoul = 3,
+  StartingScene = 4,
+  Extras = 5,
 }
 
 const FORMAT_LABELS: Record<CharacterFileFormat, string> = {
@@ -47,6 +56,9 @@ interface CharacterFormState {
   avatarPath: string;
   avatarCrop: AvatarCrop | null;
   avatarRoundPath: string | null;
+  avatarBannerPath: string | null;
+  bannerCrop: AvatarCrop | null;
+  cardType: CharacterCardType;
   designDescription: string;
   designReferenceImageIds: string[];
   backgroundImagePath: string;
@@ -63,13 +75,18 @@ interface CharacterFormState {
   selectedModelId: string | null;
   selectedFallbackModelId: string | null;
   systemPromptTemplateId: string | null;
+  companionPromptTemplateId: string | null;
   groupChatPromptTemplateId: string | null;
   groupChatRoleplayPromptTemplateId: string | null;
+  activeLorebookIds: string[];
   memoryType: "manual" | "dynamic";
   dynamicMemoryEnabled: boolean;
   disableAvatarGradient: boolean;
+  avatarGradientSource: "base" | "round";
   voiceConfig: CharacterVoiceConfig | null;
   voiceAutoplay: boolean;
+  mode: CharacterMode;
+  companion: CompanionConfig | null;
 
   // Models
   models: Model[];
@@ -92,6 +109,9 @@ type CharacterFormAction =
   | { type: "SET_AVATAR_PATH"; payload: string }
   | { type: "SET_AVATAR_CROP"; payload: AvatarCrop | null }
   | { type: "SET_AVATAR_ROUND_PATH"; payload: string | null }
+  | { type: "SET_AVATAR_BANNER_PATH"; payload: string | null }
+  | { type: "SET_BANNER_CROP"; payload: AvatarCrop | null }
+  | { type: "SET_CARD_TYPE"; payload: CharacterCardType }
   | { type: "SET_DESIGN_DESCRIPTION"; payload: string }
   | { type: "SET_DESIGN_REFERENCE_IMAGE_IDS"; payload: string[] }
   | { type: "SET_BACKGROUND_IMAGE_PATH"; payload: string }
@@ -108,13 +128,18 @@ type CharacterFormAction =
   | { type: "SET_SELECTED_MODEL_ID"; payload: string | null }
   | { type: "SET_SELECTED_FALLBACK_MODEL_ID"; payload: string | null }
   | { type: "SET_SYSTEM_PROMPT_TEMPLATE_ID"; payload: string | null }
+  | { type: "SET_COMPANION_PROMPT_TEMPLATE_ID"; payload: string | null }
   | { type: "SET_GROUP_CHAT_PROMPT_TEMPLATE_ID"; payload: string | null }
   | { type: "SET_GROUP_CHAT_ROLEPLAY_PROMPT_TEMPLATE_ID"; payload: string | null }
+  | { type: "SET_ACTIVE_LOREBOOK_IDS"; payload: string[] }
   | { type: "SET_MEMORY_TYPE"; payload: "manual" | "dynamic" }
   | { type: "SET_DYNAMIC_MEMORY_ENABLED"; payload: boolean }
   | { type: "SET_DISABLE_AVATAR_GRADIENT"; payload: boolean }
+  | { type: "SET_AVATAR_GRADIENT_SOURCE"; payload: "base" | "round" }
   | { type: "SET_VOICE_CONFIG"; payload: CharacterVoiceConfig | null }
   | { type: "SET_VOICE_AUTOPLAY"; payload: boolean }
+  | { type: "SET_MODE"; payload: CharacterMode }
+  | { type: "SET_COMPANION"; payload: CompanionConfig | null }
   | { type: "SET_MODELS"; payload: Model[] }
   | { type: "SET_LOADING_MODELS"; payload: boolean }
   | { type: "SET_PROMPT_TEMPLATES"; payload: SystemPromptTemplate[] }
@@ -131,6 +156,9 @@ const initialState: CharacterFormState = {
   avatarPath: "",
   avatarCrop: null,
   avatarRoundPath: null,
+  avatarBannerPath: null,
+  bannerCrop: null,
+  cardType: "circle",
   designDescription: "",
   designReferenceImageIds: [],
   backgroundImagePath: "",
@@ -147,13 +175,18 @@ const initialState: CharacterFormState = {
   selectedModelId: null,
   selectedFallbackModelId: null,
   systemPromptTemplateId: null,
+  companionPromptTemplateId: null,
   groupChatPromptTemplateId: null,
   groupChatRoleplayPromptTemplateId: null,
+  activeLorebookIds: [],
   memoryType: "manual",
   dynamicMemoryEnabled: false,
   disableAvatarGradient: false,
+  avatarGradientSource: "base",
   voiceConfig: null,
   voiceAutoplay: false,
+  mode: "roleplay",
+  companion: null,
   models: [],
   loadingModels: true,
   promptTemplates: [],
@@ -179,6 +212,12 @@ function characterFormReducer(
       return { ...state, avatarCrop: action.payload };
     case "SET_AVATAR_ROUND_PATH":
       return { ...state, avatarRoundPath: action.payload };
+    case "SET_AVATAR_BANNER_PATH":
+      return { ...state, avatarBannerPath: action.payload };
+    case "SET_BANNER_CROP":
+      return { ...state, bannerCrop: action.payload };
+    case "SET_CARD_TYPE":
+      return { ...state, cardType: action.payload };
     case "SET_DESIGN_DESCRIPTION":
       return { ...state, designDescription: action.payload };
     case "SET_DESIGN_REFERENCE_IMAGE_IDS":
@@ -211,20 +250,30 @@ function characterFormReducer(
       return { ...state, selectedFallbackModelId: action.payload };
     case "SET_SYSTEM_PROMPT_TEMPLATE_ID":
       return { ...state, systemPromptTemplateId: action.payload };
+    case "SET_COMPANION_PROMPT_TEMPLATE_ID":
+      return { ...state, companionPromptTemplateId: action.payload };
     case "SET_GROUP_CHAT_PROMPT_TEMPLATE_ID":
       return { ...state, groupChatPromptTemplateId: action.payload };
     case "SET_GROUP_CHAT_ROLEPLAY_PROMPT_TEMPLATE_ID":
       return { ...state, groupChatRoleplayPromptTemplateId: action.payload };
+    case "SET_ACTIVE_LOREBOOK_IDS":
+      return { ...state, activeLorebookIds: action.payload };
     case "SET_MEMORY_TYPE":
       return { ...state, memoryType: action.payload };
     case "SET_DYNAMIC_MEMORY_ENABLED":
       return { ...state, dynamicMemoryEnabled: action.payload };
     case "SET_DISABLE_AVATAR_GRADIENT":
       return { ...state, disableAvatarGradient: action.payload };
+    case "SET_AVATAR_GRADIENT_SOURCE":
+      return { ...state, avatarGradientSource: action.payload };
     case "SET_VOICE_CONFIG":
       return { ...state, voiceConfig: action.payload };
     case "SET_VOICE_AUTOPLAY":
       return { ...state, voiceAutoplay: action.payload };
+    case "SET_MODE":
+      return { ...state, mode: action.payload };
+    case "SET_COMPANION":
+      return { ...state, companion: action.payload };
     case "SET_MODELS":
       return { ...state, models: action.payload };
     case "SET_LOADING_MODELS":
@@ -276,6 +325,13 @@ export function useCharacterForm(draftCharacter?: any) {
                 : Step.Identity,
           });
           dispatch({ type: "SET_NAME", payload: draftCharacter.name || "" });
+          const draftMode: CharacterMode =
+            draftCharacter.mode === "companion" ? "companion" : "roleplay";
+          dispatch({ type: "SET_MODE", payload: draftMode });
+          dispatch({
+            type: "SET_COMPANION",
+            payload: draftCharacter.companion ?? null,
+          });
           dispatch({
             type: "SET_DEFINITION",
             payload: draftCharacter.definition || draftCharacter.description || "",
@@ -304,6 +360,18 @@ export function useCharacterForm(draftCharacter?: any) {
             payload: draftCharacter.avatarCrop ?? null,
           });
           dispatch({
+            type: "SET_AVATAR_BANNER_PATH",
+            payload: draftCharacter.avatarBannerPath ?? null,
+          });
+          dispatch({
+            type: "SET_BANNER_CROP",
+            payload: draftCharacter.bannerCrop ?? null,
+          });
+          dispatch({
+            type: "SET_CARD_TYPE",
+            payload: draftCharacter.cardType === "banner" ? "banner" : "circle",
+          });
+          dispatch({
             type: "SET_BACKGROUND_IMAGE_PATH",
             payload: draftCharacter.backgroundImagePath || "",
           });
@@ -322,6 +390,10 @@ export function useCharacterForm(draftCharacter?: any) {
             payload: draftCharacter.disableAvatarGradient ?? false,
           });
           dispatch({
+            type: "SET_AVATAR_GRADIENT_SOURCE",
+            payload: draftCharacter.avatarGradientSource ?? "base",
+          });
+          dispatch({
             type: "SET_SELECTED_MODEL_ID",
             payload:
               draftCharacter.defaultModelId ||
@@ -338,6 +410,10 @@ export function useCharacterForm(draftCharacter?: any) {
             payload: draftCharacter.promptTemplateId || null,
           });
           dispatch({
+            type: "SET_COMPANION_PROMPT_TEMPLATE_ID",
+            payload: draftCharacter.companion?.prompting?.promptTemplateId || null,
+          });
+          dispatch({
             type: "SET_GROUP_CHAT_PROMPT_TEMPLATE_ID",
             payload: draftCharacter.groupChatPromptTemplateId || null,
           });
@@ -345,11 +421,18 @@ export function useCharacterForm(draftCharacter?: any) {
             type: "SET_GROUP_CHAT_ROLEPLAY_PROMPT_TEMPLATE_ID",
             payload: draftCharacter.groupChatRoleplayPromptTemplateId || null,
           });
+          dispatch({
+            type: "SET_ACTIVE_LOREBOOK_IDS",
+            payload: Array.isArray(draftCharacter.activeLorebookIds)
+              ? draftCharacter.activeLorebookIds
+              : [],
+          });
 
           if (draftCharacter.scenes && draftCharacter.scenes.length > 0) {
             const mappedScenes = draftCharacter.scenes.map((s: any) => ({
               id: s.id || crypto.randomUUID(),
               content: s.content || "",
+              backgroundImagePath: s.backgroundImagePath || undefined,
               createdAt: Date.now(),
               direction: s.direction || null,
               variants: [],
@@ -424,11 +507,23 @@ export function useCharacterForm(draftCharacter?: any) {
   }, []);
 
   const setAvatarCrop = useCallback((crop: AvatarCrop | null) => {
-    dispatch({ type: "SET_AVATAR_CROP", payload: crop });
+      dispatch({ type: "SET_AVATAR_CROP", payload: crop });
   }, []);
 
   const setAvatarRoundPath = useCallback((path: string | null) => {
     dispatch({ type: "SET_AVATAR_ROUND_PATH", payload: path });
+  }, []);
+
+  const setAvatarBannerPath = useCallback((path: string | null) => {
+    dispatch({ type: "SET_AVATAR_BANNER_PATH", payload: path });
+  }, []);
+
+  const setBannerCrop = useCallback((crop: AvatarCrop | null) => {
+    dispatch({ type: "SET_BANNER_CROP", payload: crop });
+  }, []);
+
+  const setCardType = useCallback((cardType: CharacterCardType) => {
+    dispatch({ type: "SET_CARD_TYPE", payload: cardType });
   }, []);
 
   const setBackgroundImagePath = useCallback((path: string) => {
@@ -495,12 +590,20 @@ export function useCharacterForm(draftCharacter?: any) {
     dispatch({ type: "SET_SYSTEM_PROMPT_TEMPLATE_ID", payload: id });
   }, []);
 
+  const setCompanionPromptTemplateId = useCallback((id: string | null) => {
+    dispatch({ type: "SET_COMPANION_PROMPT_TEMPLATE_ID", payload: id });
+  }, []);
+
   const setGroupChatPromptTemplateId = useCallback((id: string | null) => {
     dispatch({ type: "SET_GROUP_CHAT_PROMPT_TEMPLATE_ID", payload: id });
   }, []);
 
   const setGroupChatRoleplayPromptTemplateId = useCallback((id: string | null) => {
     dispatch({ type: "SET_GROUP_CHAT_ROLEPLAY_PROMPT_TEMPLATE_ID", payload: id });
+  }, []);
+
+  const setActiveLorebookIds = useCallback((ids: string[]) => {
+    dispatch({ type: "SET_ACTIVE_LOREBOOK_IDS", payload: ids });
   }, []);
 
   const setMemoryType = useCallback((memoryType: "manual" | "dynamic") => {
@@ -519,16 +622,26 @@ export function useCharacterForm(draftCharacter?: any) {
     dispatch({ type: "SET_VOICE_AUTOPLAY", payload: value });
   }, []);
 
+  const setMode = useCallback((mode: CharacterMode) => {
+    dispatch({ type: "SET_MODE", payload: mode });
+  }, []);
+
+  const setCompanionConfig = useCallback((companion: CompanionConfig | null) => {
+    dispatch({ type: "SET_COMPANION", payload: companion });
+  }, []);
+
   const handleAvatarUpload = useCallback((event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = () => {
-      dispatch({ type: "SET_AVATAR_PATH", payload: reader.result as string });
-      dispatch({ type: "SET_AVATAR_CROP", payload: null });
-      dispatch({ type: "SET_AVATAR_ROUND_PATH", payload: null });
-    };
+      reader.onload = () => {
+        dispatch({ type: "SET_AVATAR_PATH", payload: reader.result as string });
+        dispatch({ type: "SET_AVATAR_CROP", payload: null });
+        dispatch({ type: "SET_AVATAR_ROUND_PATH", payload: null });
+        dispatch({ type: "SET_AVATAR_BANNER_PATH", payload: null });
+        dispatch({ type: "SET_BANNER_CROP", payload: null });
+      };
     reader.readAsDataURL(file);
   }, []);
 
@@ -603,6 +716,7 @@ export function useCharacterForm(draftCharacter?: any) {
         return {
           id: newSceneId,
           content: scene.content,
+          backgroundImagePath: scene.backgroundImagePath || undefined,
           createdAt: Date.now(),
           selectedVariantId: newSelectedVariantId,
           variants: newVariants,
@@ -620,6 +734,13 @@ export function useCharacterForm(draftCharacter?: any) {
         : newScenes;
 
       dispatch({ type: "SET_NAME", payload: characterData.name });
+      const importedMode =
+        (characterData as { mode?: CharacterMode }).mode === "companion" ? "companion" : "roleplay";
+      dispatch({ type: "SET_MODE", payload: importedMode });
+      dispatch({
+        type: "SET_COMPANION",
+        payload: (characterData as { companion?: CompanionConfig | null }).companion ?? null,
+      });
       dispatch({
         type: "SET_DEFINITION",
         payload: characterData.definition || characterData.description || "",
@@ -661,8 +782,28 @@ export function useCharacterForm(draftCharacter?: any) {
         payload: characterData.disableAvatarGradient || false,
       });
       dispatch({
+        type: "SET_AVATAR_GRADIENT_SOURCE",
+        payload: characterData.avatarGradientSource ?? "base",
+      });
+      dispatch({
+        type: "SET_CARD_TYPE",
+        payload: characterData.cardType === "banner" ? "banner" : "circle",
+      });
+      dispatch({
         type: "SET_SYSTEM_PROMPT_TEMPLATE_ID",
         payload: characterData.promptTemplateId || null,
+      });
+      dispatch({
+        type: "SET_COMPANION_PROMPT_TEMPLATE_ID",
+        payload:
+          (characterData as { companion?: { prompting?: { promptTemplateId?: string | null } } })
+            .companion?.prompting?.promptTemplateId || null,
+      });
+      const importedActiveLorebookIds = (characterData as { activeLorebookIds?: string[] })
+        .activeLorebookIds;
+      dispatch({
+        type: "SET_ACTIVE_LOREBOOK_IDS",
+        payload: Array.isArray(importedActiveLorebookIds) ? importedActiveLorebookIds : [],
       });
       const importedMemoryType = characterData.memoryType === "dynamic" ? "dynamic" : "manual";
       dispatch({
@@ -682,12 +823,16 @@ export function useCharacterForm(draftCharacter?: any) {
             dispatch({ type: "SET_AVATAR_PATH", payload: "" });
             dispatch({ type: "SET_AVATAR_ROUND_PATH", payload: null });
             dispatch({ type: "SET_AVATAR_CROP", payload: null });
+            dispatch({ type: "SET_AVATAR_BANNER_PATH", payload: null });
+            dispatch({ type: "SET_BANNER_CROP", payload: null });
           } else {
             dispatch({ type: "SET_IMPORTING_AVATAR", payload: true });
             dispatch({ type: "SET_AVATAR_IMPORT_ERROR", payload: null });
             dispatch({ type: "SET_AVATAR_PATH", payload: "" });
             dispatch({ type: "SET_AVATAR_ROUND_PATH", payload: null });
             dispatch({ type: "SET_AVATAR_CROP", payload: null });
+            dispatch({ type: "SET_AVATAR_BANNER_PATH", payload: null });
+            dispatch({ type: "SET_BANNER_CROP", payload: null });
 
             const imageDataUrl = await new Promise<string>((resolve, reject) => {
               const image = new Image();
@@ -730,6 +875,8 @@ export function useCharacterForm(draftCharacter?: any) {
             dispatch({ type: "SET_AVATAR_PATH", payload: imageDataUrl });
             dispatch({ type: "SET_AVATAR_ROUND_PATH", payload: null });
             dispatch({ type: "SET_AVATAR_CROP", payload: null });
+            dispatch({ type: "SET_AVATAR_BANNER_PATH", payload: null });
+            dispatch({ type: "SET_BANNER_CROP", payload: null });
             dispatch({ type: "SET_IMPORTING_AVATAR", payload: false });
           }
         } else {
@@ -738,6 +885,8 @@ export function useCharacterForm(draftCharacter?: any) {
           dispatch({ type: "SET_AVATAR_PATH", payload: resolvedAvatarPath });
           dispatch({ type: "SET_AVATAR_ROUND_PATH", payload: null });
           dispatch({ type: "SET_AVATAR_CROP", payload: null });
+          dispatch({ type: "SET_AVATAR_BANNER_PATH", payload: null });
+          dispatch({ type: "SET_BANNER_CROP", payload: null });
           dispatch({ type: "SET_IMPORTING_AVATAR", payload: false });
           dispatch({ type: "SET_AVATAR_IMPORT_ERROR", payload: null });
         }
@@ -746,6 +895,9 @@ export function useCharacterForm(draftCharacter?: any) {
       }
       if (characterData.avatarCrop) {
         dispatch({ type: "SET_AVATAR_CROP", payload: characterData.avatarCrop });
+      }
+      if (characterData.bannerCrop) {
+        dispatch({ type: "SET_BANNER_CROP", payload: characterData.bannerCrop });
       }
 
       if (characterData.backgroundImageData) {
@@ -777,11 +929,12 @@ export function useCharacterForm(draftCharacter?: any) {
   }, []);
 
   const handleSave = useCallback(async () => {
+    const requiresScene = state.mode !== "companion";
     if (
       state.definition.trim().length === 0 ||
       state.selectedModelId === null ||
       state.saving ||
-      state.scenes.length === 0
+      (requiresScene && state.scenes.length === 0)
     ) {
       return;
     }
@@ -844,23 +997,30 @@ export function useCharacterForm(draftCharacter?: any) {
       );
 
       // Generate character ID first so we can use it for avatar storage
-      const characterId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
+      const characterId = globalThis.crypto?.randomUUID?.() ?? uuidv4();
       console.log("[CreateCharacter] Generated character ID:", characterId);
 
       // Save avatar using new centralized system
       let avatarFilename: string | undefined = undefined;
-      if (state.avatarPath) {
+      const effectiveAvatarPath = state.avatarPath || state.avatarBannerPath || "";
+      const effectiveRoundPath = state.avatarPath ? state.avatarRoundPath : null;
+      if (effectiveAvatarPath) {
         avatarFilename = await saveAvatar(
           "character",
           characterId,
-          state.avatarPath,
-          state.avatarRoundPath,
+          effectiveAvatarPath,
+          effectiveRoundPath,
+          state.avatarBannerPath,
+          state.avatarGradientSource,
         );
         if (!avatarFilename) {
           console.error("[CreateCharacter] Failed to save avatar image");
         } else {
           console.log("[CreateCharacter] Avatar saved as:", avatarFilename);
           invalidateAvatarCache("character", characterId);
+          if (!state.disableAvatarGradient) {
+            await recalculateGradient("character", characterId, state.avatarGradientSource);
+          }
         }
       }
 
@@ -888,18 +1048,29 @@ export function useCharacterForm(draftCharacter?: any) {
 
       console.log("[CreateCharacter] Avatar filename:", avatarFilename || "none");
       console.log("[CreateCharacter] Background image ID:", backgroundImageId || "none");
+      const companionConfig =
+        state.mode === "companion"
+          ? withCompanionPromptTemplate(
+              state.companion ?? createDefaultCompanionConfig(),
+              state.companionPromptTemplateId,
+            )
+          : null;
 
       const characterData = {
         id: characterId,
         name: state.name.trim(),
         avatarPath: avatarFilename || undefined,
         avatarCrop: avatarFilename ? (state.avatarCrop ?? undefined) : undefined,
+        bannerCrop: avatarFilename && state.avatarBannerPath ? (state.bannerCrop ?? undefined) : undefined,
+        cardType: state.cardType,
         designDescription: state.designDescription.trim() || undefined,
         designReferenceImageIds:
           designReferenceImageIds.length > 0 ? designReferenceImageIds : undefined,
         backgroundImagePath: backgroundImageId || undefined,
         definition: state.definition.trim(),
         description: state.description.trim() || undefined,
+        mode: state.mode,
+        companion: companionConfig,
         nickname: state.nickname.trim() || undefined,
         creator: state.creator.trim() || undefined,
         creatorNotes: state.creatorNotes.trim() || undefined,
@@ -914,8 +1085,10 @@ export function useCharacterForm(draftCharacter?: any) {
         promptTemplateId: state.systemPromptTemplateId,
         groupChatPromptTemplateId: state.groupChatPromptTemplateId,
         groupChatRoleplayPromptTemplateId: state.groupChatRoleplayPromptTemplateId,
+        activeLorebookIds: state.activeLorebookIds,
         memoryType: state.dynamicMemoryEnabled ? state.memoryType : "manual",
         disableAvatarGradient: state.disableAvatarGradient,
+        avatarGradientSource: state.avatarGradientSource,
         voiceConfig: state.voiceConfig || undefined,
         voiceAutoplay: state.voiceAutoplay,
       };
@@ -957,7 +1130,10 @@ export function useCharacterForm(draftCharacter?: any) {
           });
         }
 
-        await setCharacterLorebooks(characterId, [lorebook.id]);
+        await setCharacterLorebooks(characterId, [
+          ...state.activeLorebookIds.filter((id) => id !== lorebook.id),
+          lorebook.id,
+        ]);
       }
 
       return true; // Success
@@ -973,6 +1149,9 @@ export function useCharacterForm(draftCharacter?: any) {
     state.avatarPath,
     state.avatarCrop,
     state.avatarRoundPath,
+    state.avatarBannerPath,
+    state.bannerCrop,
+    state.cardType,
     state.designDescription,
     state.designReferenceImageIds,
     state.backgroundImagePath,
@@ -980,6 +1159,8 @@ export function useCharacterForm(draftCharacter?: any) {
     state.defaultSceneId,
     state.definition,
     state.description,
+    state.mode,
+    state.companion,
     state.nickname,
     state.creator,
     state.creatorNotes,
@@ -989,8 +1170,10 @@ export function useCharacterForm(draftCharacter?: any) {
     state.selectedModelId,
     state.selectedFallbackModelId,
     state.systemPromptTemplateId,
+    state.companionPromptTemplateId,
     state.groupChatPromptTemplateId,
     state.groupChatRoleplayPromptTemplateId,
+    state.activeLorebookIds,
     state.memoryType,
     state.dynamicMemoryEnabled,
     state.voiceConfig,
@@ -1001,17 +1184,20 @@ export function useCharacterForm(draftCharacter?: any) {
   // Computed values
   const canContinueIdentity =
     state.name.trim().length > 0 && !state.saving && !state.importingAvatar;
-  const canContinueStartingScene = state.scenes.length > 0 && !state.saving;
+  const canContinueStartingScene =
+    (state.mode === "companion" || state.scenes.length > 0) && !state.saving;
   const canSaveDescription =
     state.definition.trim().length > 0 && state.selectedModelId !== null && !state.saving;
   const progress =
     state.step === Step.Identity
-      ? 0.25
+      ? 0.2
+      : state.step === Step.Description
+        ? 0.4
+        : state.step === Step.CompanionSoul
+          ? 0.6
       : state.step === Step.StartingScene
-        ? 0.5
-        : state.step === Step.Description
-          ? 0.75
-          : 1;
+        ? 0.8
+        : 1;
 
   return {
     state,
@@ -1021,6 +1207,9 @@ export function useCharacterForm(draftCharacter?: any) {
       setAvatarPath,
       setAvatarCrop,
       setAvatarRoundPath,
+      setAvatarBannerPath,
+      setBannerCrop,
+      setCardType,
       setDesignDescription,
       setDesignReferenceImageIds,
       setBackgroundImagePath,
@@ -1036,12 +1225,16 @@ export function useCharacterForm(draftCharacter?: any) {
       setSelectedModelId,
       setSelectedFallbackModelId,
       setSystemPromptTemplateId,
+      setCompanionPromptTemplateId,
       setGroupChatPromptTemplateId,
       setGroupChatRoleplayPromptTemplateId,
+      setActiveLorebookIds,
       setMemoryType,
       setDisableAvatarGradient,
       setVoiceConfig,
       setVoiceAutoplay,
+      setMode,
+      setCompanionConfig,
       handleAvatarUpload,
       handleBackgroundImageUpload,
       handleImport,

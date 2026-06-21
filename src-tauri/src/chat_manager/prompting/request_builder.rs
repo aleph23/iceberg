@@ -5,6 +5,7 @@ use super::request::provider_base_url;
 use crate::chat_manager::provider_adapter::adapter_for;
 use crate::chat_manager::tooling::ToolConfig;
 use crate::chat_manager::types::ProviderCredential;
+use crate::providers::config::supported_extra_body_keys_for_provider;
 
 pub struct BuiltRequest {
     pub url: String,
@@ -24,6 +25,14 @@ fn should_force_local_parallel_tool_calls(
             .unwrap_or(false)
 }
 
+fn strip_provider_incompatible_extra_fields(
+    credential: &ProviderCredential,
+    extra_body_fields: &mut HashMap<String, Value>,
+) {
+    let supported_keys = supported_extra_body_keys_for_provider(&credential.provider_id);
+    extra_body_fields.retain(|key, _| supported_keys.contains(&key.as_str()));
+}
+
 pub fn provider_streaming_enabled(credential: &ProviderCredential) -> bool {
     credential
         .config
@@ -37,6 +46,52 @@ pub fn effective_streaming_enabled(credential: &ProviderCredential, should_strea
     should_stream
         && adapter_for(credential).supports_stream()
         && provider_streaming_enabled(credential)
+}
+
+pub fn effective_streaming_enabled_with_override(
+    credential: &ProviderCredential,
+    should_stream: bool,
+    llama_streaming_enabled: Option<bool>,
+) -> bool {
+    let stream_allowed = if credential.provider_id.eq_ignore_ascii_case("llamacpp") {
+        llama_streaming_enabled.unwrap_or(true)
+    } else {
+        true
+    };
+
+    effective_streaming_enabled(credential, should_stream) && stream_allowed
+}
+
+fn sanitize_outbound_messages(messages_for_api: &[Value]) -> Vec<Value> {
+    messages_for_api
+        .iter()
+        .map(sanitize_outbound_message)
+        .collect()
+}
+
+fn sanitize_outbound_message(message: &Value) -> Value {
+    let Some(message_obj) = message.as_object() else {
+        return message.clone();
+    };
+
+    let role = message_obj.get("role").cloned().unwrap_or(Value::Null);
+    let content = message_obj.get("content").cloned().unwrap_or(Value::Null);
+    let mut sanitized = serde_json::Map::from_iter([
+        ("role".to_string(), role.clone()),
+        ("content".to_string(), content),
+    ]);
+
+    if let Some(name) = message_obj.get("name").cloned() {
+        sanitized.insert("name".to_string(), name);
+    }
+    if let Some(tool_calls) = message_obj.get("tool_calls").cloned() {
+        sanitized.insert("tool_calls".to_string(), tool_calls);
+    }
+    if let Some(tool_call_id) = message_obj.get("tool_call_id").cloned() {
+        sanitized.insert("tool_call_id".to_string(), tool_call_id);
+    }
+
+    Value::Object(sanitized)
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +118,17 @@ fn supports_explicit_prompt_caching(credential: &ProviderCredential) -> bool {
     matches!(
         credential.provider_id.as_str(),
         "anthropic" | "custom-anthropic" | "openrouter"
+    )
+}
+
+fn supports_openai_prompt_cache_retention(credential: &ProviderCredential) -> bool {
+    credential.provider_id == "openai"
+}
+
+fn supports_gemini_explicit_prompt_caching(credential: &ProviderCredential) -> bool {
+    matches!(
+        credential.provider_id.as_str(),
+        "gemini" | "google" | "google-gemini"
     )
 }
 
@@ -119,12 +185,21 @@ pub fn build_chat_request(
 ) -> BuiltRequest {
     let base_url = provider_base_url(credential);
     let adapter = adapter_for(credential);
-    let effective_stream = effective_streaming_enabled(credential, should_stream);
+    let sanitized_messages_for_api = sanitize_outbound_messages(messages_for_api);
+    let llama_streaming_enabled = extra_body_fields
+        .as_ref()
+        .and_then(|fields| fields.get("llamaStreamingEnabled"))
+        .and_then(Value::as_bool);
+    let effective_stream = effective_streaming_enabled_with_override(
+        credential,
+        should_stream,
+        llama_streaming_enabled,
+    );
     let url = adapter.build_url(&base_url, model_name, api_key, effective_stream);
     let headers = adapter.headers(api_key, credential.headers.as_ref());
     let mut body = adapter.body(
         model_name,
-        messages_for_api,
+        &sanitized_messages_for_api,
         system_prompt,
         temperature,
         top_p,
@@ -141,6 +216,7 @@ pub fn build_chat_request(
     );
 
     let mut extra_body_fields = extra_body_fields.unwrap_or_default();
+    strip_provider_incompatible_extra_fields(credential, &mut extra_body_fields);
     if should_force_local_parallel_tool_calls(credential, tool_config)
         && !extra_body_fields.contains_key("parallel_tool_calls")
     {
@@ -189,9 +265,50 @@ pub fn build_chat_request(
         }
     }
 
+    if prompt_caching_enabled && supports_openai_prompt_cache_retention(credential) {
+        let retention = match extra_body_fields
+            .get("promptCachingTtl")
+            .and_then(|val| val.as_str())
+            .unwrap_or("in_memory")
+        {
+            "24h" => Some("24h"),
+            "in_memory" | "5min" | "1h" => Some("in_memory"),
+            _ => None,
+        };
+
+        if let (Some(body_obj), Some(retention)) = (body.as_object_mut(), retention) {
+            body_obj.insert(
+                "prompt_cache_retention".to_string(),
+                Value::String(retention.to_string()),
+            );
+        }
+    }
+
+    if prompt_caching_enabled && supports_gemini_explicit_prompt_caching(credential) {
+        let ttl = match extra_body_fields
+            .get("promptCachingTtl")
+            .and_then(|val| val.as_str())
+            .unwrap_or("1h")
+        {
+            "5min" | "300s" => "300s",
+            _ => "3600s",
+        };
+
+        if let Some(body_obj) = body.as_object_mut() {
+            body_obj.insert(
+                "_lettucePromptCachingEnabled".to_string(),
+                Value::Bool(true),
+            );
+            body_obj.insert(
+                "_lettucePromptCachingTtl".to_string(),
+                Value::String(ttl.to_string()),
+            );
+        }
+    }
+
     if let Some(map) = body.as_object_mut() {
         for (key, mut value) in extra_body_fields {
-            if key == "promptCachingTtl" {
+            if key == "promptCachingTtl" || key == "llamaStreamingEnabled" {
                 continue;
             }
             // OpenRouter sticky routing only applies to OpenRouter payloads.

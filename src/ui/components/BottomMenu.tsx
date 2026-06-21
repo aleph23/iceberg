@@ -166,7 +166,7 @@ export function BottomMenu({
 
   const menuClasses = isBottomMenu
     ? "fixed bottom-0 left-0 right-0 rounded-t-3xl pb-[calc(env(safe-area-inset-bottom))]"
-    : "fixed top-0 left-0 right-0 rounded-b-3xl";
+    : "fixed top-[var(--titlebar-h,0px)] left-0 right-0 rounded-b-3xl";
   const bottomMenuStyle = isBottomMenu
     ? {
         bottom: `${keyboardInset}px`,

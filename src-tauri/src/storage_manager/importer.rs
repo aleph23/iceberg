@@ -287,7 +287,7 @@ fn import_characters(conn: &mut rusqlite::Connection, json: &str) -> Result<(), 
                 if s.is_string() {
                     let sid = uuid::Uuid::new_v4().to_string();
                     let content = s.as_str().unwrap_or("");
-                    tx.execute("INSERT INTO scenes (id, character_id, content, direction, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, NULL)", params![&sid, &id, content, None::<String>, now]).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+                    tx.execute("INSERT INTO scenes (id, character_id, content, direction, background_image_path, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, ?, NULL)", params![&sid, &id, content, None::<String>, None::<String>, now]).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
                 } else if let Some(obj) = s.as_object() {
                     let sid = obj
                         .get("id")
@@ -301,7 +301,9 @@ fn import_characters(conn: &mut rusqlite::Connection, json: &str) -> Result<(), 
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
                     let direction = obj.get("direction").and_then(|v| v.as_str());
-                    tx.execute("INSERT INTO scenes (id, character_id, content, direction, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, ?)", params![&sid, &id, content, direction, screated, sel]).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+                    let background_image_path =
+                        obj.get("backgroundImagePath").and_then(|v| v.as_str());
+                    tx.execute("INSERT INTO scenes (id, character_id, content, direction, background_image_path, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, ?, ?)", params![&sid, &id, content, direction, background_image_path, screated, sel]).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
                     if let Some(vars) = obj.get("variants").and_then(|v| v.as_array()) {
                         for v in vars {
                             let vid = v
@@ -352,6 +354,11 @@ fn import_personas(conn: &mut rusqlite::Connection, json: &str) -> Result<(), St
         let avatar_crop_y = avatar_crop.and_then(|crop| crop.get("y").and_then(|v| v.as_f64()));
         let avatar_crop_scale =
             avatar_crop.and_then(|crop| crop.get("scale").and_then(|v| v.as_f64()));
+        let active_lorebook_ids = p
+            .get("activeLorebookIds")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| serde_json::to_string(arr).ok())
+            .unwrap_or_else(|| "[]".to_string());
         let is_default = p
             .get("isDefault")
             .and_then(|v| v.as_bool())
@@ -359,8 +366,8 @@ fn import_personas(conn: &mut rusqlite::Connection, json: &str) -> Result<(), St
         let created_at = p.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(now);
         let updated_at = p.get("updatedAt").and_then(|v| v.as_i64()).unwrap_or(now);
         tx.execute(
-            r#"INSERT OR REPLACE INTO personas (id, title, description, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, is_default, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+            r#"INSERT OR REPLACE INTO personas (id, title, description, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, active_lorebook_ids, is_default, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
             params![
                 &id,
                 title,
@@ -369,6 +376,7 @@ fn import_personas(conn: &mut rusqlite::Connection, json: &str) -> Result<(), St
                 avatar_crop_x,
                 avatar_crop_y,
                 avatar_crop_scale,
+                active_lorebook_ids,
                 is_default,
                 created_at,
                 updated_at

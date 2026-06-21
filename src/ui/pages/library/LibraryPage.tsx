@@ -18,6 +18,8 @@ import { useAvatarGradient } from "../../hooks/useAvatarGradient";
 import { useRocketEasterEgg } from "../../hooks/useRocketEasterEgg";
 import { useLocation, useNavigate } from "react-router-dom";
 import { BottomMenu, CharacterExportMenu } from "../../components";
+import { NoModelMenu } from "../../components/CreateMenus/NoModelMenu";
+import { hasConfiguredModel } from "../../../core/storage/repo";
 import { LorebookAvatar } from "../../components/LorebookAvatar";
 import { ImageLibraryPanel } from "./ImageLibraryPage";
 import {
@@ -79,15 +81,17 @@ function getItemDisableGradient(item: LibraryItem): boolean | undefined {
 export function LibraryPage() {
   const { t } = useI18n();
   const location = useLocation();
-  const [characters, setCharacters] = useState<Character[]>([]);
-  const [personas, setPersonas] = useState<Persona[]>([]);
-  const [lorebooks, setLorebooks] = useState<Lorebook[]>([]);
+  const [characters, setCharacters] = useState<Character[]>(() => libraryPageCache?.characters ?? []);
+  const [personas, setPersonas] = useState<Persona[]>(() => libraryPageCache?.personas ?? []);
+  const [lorebooks, setLorebooks] = useState<Lorebook[]>(() => libraryPageCache?.lorebooks ?? []);
+  const [loading, setLoading] = useState(() => !libraryPageCache);
   const [filter, setFilter] = useState<FilterOption>(() => resolveLibraryFilter(location.search));
   const [selectedItem, setSelectedItem] = useState<LibraryItem | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [showNoModel, setShowNoModel] = useState(false);
   const [exportTarget, setExportTarget] = useState<LibraryItem | null>(null);
   const [importingLorebook, setImportingLorebook] = useState(false);
   const lorebookImportRef = useRef<HTMLInputElement | null>(null);
@@ -100,6 +104,16 @@ export function LibraryPage() {
 
   const navigate = useNavigate();
   const mainRef = useRef<HTMLElement | null>(null);
+  const [toolbarHost, setToolbarHost] = useState<HTMLDivElement | null>(null);
+  const [isDesktop, setIsDesktop] = useState(false);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const sync = () => setIsDesktop(mq.matches);
+    sync();
+    mq.addEventListener("change", sync);
+    return () => mq.removeEventListener("change", sync);
+  }, []);
 
   useEffect(() => {
     const next = resolveLibraryFilter(location.search);
@@ -113,11 +127,18 @@ export function LibraryPage() {
         listPersonas(),
         listLorebooks(),
       ]);
+      setLibraryPageCache({
+        characters: chars,
+        personas: pers,
+        lorebooks: lbs,
+      });
       setCharacters(chars);
       setPersonas(pers);
       setLorebooks(lbs);
     } catch (error) {
       console.error("Failed to load library data:", error);
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -165,7 +186,7 @@ export function LibraryPage() {
         (selectedItem as Character).defaultSceneId ?? (selectedItem as Character).scenes?.[0]?.id;
       const session = await createSession(
         selectedItem.id,
-        `Chat with ${getItemName(selectedItem)}`,
+        t("library.actions.startChatWith", { name: getItemName(selectedItem) }),
         sceneId,
       );
 
@@ -264,7 +285,7 @@ export function LibraryPage() {
       navigate(`/library/lorebooks/${imported.id}`);
     } catch (err) {
       console.error("Failed to import lorebook:", err);
-      alert("Failed to import lorebook. " + String(err));
+      alert(t("library.errors.importLorebook", { error: String(err) }));
     } finally {
       setImportingLorebook(false);
       if (lorebookImportRef.current) {
@@ -309,38 +330,49 @@ export function LibraryPage() {
   return (
     <div className="flex h-full flex-col pb-6 text-fg/80">
       <main ref={mainRef} className="flex-1 overflow-y-auto px-4 pt-4">
-        <div className="mb-4 flex gap-2 overflow-x-auto pb-1">
-          {(["All", "Characters", "Personas", "Lorebooks", "Images"] as FilterOption[]).map(
-            (option) => {
-              const filterLabels: Record<FilterOption, string> = {
-                All: t("library.filters.all"),
-                Characters: t("library.filters.characters"),
-                Personas: t("library.filters.personas"),
-                Lorebooks: t("library.filters.lorebooks"),
-                Images: "Images",
-              };
+        <div className="mb-4 flex flex-col gap-2 lg:flex-row lg:items-center lg:gap-3">
+          <div className="flex shrink-0 gap-2 overflow-x-auto pb-1 lg:pb-0 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {(["All", "Characters", "Personas", "Lorebooks", "Images"] as FilterOption[]).map(
+              (option) => {
+                const filterLabels: Record<FilterOption, string> = {
+                  All: t("library.filters.all"),
+                  Characters: t("library.filters.characters"),
+                  Personas: t("library.filters.personas"),
+                  Lorebooks: t("library.filters.lorebooks"),
+                  Images: t("library.filters.images"),
+                };
 
-              return (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setLibraryFilter(option)}
-                  className={cn(
-                    "shrink-0 rounded-xl border px-4 py-2 text-sm font-medium transition",
-                    filter === option
-                      ? "border-fg/15 bg-fg/10 text-fg"
-                      : "border-fg/10 bg-surface-el/40 text-fg/60 hover:bg-fg/5 hover:text-fg",
-                  )}
-                >
-                  {filterLabels[option]}
-                </button>
-              );
-            },
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setLibraryFilter(option)}
+                    className={cn(
+                      "shrink-0 rounded-xl border px-4 py-2 text-sm font-medium transition",
+                      filter === option
+                        ? "border-fg/15 bg-fg/10 text-fg"
+                        : "border-fg/10 bg-surface-el/40 text-fg/60 hover:bg-fg/5 hover:text-fg",
+                    )}
+                  >
+                    {filterLabels[option]}
+                  </button>
+                );
+              },
+            )}
+          </div>
+          {filter === "Images" && isDesktop && (
+            <div ref={setToolbarHost} className="hidden min-w-0 flex-1 lg:flex" />
           )}
         </div>
 
         {filter === "Images" ? (
-          <ImageLibraryPanel embedded scrollContainerRef={mainRef} />
+          <ImageLibraryPanel
+            embedded
+            scrollContainerRef={mainRef}
+            toolbarHost={isDesktop ? toolbarHost : null}
+          />
+        ) : loading ? (
+          <LibraryGridSkeleton />
         ) : filteredItems.length === 0 ? (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -400,9 +432,16 @@ export function LibraryPage() {
             )}
             {filter !== "Lorebooks" && (
               <button
-                onClick={() =>
-                  navigate(filter === "Personas" ? "/create/persona" : "/characters/create")
-                }
+                onClick={() => {
+                  if (filter === "Personas") {
+                    navigate("/create/persona");
+                    return;
+                  }
+                  void hasConfiguredModel().then((ok) => {
+                    if (ok) navigate("/create/character");
+                    else setShowNoModel(true);
+                  });
+                }}
                 className="flex items-center gap-2 rounded-xl border border-accent/40 bg-accent/20 px-5 py-2.5 text-sm font-medium text-accent/70 transition active:scale-95 active:bg-accent/30"
               >
                 <Users className="h-4 w-4" />
@@ -512,7 +551,7 @@ export function LibraryPage() {
                 onClick={() => {
                   const charId = selectedItem.id;
                   setSelectedItem(null);
-                  navigate(`/settings/accessibility/chat?characterId=${charId}`);
+                  navigate(`/settings/customization/chat?characterId=${charId}`);
                 }}
                 className="flex w-full items-center gap-3 rounded-xl border border-secondary/30 bg-secondary/10 px-4 py-3 text-left transition hover:border-secondary/50 hover:bg-secondary/20"
               >
@@ -568,6 +607,8 @@ export function LibraryPage() {
         onSelect={handleExportFormat}
         exporting={exporting}
       />
+
+      <NoModelMenu isOpen={showNoModel} onClose={() => setShowNoModel(false)} />
 
       {/* Delete Confirmation */}
       <BottomMenu
@@ -642,6 +683,54 @@ export function LibraryPage() {
   );
 }
 
+function LibraryGridSkeleton() {
+  return (
+    <div className="grid grid-cols-2 gap-3 pb-24 lg:grid-cols-3 xl:grid-cols-4">
+      {Array.from({ length: 8 }).map((_, index) => (
+        <div
+          key={index}
+          className="overflow-hidden rounded-3xl border border-fg/10 bg-fg/5 animate-pulse"
+        >
+          <div className="aspect-[4/5] bg-fg/10" />
+          <div className="space-y-2 p-4">
+            <div className="h-4 w-2/3 rounded bg-fg/10" />
+            <div className="h-3 w-1/2 rounded bg-fg/10" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+type LibraryPageCache = {
+  characters: Character[];
+  personas: Persona[];
+  lorebooks: Lorebook[];
+};
+
+const LIBRARY_PAGE_CACHE_STORAGE_KEY = "library.page.cache.v1";
+
+let libraryPageCache: LibraryPageCache | null = (() => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LIBRARY_PAGE_CACHE_STORAGE_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as LibraryPageCache;
+  } catch {
+    return null;
+  }
+})();
+
+function setLibraryPageCache(next: LibraryPageCache) {
+  libraryPageCache = next;
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LIBRARY_PAGE_CACHE_STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage may be full or disabled; in-memory cache still applies.
+  }
+}
+
 function isImageLike(s?: string) {
   return isRenderableImageUrl(s);
 }
@@ -665,6 +754,7 @@ function getItemDescription(item: LibraryItem, t?: (key: any) => string): string
 }
 
 const ItemAvatar = memo(({ item, className }: { item: LibraryItem; className?: string }) => {
+  const { t } = useI18n();
   if (item.itemType === "lorebook") {
     return (
       <LorebookAvatar
@@ -682,7 +772,9 @@ const ItemAvatar = memo(({ item, className }: { item: LibraryItem; className?: s
     return (
       <img
         src={avatarUrl}
-        alt={`${getItemName(item)} avatar`}
+        alt={t("library.card.avatarAlt", { name: getItemName(item) })}
+        loading="lazy"
+        decoding="async"
         className={cn("h-full w-full object-cover", className)}
       />
     );
@@ -706,12 +798,32 @@ const LibraryCard = memo(
     const descriptionPreview = getItemDescription(item, t);
     const avatarPath = getItemAvatarPath(item);
 
+    // Defer gradient computation until after first paint so the card mounts fast.
+    const [gradientReady, setGradientReady] = useState(false);
+    useEffect(() => {
+      const idle =
+        (window as unknown as { requestIdleCallback?: (cb: () => void) => number })
+          .requestIdleCallback;
+      const handle = idle
+        ? idle(() => setGradientReady(true))
+        : window.setTimeout(() => setGradientReady(true), 0);
+      return () => {
+        const cancelIdle = (
+          window as unknown as { cancelIdleCallback?: (handle: number) => void }
+        ).cancelIdleCallback;
+        if (cancelIdle && idle) cancelIdle(handle as number);
+        else window.clearTimeout(handle as number);
+      };
+    }, []);
+
     // Only use gradient for non-lorebook items
     const { gradientCss, hasGradient } = useAvatarGradient(
       item.itemType === "lorebook" ? "character" : (item.itemType as "character" | "persona"),
       item.id,
       avatarPath,
-      getItemDisableGradient(item),
+      !gradientReady || getItemDisableGradient(item),
+      undefined,
+      item.itemType === "character" ? ((item as Character).avatarGradientSource ?? "base") : "round",
     );
 
     const badge =

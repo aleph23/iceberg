@@ -295,8 +295,8 @@ fn kv_bytes_per_value(llama_kv_type: Option<&str>) -> f64 {
 fn estimate_kv_bytes_per_token(model: &LlamaModel, llama_kv_type: Option<&str>) -> Option<u64> {
     let n_layer = u64::from(model.n_layer());
     let n_embd = u64::try_from(model.n_embd()).ok()?;
-    let n_head = u64::try_from(model.n_head()).unwrap_or(1).max(1);
-    let n_head_kv = u64::try_from(model.n_head_kv()).unwrap_or(n_head).max(1);
+    let n_head = u64::from(model.n_head()).max(1);
+    let n_head_kv = u64::from(model.n_head_kv()).max(1);
     let gqa_correction = n_head_kv as f64 / n_head as f64;
     let effective_n_embd = (n_embd as f64 * gqa_correction) as u64;
     let bytes_per_value = kv_bytes_per_value(llama_kv_type);
@@ -323,9 +323,18 @@ fn default_memory_reserve_bytes(available_memory_bytes: u64) -> u64 {
     (available_memory_bytes / 5).max(512 * 1024 * 1024)
 }
 
-fn ram_budget_for_context(model: &LlamaModel, available_memory_bytes: u64) -> u64 {
+fn resident_weight_bytes(model_size: u64, total_layers: u32, resident_layers: u32) -> u64 {
+    let total = u128::from(total_layers.max(1));
+    let resident = u128::from(resident_layers.min(total_layers));
+    ((u128::from(model_size) * resident) / total) as u64
+}
+
+fn ram_budget_for_context(model: &LlamaModel, available_memory_bytes: u64, gpu_layers: u32) -> u64 {
+    let total_layers = model.n_layer();
+    let cpu_layers = total_layers.saturating_sub(gpu_layers);
+    let cpu_resident = resident_weight_bytes(model.size(), total_layers, cpu_layers);
     let reserve = default_memory_reserve_bytes(available_memory_bytes);
-    available_memory_bytes.saturating_sub(model.size().saturating_add(reserve))
+    available_memory_bytes.saturating_sub(cpu_resident.saturating_add(reserve))
 }
 
 fn cpu_fallback_headroom_bytes(base_budget: u64, available_memory_bytes: u64) -> u64 {
@@ -361,16 +370,18 @@ pub(super) fn compute_recommended_context(
     available_memory_bytes: Option<u64>,
     available_vram_bytes: Option<u64>,
     max_context_length: u32,
+    gpu_layers: u32,
     llama_offload_kqv: Option<bool>,
     llama_kv_type: Option<&str>,
 ) -> Option<u32> {
     let available_for_ctx = if llama_offload_kqv == Some(true) {
         let vram = available_vram_bytes?;
+        let gpu_resident = resident_weight_bytes(model.size(), model.n_layer(), gpu_layers);
         let reserve = default_memory_reserve_bytes(vram);
-        vram.saturating_sub(reserve)
+        vram.saturating_sub(gpu_resident.saturating_add(reserve))
     } else {
         let ram = available_memory_bytes?;
-        ram_budget_for_context(model, ram)
+        ram_budget_for_context(model, ram, gpu_layers)
     };
     let kv_bytes_per_token = estimate_kv_bytes_per_token(model, llama_kv_type)?;
     if kv_bytes_per_token == 0 {
@@ -387,6 +398,7 @@ pub(super) fn compute_cpu_fallback_limits(
     model: &LlamaModel,
     available_memory_bytes: Option<u64>,
     max_context_length: u32,
+    gpu_layers: u32,
     llama_kv_type: Option<&str>,
     requested_context: Option<u32>,
     requested_batch_size: u32,
@@ -397,7 +409,7 @@ pub(super) fn compute_cpu_fallback_limits(
         return None;
     }
 
-    let base_budget = ram_budget_for_context(model, available_memory_bytes);
+    let base_budget = ram_budget_for_context(model, available_memory_bytes, gpu_layers);
     let requested_batch_size = requested_batch_size.max(1);
     let base_context = (base_budget / kv_bytes_per_token).min(u64::from(max_context_length)) as u32;
     let requested_or_base_context = requested_context
@@ -499,6 +511,9 @@ pub(crate) async fn llamacpp_context_info(
     llama_offload_kqv: Option<bool>,
     llama_kv_type: Option<String>,
     llama_gpu_layers: Option<u32>,
+    llama_mmproj_path: Option<String>,
+    llama_mtp_enabled: Option<bool>,
+    llama_mtp_model_path: Option<String>,
 ) -> Result<LlamaCppContextInfo, String> {
     let _ = app;
     if model_path.trim().is_empty() {
@@ -521,11 +536,30 @@ pub(crate) async fn llamacpp_context_info(
     let available_memory_bytes = get_available_memory_bytes();
     let available_vram_bytes = get_available_vram_bytes();
     let supports_gpu_offload = shared_backend()?.supports_gpu_offload();
+    let sidecar_vram_reserve_bytes = if supports_gpu_offload {
+        let mmproj_reserve = llama_mmproj_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let mtp_reserve = if llama_mtp_enabled == Some(true) {
+            llama_mtp_model_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .and_then(|path| std::fs::metadata(path).ok())
+                .map(|meta| meta.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        mmproj_reserve.saturating_add(mtp_reserve)
+    } else {
+        0
+    };
     let resolved_offload_kqv = if llama_offload_kqv.is_some() {
         llama_offload_kqv
-    } else if !supports_gpu_offload {
-        Some(false)
-    } else if using_rocm_backend() {
+    } else if !supports_gpu_offload || using_rocm_backend() {
         Some(false)
     } else {
         None
@@ -549,9 +583,11 @@ pub(crate) async fn llamacpp_context_info(
             available_memory_bytes,
             available_vram_bytes,
             None,
+            512,
             resolved_offload_kqv,
             llama_kv_type.as_deref(),
             flash_attention_policy,
+            sidecar_vram_reserve_bytes,
         )?
         .estimated_gpu_layers
     };
@@ -570,6 +606,7 @@ pub(crate) async fn llamacpp_context_info(
             resolved_gpu_layers,
             resolved_offload_kqv,
             llama_kv_type.as_deref(),
+            sidecar_vram_reserve_bytes,
         )
     };
 

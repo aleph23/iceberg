@@ -12,8 +12,14 @@ export interface AdvancedSettings {
   appUpdateChecksEnabled?: boolean;
   developerModeEnabled?: boolean;
   helpMeReplyEnabled?: boolean;
+  helpMeReplyRoleplayPromptTemplateId?: string;
+  helpMeReplyConversationalPromptTemplateId?: string;
   manualModeContextWindow?: number;
+  customLlmModelsDir?: string;
+  customSdModelsDir?: string;
   embeddingMaxTokens?: number; // 1024, 2048, or 4096
+  embeddingModelVersion?: "v3" | "v4";
+  embeddingDimensions?: number;
   accessibility?: {
     send: { enabled: boolean; volume: number };
     success: { enabled: boolean; volume: number };
@@ -31,6 +37,8 @@ export interface AdvancedSettings {
     coldThreshold: number;
     contextEnrichmentEnabled?: boolean;
   };
+  dynamicMemorySummarizerPromptTemplateId?: string;
+  dynamicMemoryManagerPromptTemplateId?: string;
   groupDynamicMemory?: {
     enabled: boolean;
     summaryMessageInterval: number;

@@ -6,14 +6,17 @@ use crate::chat_manager::types::{Model, Session, Settings};
 use super::{
     is_llama_cpp_model, llama_sampler_profile_defaults, resolve_context_length,
     resolve_frequency_penalty, resolve_llama_batch_size, resolve_llama_chat_template_override,
-    resolve_llama_chat_template_preset, resolve_llama_flash_attention, resolve_llama_gpu_layers,
-    resolve_llama_kv_type, resolve_llama_mmproj_path, resolve_llama_offload_kqv,
+    resolve_llama_chat_template_preset, resolve_llama_dry_allowed_length, resolve_llama_dry_base,
+    resolve_llama_dry_multiplier, resolve_llama_dry_penalty_last_n,
+    resolve_llama_dry_sequence_breakers, resolve_llama_flash_attention, resolve_llama_gpu_layers,
+    resolve_llama_kv_type, resolve_llama_mmproj_path, resolve_llama_mtp_draft_tokens,
+    resolve_llama_mtp_enabled, resolve_llama_mtp_model_path, resolve_llama_offload_kqv,
     resolve_llama_profile_min_p, resolve_llama_profile_typical_p,
     resolve_llama_raw_completion_fallback, resolve_llama_rope_freq_base,
     resolve_llama_rope_freq_scale, resolve_llama_sampler_order, resolve_llama_sampler_profile,
-    resolve_llama_seed, resolve_llama_strict_mode, resolve_llama_threads,
-    resolve_llama_threads_batch, resolve_max_tokens, resolve_presence_penalty, resolve_temperature,
-    resolve_top_k, resolve_top_p,
+    resolve_llama_seed, resolve_llama_streaming_enabled, resolve_llama_strict_mode,
+    resolve_llama_swa_full, resolve_llama_threads, resolve_llama_threads_batch, resolve_max_tokens,
+    resolve_presence_penalty, resolve_temperature, resolve_top_k, resolve_top_p,
 };
 
 fn build_llama_extra_fields(
@@ -63,6 +66,9 @@ fn build_llama_extra_fields(
     if let Some(v) = resolve_llama_flash_attention(session, model, settings) {
         extra.insert("llamaFlashAttentionPolicy".to_string(), json!(v));
     }
+    if let Some(v) = resolve_llama_swa_full(session, model, settings) {
+        extra.insert("llamaSwaFull".to_string(), json!(v));
+    }
     if let Some(v) = resolve_llama_chat_template_override(session, model, settings) {
         extra.insert("llamaChatTemplateOverride".to_string(), json!(v));
     }
@@ -75,8 +81,20 @@ fn build_llama_extra_fields(
     if let Some(v) = resolve_llama_raw_completion_fallback(session, model, settings) {
         extra.insert("llamaRawCompletionFallback".to_string(), json!(v));
     }
+    if let Some(v) = resolve_llama_streaming_enabled(session, model, settings) {
+        extra.insert("llamaStreamingEnabled".to_string(), json!(v));
+    }
     if let Some(v) = resolve_llama_strict_mode(session, model, settings) {
         extra.insert("llamaStrictMode".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_mtp_enabled(session, model, settings) {
+        extra.insert("llamaMtpEnabled".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_mtp_draft_tokens(session, model, settings) {
+        extra.insert("llamaMtpDraftTokens".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_mtp_model_path(session, model, settings) {
+        extra.insert("llamaMtpModelPath".to_string(), json!(v));
     }
     if let Some(v) = sampler_profile {
         extra.insert("llamaSamplerProfile".to_string(), json!(v));
@@ -89,6 +107,21 @@ fn build_llama_extra_fields(
     }
     if let Some(v) = resolve_llama_profile_typical_p(session, model, settings) {
         extra.insert("llamaTypicalP".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_dry_multiplier(session, model, settings) {
+        extra.insert("llamaDryMultiplier".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_dry_base(session, model, settings) {
+        extra.insert("llamaDryBase".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_dry_allowed_length(session, model, settings) {
+        extra.insert("llamaDryAllowedLength".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_dry_penalty_last_n(session, model, settings) {
+        extra.insert("llamaDryPenaltyLastN".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_dry_sequence_breakers(session, model, settings) {
+        extra.insert("llamaDrySequenceBreakers".to_string(), json!(v));
     }
 
     if extra.is_empty() {
@@ -489,6 +522,27 @@ pub(crate) fn build_provider_extra_fields(
         }
     }
 
+    let force_send_thinking_state = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.force_send_thinking_state)
+        .or_else(|| {
+            session
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.force_send_thinking_state)
+        })
+        .unwrap_or(false);
+
+    if force_send_thinking_state {
+        let enabled = request_settings.reasoning_enabled;
+        extra.insert("enable_thinking".to_string(), json!(enabled));
+        extra.insert(
+            "chat_template_kwargs".to_string(),
+            json!({ "enable_thinking": enabled }),
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────
     // NEW: Prompt caching TTL (used by Claude, Bedrock, Vertex, Gemini, etc.)
     // ─────────────────────────────────────────────────────────────
@@ -503,7 +557,7 @@ pub(crate) fn build_provider_extra_fields(
                 .and_then(|cfg| cfg.prompt_caching_ttl.clone())
         })
         // Global settings fallback (in case you ever add it there)
-        .or_else(|| {
+        .or({
             // settings.advanced_model_settings.prompt_caching_ttl.clone()  // uncomment if the field exists
             None
         });

@@ -18,19 +18,20 @@ export function CharacterSelectItem({ character, selected, onToggle }: Character
   return (
     <button
       onClick={onToggle}
+      aria-pressed={selected}
       className={cn(
-        "w-full flex items-center gap-3 p-3 text-left",
-        radius.md,
-        "border transition",
+        "flex w-full items-center gap-3 p-2.5 text-left",
+        radius.lg,
+        "border",
+        interactive.transition.fast,
         selected
           ? "border-accent/40 bg-accent/10"
-          : "border-fg/10 bg-fg/5 hover:border-fg/20 hover:bg-fg/10",
-        interactive.transition.fast,
+          : "border-fg/10 bg-surface-el/85 hover:border-fg/20",
       )}
     >
       <div
         className={cn(
-          "relative h-12 w-12 shrink-0 overflow-hidden rounded-full",
+          "h-11 w-11 shrink-0 overflow-hidden rounded-full",
           "bg-linear-to-br from-fg/8 to-fg/4",
           selected ? "ring-2 ring-accent/50" : "ring-1 ring-fg/10",
         )}
@@ -44,8 +45,8 @@ export function CharacterSelectItem({ character, selected, onToggle }: Character
         )}
       </div>
 
-      <div className="flex-1 min-w-0">
-        <h3
+      <div className="min-w-0 flex-1">
+        <p
           className={cn(
             "truncate font-medium",
             typography.body.size,
@@ -53,24 +54,20 @@ export function CharacterSelectItem({ character, selected, onToggle }: Character
           )}
         >
           {character.name}
-        </h3>
+        </p>
         {description && (
-          <p className={cn("truncate text-sm", selected ? "text-accent/60" : "text-fg/50")}>
-            {description}
-          </p>
+          <p className={cn("truncate", typography.bodySmall.size, "text-fg/50")}>{description}</p>
         )}
       </div>
 
       <div
         className={cn(
-          "h-6 w-6 shrink-0 rounded-full flex items-center justify-center",
-          "border transition",
-          selected
-            ? "border-accent bg-accent text-surface"
-            : "border-fg/30 bg-transparent",
+          "flex h-5 w-5 shrink-0 items-center justify-center rounded-full border",
+          interactive.transition.fast,
+          selected ? "border-accent bg-accent text-surface" : "border-fg/25 text-transparent",
         )}
       >
-        {selected && <Check size={14} strokeWidth={3} />}
+        <Check size={12} strokeWidth={3} />
       </div>
     </button>
   );

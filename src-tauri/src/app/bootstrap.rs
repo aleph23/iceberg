@@ -5,7 +5,7 @@ use tauri::Manager;
 
 use crate::{
     abort_manager, chat_manager, content_filter, dynamic_memory_run_manager, host_api, logger,
-    migrations, storage_manager, sync, usage, utils,
+    migrations, post_turn_memory_scheduler, storage_manager, sync, usage, utils,
 };
 
 use super::runtime::configure_onnxruntime_dylib;
@@ -64,11 +64,17 @@ fn manage_core_state(app: &mut tauri::App) -> Arc<usage::app_activity::AppActive
     let dynamic_memory_run_manager = dynamic_memory_run_manager::DynamicMemoryRunManager::new();
     app.manage(dynamic_memory_run_manager);
 
+    let post_turn_memory_scheduler = post_turn_memory_scheduler::PostTurnMemoryScheduler::new();
+    app.manage(post_turn_memory_scheduler);
+
     let app_usage_service = Arc::new(usage::app_activity::AppActiveUsageService::new());
     app.manage(app_usage_service.clone());
 
+    app.manage(crate::chat_manager::lorebook_generator::JobRegistry::new());
+
     app.manage(sync::manager::SyncManagerState::new());
     app.manage(host_api::HostApiManager::default());
+    app.manage(crate::asr_manager::WhisperRuntimeState::default());
 
     app_usage_service
 }
@@ -94,6 +100,7 @@ fn initialize_logging(app: &mut tauri::App) {
     if let Err(err) = utils::init_tracing(app.handle().clone()) {
         eprintln!("Failed to initialize tracing: {}", err);
     }
+    crate::asr_manager::initialize_whisper_logging();
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let payload = if let Some(message) = info.payload().downcast_ref::<&str>() {
@@ -229,6 +236,25 @@ fn run_bootstrap_tasks(app: &tauri::AppHandle) {
         );
     }
 
+    if let Err(err) = chat_manager::prompts::ensure_lorebook_entry_writer_template(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!("Failed to ensure lorebook entry writer template: {}", err),
+        );
+    }
+
+    if let Err(err) = chat_manager::prompts::ensure_lorebook_keyword_generator_template(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!(
+                "Failed to ensure lorebook keyword generator template: {}",
+                err
+            ),
+        );
+    }
+
     if let Err(err) = chat_manager::prompts::ensure_dynamic_memory_templates(app) {
         utils::log_error(
             app,
@@ -261,11 +287,27 @@ fn run_bootstrap_tasks(app: &tauri::AppHandle) {
         );
     }
 
+    if let Err(err) = chat_manager::prompts::ensure_scene_prompt_writer_template(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!("Failed to ensure scene prompt writer template: {}", err),
+        );
+    }
+
     if let Err(err) = chat_manager::prompts::ensure_design_reference_template(app) {
         utils::log_error(
             app,
             "bootstrap",
             format!("Failed to ensure design reference template: {}", err),
+        );
+    }
+
+    if let Err(err) = chat_manager::prompts::ensure_companion_soul_writer_template(app) {
+        utils::log_error(
+            app,
+            "bootstrap",
+            format!("Failed to ensure companion soul writer template: {}", err),
         );
     }
 }
@@ -278,18 +320,65 @@ pub(crate) fn get_window_chrome_flags(app: tauri::AppHandle) -> Result<(bool, bo
 
 #[derive(Clone, Copy)]
 pub(crate) struct WindowChromeFlags {
-    /// `--osdecorations`: re-enable OS titlebar, hide custom buttons.
+    /// `--osdecorations`: re-enable the OS titlebar, ignore the in-app style.
     pub os_decorations: bool,
-    /// `--nobuttons`: keep frameless window but hide custom buttons.
+    /// `--nobuttons`: keep the frameless window but hide all custom chrome.
     pub no_buttons: bool,
 }
 
 impl WindowChromeFlags {
     pub fn from_env() -> Self {
-        Self {
-            os_decorations: true,
-            no_buttons: true,
+        let mut os_decorations = false;
+        let mut no_buttons = false;
+        for arg in std::env::args().skip(1) {
+            match arg.as_str() {
+                "--osdecorations" => os_decorations = true,
+                "--nobuttons" => no_buttons = true,
+                _ => {}
+            }
         }
+        Self {
+            os_decorations,
+            no_buttons,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_webview_media(window: &tauri::WebviewWindow) {
+    let result = window.with_webview(|webview| {
+        use webkit2gtk::gio::prelude::Cast;
+        use webkit2gtk::{
+            PermissionRequestExt, SettingsExt, UserMediaPermissionRequest, WebViewExt,
+        };
+
+        let wv = webview.inner();
+        if let Some(settings) = WebViewExt::settings(&wv) {
+            settings.set_enable_media_stream(true);
+            settings.set_enable_mediasource(true);
+            settings.set_media_playback_requires_user_gesture(false);
+        }
+        wv.connect_permission_request(|_, request| {
+            if request
+                .downcast_ref::<UserMediaPermissionRequest>()
+                .is_some()
+            {
+                request.allow();
+                return true;
+            }
+            false
+        });
+    });
+
+    if let Err(err) = result {
+        utils::log_error(
+            window.app_handle(),
+            "webview",
+            format!(
+                "Failed to configure Linux webview media permissions: {}",
+                err
+            ),
+        );
     }
 }
 
@@ -302,7 +391,11 @@ pub(crate) fn setup_app(
 
     #[cfg(not(mobile))]
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_decorations(true);
+        if chrome_flags.os_decorations {
+            let _ = window.set_decorations(true);
+        }
+        #[cfg(target_os = "linux")]
+        configure_linux_webview_media(&window);
     }
 
     let app_usage_service = manage_core_state(app);

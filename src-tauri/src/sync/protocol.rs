@@ -30,6 +30,13 @@ pub enum ChangeOp {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct DomainPlan {
+    pub domain: SyncDomain,
+    pub change_count: u32,
+    pub estimated_bytes: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct ChangeRecord {
     pub change_id: i64,
     pub source_device_id: String,
@@ -43,10 +50,8 @@ pub struct ChangeRecord {
     pub payload: Vec<u8>,
 }
 
-// 3. The Actual Messages over TCP
 #[derive(Serialize, Deserialize, Debug)]
 pub enum P2PMessage {
-    // Handshake
     Handshake {
         #[serde(default = "default_protocol_version")]
         protocol_version: u32,
@@ -54,26 +59,26 @@ pub enum P2PMessage {
         #[serde(default)]
         device_id: String,
         salt: [u8; 16],
-        challenge: [u8; 16], // Random bytes the other side must decrypt and return
+        challenge: [u8; 16],
     },
     AuthRequest {
-        // The sender encrypts the received challenge with the derived key
-        // and sends it back to prove they know the PIN.
         encrypted_challenge: Vec<u8>,
-        // Sender also sends their own challenge for mutual auth
+
         my_challenge: [u8; 16],
     },
     AuthResponse {
-        // Reply to the sender's challenge
         encrypted_challenge: Vec<u8>,
     },
 
-    // Sync Coordination
     AdvertiseCursors {
         cursors: CursorSet,
     },
+    SyncManifest {
+        plan: Vec<DomainPlan>,
+        total_changes: u32,
+        total_bytes: u64,
+    },
 
-    // Data Transfer
     PushChanges {
         domain: SyncDomain,
         changes: Vec<ChangeRecord>,
@@ -88,12 +93,26 @@ pub enum P2PMessage {
         last_change_id: i64,
     },
 
-    // Control
     SyncComplete,
     SyncApplied,
     StatusUpdate(String),
     Disconnect,
     Error(String),
+    Ready,
+
+    AssetContentStart {
+        entity_id: String,
+        path: String,
+        content_hash: String,
+        total_bytes: u64,
+    },
+    AssetContentChunk {
+        entity_id: String,
+        chunk: Vec<u8>,
+    },
+    AssetContentComplete {
+        entity_id: String,
+    },
 }
 
 fn default_protocol_version() -> u32 {

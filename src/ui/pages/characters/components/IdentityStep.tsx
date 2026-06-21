@@ -3,7 +3,7 @@ import { X, Camera, Image, Upload, Sparkles, Loader2, AlertCircle, FolderOpen } 
 import { typography, radius, spacing, interactive, shadows, cn } from "../../../design-tokens";
 import { AvatarPicker } from "../../../components/AvatarPicker";
 import { Switch } from "../../../components/Switch";
-import type { AvatarCrop } from "../../../../core/storage/schemas";
+import type { AvatarCrop, CharacterCardType } from "../../../../core/storage/schemas";
 import { useI18n } from "../../../../core/i18n/context";
 
 interface IdentityStepProps {
@@ -16,6 +16,12 @@ interface IdentityStepProps {
   onAvatarCropChange?: (value: AvatarCrop | null) => void;
   avatarRoundPath?: string | null;
   onAvatarRoundChange?: (value: string | null) => void;
+  bannerPath?: string | null;
+  onBannerChange?: (value: string | null) => void;
+  bannerCrop?: AvatarCrop | null;
+  onBannerCropChange?: (value: AvatarCrop | null) => void;
+  cardType: CharacterCardType;
+  onCardTypeChange: (value: CharacterCardType) => void;
   backgroundImagePath: string;
   onBackgroundImageChange: (value: string) => void;
   onBackgroundImageUpload: (event: React.ChangeEvent<HTMLInputElement>) => void;
@@ -39,6 +45,12 @@ export function IdentityStep({
   onAvatarCropChange,
   avatarRoundPath,
   onAvatarRoundChange,
+  bannerPath,
+  onBannerChange,
+  bannerCrop,
+  onBannerCropChange,
+  cardType,
+  onCardTypeChange,
   backgroundImagePath,
   onBackgroundImageChange,
   onBackgroundImageUpload,
@@ -72,64 +84,135 @@ export function IdentityStep({
       </div>
 
       {/* Desktop: Two-column layout / Mobile: stacked */}
-      <div className="flex flex-col lg:flex-row lg:gap-8 lg:items-start">
-        {/* Avatar Section */}
-        <div className="flex flex-col items-center py-4 lg:shrink-0">
-          <div className="relative">
-            <AvatarPicker
-              currentAvatarPath={avatarPath}
-              onAvatarChange={onAvatarChange}
-              onBeforeChooseFromLibrary={onBeforeChooseAvatarFromLibrary}
-              promptSubjectName={name}
-              avatarCrop={avatarCrop}
-              onAvatarCropChange={onAvatarCropChange}
-              avatarRoundPath={avatarRoundPath}
-              onAvatarRoundChange={onAvatarRoundChange}
-              avatarPreview={
-                importingAvatar ? (
-                  <div className="flex h-full w-full items-center justify-center">
-                    <Loader2 className="animate-spin text-fg/50" size={34} />
-                  </div>
-                ) : avatarPath ? undefined : (
-                  <div className="flex h-full w-full items-center justify-center">
-                    <Camera className="text-fg/30" size={36} />
-                  </div>
-                )
-              }
-            />
+      <div className="flex flex-col gap-6 lg:gap-8">
+        <div className="grid gap-6 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)] lg:items-start">
+          <div className="space-y-5 py-4 lg:shrink-0">
+            <div className="flex flex-col items-center">
+              <div className="relative">
+                <AvatarPicker
+                  currentAvatarPath={avatarPath}
+                  onAvatarChange={onAvatarChange}
+                  onBeforeChooseFromLibrary={onBeforeChooseAvatarFromLibrary}
+                  promptSubjectName={name}
+                  avatarCrop={avatarCrop}
+                  onAvatarCropChange={onAvatarCropChange}
+                  avatarRoundPath={avatarRoundPath}
+                  onAvatarRoundChange={onAvatarRoundChange}
+                  avatarPreview={
+                    importingAvatar ? (
+                      <div className="flex h-full w-full items-center justify-center">
+                        <Loader2 className="animate-spin text-fg/50" size={34} />
+                      </div>
+                    ) : avatarPath ? undefined : (
+                      <div className="flex h-full w-full items-center justify-center">
+                        <Camera className="text-fg/30" size={36} />
+                      </div>
+                    )
+                  }
+                />
 
-            {/* Remove Button - top left */}
-            {avatarPath && (
-              <button
-                onClick={() => {
-                  onAvatarChange("");
-                  onAvatarCropChange?.(null);
-                  onAvatarRoundChange?.(null);
-                }}
-                className="absolute -top-1 -left-1 z-30 flex h-12 w-12 items-center justify-center rounded-full border border-fg/10 bg-surface-el text-fg/60 transition hover:bg-danger/80 hover:border-danger/50 hover:text-fg active:scale-95"
-              >
-                <X size={14} strokeWidth={2.5} />
-              </button>
-            )}
-          </div>
-          <p className="mt-3 text-xs text-fg/40">{t("characters.identity.tapCameraToAdd")}</p>
-          {importingAvatar && (
-            <p className="mt-1 text-xs text-accent/80">
-              {t("characters.identity.importingAvatar")}
-            </p>
-          )}
-          {avatarImportError && (
-            <div className="mt-2 flex items-start gap-1.5 text-xs text-danger">
-              <AlertCircle size={12} className="mt-0.5 shrink-0" />
-              <span className="max-w-[320px] whitespace-pre-line leading-4">
-                {avatarImportError}
-              </span>
+                {avatarPath && (
+                  <button
+                    onClick={() => {
+                      onAvatarChange("");
+                      onAvatarCropChange?.(null);
+                      onAvatarRoundChange?.(null);
+                      onBannerChange?.(null);
+                      onBannerCropChange?.(null);
+                    }}
+                    className="absolute -top-1 -left-1 z-30 flex h-12 w-12 items-center justify-center rounded-full border border-fg/10 bg-surface-el text-fg/60 transition hover:bg-danger/80 hover:border-danger/50 hover:text-fg active:scale-95"
+                  >
+                    <X size={14} strokeWidth={2.5} />
+                  </button>
+                )}
+              </div>
+              <p className="mt-3 text-xs text-fg/40">{t("characters.identity.tapCameraToAdd")}</p>
+              {importingAvatar && (
+                <p className="mt-1 text-xs text-accent/80">
+                  {t("characters.identity.importingAvatar")}
+                </p>
+              )}
+              {avatarImportError && (
+                <div className="mt-2 flex items-start gap-1.5 text-xs text-danger">
+                  <AlertCircle size={12} className="mt-0.5 shrink-0" />
+                  <span className="max-w-[320px] whitespace-pre-line leading-4">
+                    {avatarImportError}
+                  </span>
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Right side fields (desktop) / Below avatar (mobile) */}
-        <div className="lg:flex-1 space-y-6">
+            <div className="space-y-3">
+              <div>
+                <p className={cn(typography.label.size, typography.label.weight, "text-fg/70")}>
+                  {t("characters.identity.cardTypeLabel")}
+                </p>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {(["circle", "banner"] as const).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => onCardTypeChange(value)}
+                      className={cn(
+                        "rounded-xl border px-3 py-2 text-sm font-medium transition",
+                        cardType === value
+                          ? "border-accent/50 bg-accent/10 text-fg"
+                          : "border-fg/10 bg-surface-el/20 text-fg/60 hover:border-fg/20 hover:text-fg",
+                      )}
+                    >
+                      {value === "circle"
+                        ? t("characters.identity.cardTypeCircle")
+                        : t("characters.identity.cardTypeBanner")}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-fg/10 bg-surface-el/10 p-4">
+                <div className="mb-3">
+                  <p className="text-sm font-medium text-fg">{t("characters.identity.bannerImageLabel")}</p>
+                  <p className="text-xs text-fg/45">
+                    {t("characters.identity.bannerImageHint")}
+                  </p>
+                </div>
+
+                <div className="flex flex-col items-center gap-3">
+                  <AvatarPicker
+                    currentAvatarPath={bannerPath || ""}
+                    onAvatarChange={(value) => onBannerChange?.(value)}
+                    librarySelectionScope="character-banner"
+                    onBeforeChooseFromLibrary={onBeforeChooseAvatarFromLibrary}
+                    promptSubjectName={name}
+                    avatarCrop={bannerCrop}
+                    onAvatarCropChange={onBannerCropChange}
+                    shape="banner"
+                    size="md"
+                    avatarPreview={
+                      bannerPath ? undefined : (
+                        <div className="flex h-full w-full items-center justify-center">
+                          <Image className="text-fg/30" size={24} />
+                        </div>
+                      )
+                    }
+                  />
+                  {bannerPath ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onBannerChange?.(null);
+                        onBannerCropChange?.(null);
+                      }}
+                      className="text-xs text-fg/45 transition hover:text-danger"
+                    >
+                      {t("characters.identity.bannerImageRemove")}
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:flex-1 space-y-6">
           {/* Name Input */}
           <div className={spacing.field}>
             <label
@@ -228,7 +311,8 @@ export function IdentityStep({
                 "uppercase text-fg/70",
               )}
             >
-              Chat Background <span className="text-fg/40">(Optional)</span>
+              {t("characters.identity.chatBackgroundLabel")}{" "}
+              <span className="text-fg/40">{t("characters.identity.optionalSuffix")}</span>
             </label>
             <div
               className={cn(
@@ -243,7 +327,7 @@ export function IdentityStep({
                 <div className="relative">
                   <img
                     src={backgroundImagePath}
-                    alt="Background preview"
+                    alt={t("characters.identity.backgroundPreviewAlt")}
                     className="h-24 w-full object-cover"
                   />
                   <div className="absolute inset-0 bg-surface-el/30 flex items-center justify-center">
@@ -254,7 +338,7 @@ export function IdentityStep({
                         radius.sm,
                       )}
                     >
-                      Background Preview
+                      {t("characters.identity.backgroundPreviewBadge")}
                     </span>
                   </div>
                   <button
@@ -280,9 +364,11 @@ export function IdentityStep({
                     <Image size={16} className="text-fg/40" />
                   </div>
                   <div className="text-center">
-                    <p className={cn(typography.bodySmall.size, "text-fg/70")}>Add Background</p>
+                    <p className={cn(typography.bodySmall.size, "text-fg/70")}>
+                      {t("characters.identity.addBackground")}
+                    </p>
                     <p className={cn(typography.caption.size, "text-fg/40")}>
-                      Upload one or pick from library
+                      {t("characters.identity.addBackgroundHint")}
                     </p>
                   </div>
                 </div>
@@ -298,7 +384,7 @@ export function IdentityStep({
                 )}
               >
                 <Upload size={14} />
-                Upload image
+                {t("characters.identity.uploadImage")}
                 <input
                   type="file"
                   accept="image/*"
@@ -317,12 +403,13 @@ export function IdentityStep({
                 )}
               >
                 <FolderOpen size={14} />
-                Choose from library
+                {t("characters.identity.chooseFromLibrary")}
               </button>
             </div>
             <p className={cn(typography.bodySmall.size, "text-fg/40")}>
-              Optional background image for chat conversations
+              {t("characters.identity.backgroundDesc")}
             </p>
+          </div>
           </div>
         </div>
       </div>
@@ -346,7 +433,7 @@ export function IdentityStep({
               : "cursor-not-allowed border border-fg/5 bg-fg/5 text-fg/30",
           )}
         >
-          Continue to Description
+          {t("characters.identity.continueToDescription")}
         </motion.button>
       </div>
 
@@ -362,11 +449,11 @@ export function IdentityStep({
             )}
           >
             <Upload className="h-4 w-4" />
-            Import Character from File
+            {t("characters.identity.importCharacterFromFile")}
             <input type="file" onChange={onImport} className="hidden" />
           </label>
           <p className={cn(typography.bodySmall.size, "mt-2 text-center text-fg/40")}>
-            Load a character from a PNG card, .uec, or .json export file
+            {t("characters.identity.importCharacterDesc")}
           </p>
         </div>
       )}

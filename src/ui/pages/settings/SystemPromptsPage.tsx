@@ -17,7 +17,11 @@ import {
   Image,
   Plus,
   X,
+  ListFilter,
+  Check,
+  AlertTriangle,
 } from "lucide-react";
+import { getPromptTypeName } from "./EditPromptTemplate";
 import { cn, typography, radius, interactive } from "../../design-tokens";
 import { useI18n } from "../../../core/i18n/context";
 import {
@@ -45,26 +49,40 @@ import {
   APP_AVATAR_EDIT_TEMPLATE_ID,
   APP_SCENE_GENERATION_TEMPLATE_ID,
   APP_DESIGN_REFERENCE_TEMPLATE_ID,
+  APP_COMPANION_SOUL_WRITER_TEMPLATE_ID,
   isProtectedPromptTemplate,
   isSystemPromptTemplate,
   getPromptTypeLabel,
 } from "../../../core/prompts/constants";
 import { BottomMenu, PromptTemplateExportMenu } from "../../components";
+import { describeUsage, promptFeatureRefs } from "../../../core/storage/usage";
 import { toast } from "../../components/toast";
 import { downloadJson, readFileAsText } from "../../../core/storage/personaTransfer";
 import type { PromptTemplateExportFormat } from "../../components/PromptTemplateExportMenu";
 
 type TemplateUsage = {
   characters: number;
+  features: string[];
 };
 
-type FilterTag = "all" | "system" | "internal" | "custom";
-
-const FILTER_TAGS: { key: FilterTag; labelKey: string }[] = [
-  { key: "all", labelKey: "systemPrompts.filters.all" },
-  { key: "system", labelKey: "systemPrompts.filters.system" },
-  { key: "internal", labelKey: "systemPrompts.filters.internal" },
-  { key: "custom", labelKey: "systemPrompts.filters.custom" },
+const ALL_PROMPT_TYPES: PromptTemplateType[] = [
+  "directChat",
+  "companionChat",
+  "groupChatRoleplay",
+  "groupChatConversational",
+  "replyHelperRoleplay",
+  "replyHelperConversational",
+  "dynamicMemorySummarizer",
+  "dynamicMemoryManager",
+  "lorebookEntryWriter",
+  "lorebookKeywordGenerator",
+  "avatarGeneration",
+  "avatarEditRequest",
+  "sceneGeneration",
+  "scenePromptWriter",
+  "designReferenceWriter",
+  "companionSoulWriter",
+  "undefined",
 ];
 
 type ExternalPromptEntry = {
@@ -118,6 +136,7 @@ type ImportedPromptTemplatePayload = {
 function normalizeImportedSystemEntry(
   input: unknown,
   fallbackIndex: number,
+  importedPromptName: string,
 ): SystemPromptEntry | null {
   if (!input || typeof input !== "object") return null;
   const entry = input as Record<string, unknown>;
@@ -174,7 +193,7 @@ function normalizeImportedSystemEntry(
 
   return {
     id,
-    name: typeof entry.name === "string" && entry.name.trim() ? entry.name : "Imported Prompt",
+    name: typeof entry.name === "string" && entry.name.trim() ? entry.name : importedPromptName,
     role,
     content,
     enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
@@ -189,38 +208,47 @@ function normalizeImportedSystemEntry(
   };
 }
 
-function normalizeImportedPromptTemplatePayload(input: {
-  name?: unknown;
-  promptType?: unknown;
-  scope?: unknown;
-  targetIds?: unknown;
-  content?: unknown;
-  entries?: unknown;
-  condensePromptEntries?: unknown;
-}): ImportedPromptTemplatePayload {
+function normalizeImportedPromptTemplatePayload(
+  input: {
+    name?: unknown;
+    promptType?: unknown;
+    scope?: unknown;
+    targetIds?: unknown;
+    content?: unknown;
+    entries?: unknown;
+    condensePromptEntries?: unknown;
+  },
+  nameRequiredMessage: string,
+  importedPromptName: string,
+): ImportedPromptTemplatePayload {
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (!name) {
-    throw new Error("System prompt template name is required.");
+    throw new Error(nameRequiredMessage);
   }
 
   const promptType: PromptTemplateType =
     input.promptType === "directChat" ||
+    input.promptType === "companionChat" ||
     input.promptType === "groupChatRoleplay" ||
     input.promptType === "groupChatConversational" ||
     input.promptType === "dynamicMemorySummarizer" ||
     input.promptType === "dynamicMemoryManager" ||
     input.promptType === "replyHelperRoleplay" ||
     input.promptType === "replyHelperConversational" ||
+    input.promptType === "lorebookEntryWriter" ||
+    input.promptType === "lorebookKeywordGenerator" ||
     input.promptType === "avatarGeneration" ||
     input.promptType === "avatarEditRequest" ||
     input.promptType === "sceneGeneration" ||
+    input.promptType === "scenePromptWriter" ||
     input.promptType === "designReferenceWriter" ||
+    input.promptType === "companionSoulWriter" ||
     input.promptType === "undefined"
       ? input.promptType
       : "undefined";
   const content = typeof input.content === "string" ? input.content : "";
   const entries = (Array.isArray(input.entries) ? input.entries : [])
-    .map((entry, index) => normalizeImportedSystemEntry(entry, index))
+    .map((entry, index) => normalizeImportedSystemEntry(entry, index, importedPromptName))
     .filter((entry): entry is SystemPromptEntry => entry !== null);
 
   return {
@@ -314,6 +342,7 @@ function makeExternalMarkers(): ExternalPromptEntry[] {
 function toSystemEntry(
   input: ExternalPromptEntry,
   fallbackIndex: number,
+  importedPromptName: string,
 ): SystemPromptEntry | null {
   if (input.marker || (input.identifier && EXTERNAL_MARKER_IDENTIFIERS.has(input.identifier))) {
     return null;
@@ -339,7 +368,7 @@ function toSystemEntry(
       : 0;
   return {
     id,
-    name: typeof input.name === "string" && input.name.trim() ? input.name : "Imported Prompt",
+    name: typeof input.name === "string" && input.name.trim() ? input.name : importedPromptName,
     role,
     content,
     enabled: input.enabled ?? true,
@@ -442,6 +471,8 @@ function getTemplateIcon(templateId: string) {
     case APP_SCENE_GENERATION_TEMPLATE_ID:
     case APP_DESIGN_REFERENCE_TEMPLATE_ID:
       return Image;
+    case APP_COMPANION_SOUL_WRITER_TEMPLATE_ID:
+      return Brain;
     default:
       return FileText;
   }
@@ -523,6 +554,7 @@ function PromptCard({
   onExport: () => void;
   onSetDefault: () => void;
 }) {
+  const { t } = useI18n();
   const isProtected = isProtectedPromptTemplate(template.id);
   const isSystem = isSystemPromptTemplate(template.id);
   const typeLabel = getPromptTypeLabel(template.id);
@@ -572,7 +604,7 @@ function PromptCard({
                 "text-fg/40 hover:text-fg hover:bg-fg/10",
                 interactive.transition.fast,
               )}
-              title="Edit"
+              title={t("systemPrompts.card.edit")}
             >
               <Pencil className="h-4 w-4" />
             </button>
@@ -584,7 +616,7 @@ function PromptCard({
                 "text-fg/40 hover:text-fg hover:bg-fg/10",
                 interactive.transition.fast,
               )}
-              title="Duplicate"
+              title={t("systemPrompts.card.duplicate")}
             >
               <Copy className="h-4 w-4" />
             </button>
@@ -596,7 +628,7 @@ function PromptCard({
                 "text-fg/40 hover:text-accent/80 hover:bg-accent/10",
                 interactive.transition.fast,
               )}
-              title="Export"
+              title={t("systemPrompts.card.export")}
             >
               <Download className="h-4 w-4" />
             </button>
@@ -609,7 +641,7 @@ function PromptCard({
                   "text-fg/40 hover:text-danger hover:bg-danger/10",
                   interactive.transition.fast,
                 )}
-                title="Delete"
+                title={t("systemPrompts.card.delete")}
               >
                 <Trash2 className="h-4 w-4" />
               </button>
@@ -625,13 +657,11 @@ function PromptCard({
         {/* Footer */}
         <div className="flex items-center justify-between mt-3 pt-3 border-t border-fg/5">
           <div className="text-[11px] text-fg/30">
-            {isSystem ? (
-              <>
-                {usage.characters} char{usage.characters !== 1 && "s"}
-              </>
-            ) : (
-              "Internal feature"
-            )}
+            {isSystem
+              ? usage.characters === 1
+                ? t("systemPrompts.card.charCountOne", { count: usage.characters })
+                : t("systemPrompts.card.charCountOther", { count: usage.characters })
+              : t("systemPrompts.card.internalFeature")}
           </div>
 
           {isSystem && !isActiveDefault && (
@@ -646,7 +676,7 @@ function PromptCard({
               )}
             >
               <Star className="h-3 w-3" />
-              Set Default
+              {t("systemPrompts.card.setDefault")}
             </button>
           )}
         </div>
@@ -656,14 +686,15 @@ function PromptCard({
 }
 
 export function SystemPromptsPage() {
-  const { t } = useI18n();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [templates, setTemplates] = useState<SystemPromptTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeDefaultId, setActiveDefaultId] = useState<string>(APP_DEFAULT_TEMPLATE_ID);
   const [usageById, setUsageById] = useState<Record<string, TemplateUsage>>({});
   const [search, setSearch] = useState("");
-  const [activeTag, setActiveTag] = useState<FilterTag>("all");
+  const [selectedTypes, setSelectedTypes] = useState<Set<PromptTemplateType>>(new Set());
+  const [typeFilterOpen, setTypeFilterOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [templateToDelete, setTemplateToDelete] = useState<SystemPromptTemplate | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -755,7 +786,7 @@ export function SystemPromptsPage() {
       setExportTarget(null);
     } catch (error) {
       console.error("Failed to export system prompts:", error);
-      toast.error("Export failed", String(error));
+      toast.error(t("systemPrompts.toasts.exportFailedTitle"), String(error));
     } finally {
       setExporting(false);
     }
@@ -775,7 +806,11 @@ export function SystemPromptsPage() {
         (parsed as any).kind === "system_prompt_template" &&
         (parsed as any).payload
       ) {
-        const imported = normalizeImportedPromptTemplatePayload((parsed as any).payload);
+        const imported = normalizeImportedPromptTemplatePayload(
+          (parsed as any).payload,
+          t("systemPrompts.errors.nameRequired"),
+          t("systemPrompts.importedPromptName"),
+        );
         await createPromptTemplate(
           imported.name,
           imported.promptType,
@@ -784,7 +819,10 @@ export function SystemPromptsPage() {
           imported.condensePromptEntries,
         );
         await loadData();
-        toast.success("Imported successfully", `Prompt set "${imported.name}" was imported.`);
+        toast.success(
+          t("systemPrompts.toasts.importedTitle"),
+          t("systemPrompts.toasts.importedMessage", { name: imported.name }),
+        );
         return;
       }
 
@@ -816,7 +854,7 @@ export function SystemPromptsPage() {
       });
 
       const importedEntries = promptEntries
-        .map((prompt, index) => toSystemEntry(prompt, index))
+        .map((prompt, index) => toSystemEntry(prompt, index, t("systemPrompts.importedPromptName")))
         .map((entry, index) => ({ entry, index }))
         .filter((item): item is { entry: SystemPromptEntry; index: number } => Boolean(item.entry))
         .map((item) => {
@@ -835,17 +873,21 @@ export function SystemPromptsPage() {
         .map((item) => item.entry);
 
       if (importedEntries.length === 0) {
-        alert("No importable prompts found in this file.");
+        alert(t("systemPrompts.toasts.noImportablePrompts"));
         return;
       }
 
-      const baseName = file.name.replace(/\.[^/.]+$/, "") || "Imported Prompt Set";
+      const baseName =
+        file.name.replace(/\.[^/.]+$/, "") || t("systemPrompts.importedPromptSetName");
       await createPromptTemplate(baseName, "undefined", "", importedEntries, false);
       await loadData();
-      toast.success("Imported successfully", `Prompt set "${baseName}" was imported.`);
+      toast.success(
+        t("systemPrompts.toasts.importedTitle"),
+        t("systemPrompts.toasts.importedMessage", { name: baseName }),
+      );
     } catch (error) {
       console.error("Failed to import system prompts:", error);
-      toast.error("Import failed", String(error));
+      toast.error(t("systemPrompts.toasts.importFailedTitle"), String(error));
     } finally {
       setImporting(false);
     }
@@ -860,15 +902,32 @@ export function SystemPromptsPage() {
       ]);
 
       const usage: Record<string, TemplateUsage> = {};
-      const bump = (id: string | null | undefined, key: keyof TemplateUsage) => {
-        if (!id) return;
+      const ensure = (id: string): TemplateUsage => {
         if (!usage[id]) {
-          usage[id] = { characters: 0 };
+          usage[id] = { characters: 0, features: [] };
         }
-        usage[id][key] += 1;
+        return usage[id];
       };
 
-      characters.forEach((character) => bump(character.promptTemplateId ?? null, "characters"));
+      characters.forEach((character) => {
+        const referenced = new Set(
+          [
+            character.promptTemplateId,
+            character.groupChatPromptTemplateId,
+            character.groupChatRoleplayPromptTemplateId,
+          ].filter((id): id is string => Boolean(id)),
+        );
+        referenced.forEach((id) => {
+          ensure(id).characters += 1;
+        });
+      });
+
+      promptFeatureRefs(settings).forEach(({ id, label }) => {
+        const entry = ensure(id);
+        if (!entry.features.includes(label)) {
+          entry.features.push(label);
+        }
+      });
 
       const activeDefault = settings.promptTemplateId ?? APP_DEFAULT_TEMPLATE_ID;
 
@@ -893,7 +952,7 @@ export function SystemPromptsPage() {
   async function handleDelete() {
     if (!templateToDelete) return;
     if (isProtectedPromptTemplate(templateToDelete.id)) {
-      alert("Protected templates cannot be deleted.");
+      alert(t("systemPrompts.errors.protectedDelete"));
       return;
     }
 
@@ -905,7 +964,7 @@ export function SystemPromptsPage() {
       setTemplateToDelete(null);
     } catch (error) {
       console.error("Failed to delete template:", error);
-      alert("Failed to delete template. " + String(error));
+      alert(t("systemPrompts.errors.deleteFailed", { error: String(error) }));
     } finally {
       setDeleting(false);
     }
@@ -913,7 +972,7 @@ export function SystemPromptsPage() {
 
   async function handleDuplicate(template: SystemPromptTemplate) {
     try {
-      const name = `${template.name} (Copy)`;
+      const name = t("systemPrompts.duplicateSuffix", { name: template.name });
       const contentToSave = template.content.trim()
         ? template.content
         : getTemplatePreviewText(template);
@@ -927,7 +986,7 @@ export function SystemPromptsPage() {
       await loadData();
     } catch (error) {
       console.error("Failed to duplicate template:", error);
-      alert("Failed to duplicate template. " + String(error));
+      alert(t("systemPrompts.errors.duplicateFailed", { error: String(error) }));
     }
   }
 
@@ -938,18 +997,13 @@ export function SystemPromptsPage() {
       await loadData();
     } catch (error) {
       console.error("Failed to set default template:", error);
-      alert("Failed to set default template. " + String(error));
+      alert(t("systemPrompts.errors.setDefaultFailed", { error: String(error) }));
     }
   }
 
   const filtered = useMemo(() => {
     return templates.filter((t) => {
-      const isProtected = isProtectedPromptTemplate(t.id);
-      const isSystem = isSystemPromptTemplate(t.id);
-
-      if (activeTag === "system" && !isSystem) return false;
-      if (activeTag === "internal" && isSystem) return false;
-      if (activeTag === "custom" && isProtected) return false;
+      if (selectedTypes.size > 0 && !selectedTypes.has(t.promptType)) return false;
 
       const q = search.trim().toLowerCase();
       if (!q) return true;
@@ -957,23 +1011,22 @@ export function SystemPromptsPage() {
         t.name.toLowerCase().includes(q) || getTemplatePreviewText(t).toLowerCase().includes(q)
       );
     });
-  }, [templates, activeTag, search]);
+  }, [templates, selectedTypes, search]);
 
   return (
-    <div className="flex h-full flex-col pb-16">
-      <main className="flex-1 overflow-y-auto px-4 pt-4">
+    <div className="flex h-full flex-col">
+      <main className="flex-1 overflow-y-auto px-4 pt-4 pb-6">
         <div className="mx-auto w-full max-w-5xl space-y-4">
           {/* Search and Filters */}
-          <div className="flex flex-col gap-3">
-            {/* Search */}
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/30 pointer-events-none" />
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="relative sm:flex-1">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-fg/30" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search prompts..."
+                placeholder={t("systemPrompts.page.searchPlaceholder")}
                 className={cn(
-                  "w-full pl-10 pr-10 py-2.5",
+                  "w-full py-2.5 pl-10 pr-10",
                   radius.lg,
                   "border border-fg/10 bg-fg/5",
                   "text-sm text-fg placeholder-fg/30",
@@ -991,7 +1044,7 @@ export function SystemPromptsPage() {
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2 sm:shrink-0">
               <input
                 ref={importInputRef}
                 type="file"
@@ -1005,11 +1058,31 @@ export function SystemPromptsPage() {
                 }}
               />
               <button
+                onClick={() => setTypeFilterOpen(true)}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-2.5",
+                  radius.lg,
+                  "text-xs font-medium",
+                  interactive.transition.fast,
+                  selectedTypes.size > 0
+                    ? "border border-accent/40 bg-accent/15 text-accent/80"
+                    : "border border-fg/10 bg-fg/5 text-fg/50 hover:bg-fg/10 hover:text-fg/70",
+                )}
+              >
+                <ListFilter className="h-3.5 w-3.5" />
+                <span>{t("systemPrompts.page.typeFilter")}</span>
+                {selectedTypes.size > 0 && (
+                  <span className="rounded-full bg-accent/25 px-1.5 text-[10px] font-semibold tabular-nums">
+                    {selectedTypes.size}
+                  </span>
+                )}
+              </button>
+              <button
                 onClick={() => importInputRef.current?.click()}
                 disabled={importing}
                 className={cn(
-                  "flex items-center gap-2 px-3 py-2",
-                  radius.md,
+                  "flex items-center gap-2 px-3 py-2.5",
+                  radius.lg,
                   "border border-fg/10 bg-fg/5",
                   "text-xs font-medium text-fg/70",
                   interactive.transition.fast,
@@ -1018,28 +1091,8 @@ export function SystemPromptsPage() {
                 )}
               >
                 <Upload className="h-3.5 w-3.5" />
-                {importing ? "Importing..." : "Import"}
+                {importing ? t("systemPrompts.page.importing") : t("systemPrompts.page.import")}
               </button>
-              {FILTER_TAGS.map((tag) => {
-                const isActive = activeTag === tag.key;
-                return (
-                  <button
-                    key={tag.key}
-                    onClick={() => setActiveTag(tag.key)}
-                    className={cn(
-                      "px-3 py-1.5 shrink-0",
-                      radius.md,
-                      "text-xs font-medium",
-                      interactive.transition.fast,
-                      isActive
-                        ? "border border-accent/40 bg-accent/15 text-accent/80"
-                        : "border border-fg/10 bg-fg/5 text-fg/50 hover:bg-fg/10 hover:text-fg/70",
-                    )}
-                  >
-                    {t(tag.labelKey as any)}
-                  </button>
-                );
-              })}
             </div>
           </div>
 
@@ -1047,10 +1100,10 @@ export function SystemPromptsPage() {
           {loading ? (
             <PromptCardSkeleton />
           ) : filtered.length === 0 ? (
-            search || activeTag !== "all" ? (
+            search || selectedTypes.size > 0 ? (
               <div className="flex flex-col items-center justify-center py-12 px-6">
-                <p className="text-sm text-fg/50 mb-1">No matching prompts</p>
-                <p className="text-xs text-fg/30">Try adjusting your search or filters</p>
+                <p className="text-sm text-fg/50 mb-1">{t("systemPrompts.page.noMatchingTitle")}</p>
+                <p className="text-xs text-fg/30">{t("systemPrompts.page.noMatchingHint")}</p>
               </div>
             ) : (
               <EmptyState onCreate={() => navigate("/settings/prompts/new")} />
@@ -1094,6 +1147,66 @@ export function SystemPromptsPage() {
         exporting={exporting}
       />
 
+      <BottomMenu
+        isOpen={typeFilterOpen}
+        onClose={() => setTypeFilterOpen(false)}
+        title={t("systemPrompts.page.filterByTypeTitle")}
+        rightAction={
+          selectedTypes.size > 0 ? (
+            <button
+              type="button"
+              onClick={() => setSelectedTypes(new Set())}
+              className="text-xs font-medium text-fg/55 hover:text-fg/80"
+            >
+              {t("systemPrompts.page.clear")}
+            </button>
+          ) : null
+        }
+      >
+        <div className="space-y-1">
+          {ALL_PROMPT_TYPES.map((type) => {
+            const active = selectedTypes.has(type);
+            return (
+              <button
+                key={type}
+                type="button"
+                onClick={() => {
+                  setSelectedTypes((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(type)) {
+                      next.delete(type);
+                    } else {
+                      next.add(type);
+                    }
+                    return next;
+                  });
+                }}
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 px-3 py-2.5 text-left",
+                  radius.md,
+                  interactive.transition.fast,
+                  active
+                    ? "bg-accent/15 text-accent/90"
+                    : "text-fg/75 hover:bg-fg/5 hover:text-fg",
+                )}
+              >
+                <span className="text-sm">{getPromptTypeName(type)}</span>
+                <span
+                  className={cn(
+                    "flex h-5 w-5 shrink-0 items-center justify-center rounded-md border",
+                    active
+                      ? "border-accent/60 bg-accent/30 text-accent"
+                      : "border-fg/15 bg-fg/5",
+                  )}
+                >
+                  {active && <Check className="h-3 w-3" />}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </BottomMenu>
+
       {/* Delete Confirmation */}
       <BottomMenu
         isOpen={showDeleteConfirm}
@@ -1101,7 +1214,7 @@ export function SystemPromptsPage() {
           setShowDeleteConfirm(false);
           setTemplateToDelete(null);
         }}
-        title="Delete Prompt?"
+        title={t("systemPrompts.delete.title")}
       >
         <div className="space-y-4">
           <div className={cn(radius.lg, "border border-fg/10 bg-fg/5 p-3")}>
@@ -1109,10 +1222,27 @@ export function SystemPromptsPage() {
             <p className="text-xs text-fg/50 mt-1 line-clamp-2">{templateToDelete?.content}</p>
           </div>
 
-          <p className="text-sm text-fg/60">
-            This action cannot be undone. Any characters using this prompt will fall back to the
-            default.
-          </p>
+          {(() => {
+            const warning = templateToDelete
+              ? describeUsage(
+                  usageById[templateToDelete.id] ?? { characters: 0, features: [] },
+                  "prompt",
+                )
+              : null;
+            return warning ? (
+              <div className={cn(radius.lg, "border border-warning/30 bg-warning/10 p-3")}>
+                <div className="flex items-center gap-2 text-warning">
+                  <AlertTriangle className="h-4 w-4" />
+                  <p className="text-sm font-semibold">{warning.title}</p>
+                </div>
+                <p className="mt-1.5 text-xs leading-relaxed text-fg/70">{warning.body}</p>
+              </div>
+            ) : (
+              <p className="text-sm text-fg/60">
+                {t("systemPrompts.delete.fallbackWarning")}
+              </p>
+            );
+          })()}
 
           <div className="flex gap-3">
             <button
@@ -1131,7 +1261,7 @@ export function SystemPromptsPage() {
                 "disabled:opacity-50",
               )}
             >
-              Cancel
+              {t("common.buttons.cancel")}
             </button>
             <button
               onClick={handleDelete}
@@ -1146,7 +1276,7 @@ export function SystemPromptsPage() {
                 "disabled:opacity-50",
               )}
             >
-              {deleting ? "Deleting..." : "Delete"}
+              {deleting ? t("systemPrompts.delete.deleting") : t("common.buttons.delete")}
             </button>
           </div>
         </div>

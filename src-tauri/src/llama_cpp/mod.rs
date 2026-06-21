@@ -38,6 +38,7 @@ mod desktop {
     use super::*;
     pub(super) mod context;
     pub(super) mod engine;
+    mod mtp;
     pub(super) mod offload;
     mod prompt;
     mod sampler;
@@ -64,7 +65,7 @@ mod desktop {
     };
     use engine::{
         consume_kqv_fallback_toast, emit_model_load_complete, emit_model_load_failed,
-        emit_model_load_finalizing, load_engine, using_rocm_backend,
+        emit_model_load_finalizing, load_engine, shared_backend, using_rocm_backend,
     };
     use offload::{context_bucket_upper, merge_cached_candidate_layers, plan_smart_gpu_offload};
     use prompt::{
@@ -228,6 +229,17 @@ mod desktop {
         body.get("parallel_tool_calls")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
+    }
+
+    fn decode_llama_sequence_breaker(value: &str) -> String {
+        match value.trim() {
+            "\\n" => "\n".to_string(),
+            "\\r" => "\r".to_string(),
+            "\\t" => "\t".to_string(),
+            "\\\"" => "\"".to_string(),
+            "\\\\" => "\\".to_string(),
+            other => other.to_string(),
+        }
     }
 
     fn local_structured_debug_payload(
@@ -685,6 +697,42 @@ mod desktop {
             .or_else(|| body.get("llama_typical_p"))
             .and_then(|v| v.as_f64())
             .or(sampler_defaults.typical_p);
+        let dry_multiplier = body
+            .get("dry_multiplier")
+            .or_else(|| body.get("llamaDryMultiplier"))
+            .or_else(|| body.get("llama_dry_multiplier"))
+            .and_then(|v| v.as_f64());
+        let dry_base = body
+            .get("dry_base")
+            .or_else(|| body.get("llamaDryBase"))
+            .or_else(|| body.get("llama_dry_base"))
+            .and_then(|v| v.as_f64());
+        let dry_allowed_length = body
+            .get("dry_allowed_length")
+            .or_else(|| body.get("llamaDryAllowedLength"))
+            .or_else(|| body.get("llama_dry_allowed_length"))
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok());
+        let dry_penalty_last_n = body
+            .get("dry_penalty_last_n")
+            .or_else(|| body.get("llamaDryPenaltyLastN"))
+            .or_else(|| body.get("llama_dry_penalty_last_n"))
+            .and_then(|v| v.as_i64())
+            .and_then(|v| i32::try_from(v).ok());
+        let dry_sequence_breakers = body
+            .get("dry_sequence_breakers")
+            .or_else(|| body.get("llamaDrySequenceBreakers"))
+            .or_else(|| body.get("llama_dry_sequence_breakers"))
+            .and_then(|v| v.as_array())
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item.as_str())
+                    .map(decode_llama_sequence_breaker)
+                    .filter(|item| !item.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|items| !items.is_empty());
         let max_tokens = body
             .get("max_tokens")
             .or_else(|| body.get("max_completion_tokens"))
@@ -746,6 +794,29 @@ mod desktop {
             .get("llamaOffloadKqv")
             .or_else(|| body.get("llama_offload_kqv"))
             .and_then(|v| v.as_bool());
+        let llama_swa_full = body
+            .get("llamaSwaFull")
+            .or_else(|| body.get("llama_swa_full"))
+            .and_then(|v| v.as_bool());
+        let llama_mtp_enabled = body
+            .get("llamaMtpEnabled")
+            .or_else(|| body.get("llama_mtp_enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let llama_mtp_draft_tokens = body
+            .get("llamaMtpDraftTokens")
+            .or_else(|| body.get("llama_mtp_draft_tokens"))
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(mtp::MTP_DRAFT_DEFAULT)
+            .min(mtp::MTP_DRAFT_MAX);
+        let llama_mtp_model_path = body
+            .get("llamaMtpModelPath")
+            .or_else(|| body.get("llama_mtp_model_path"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let llama_flash_attention_policy = parse_flash_attention_policy(body);
         let llama_kv_type_raw = body
             .get("llamaKvType")
@@ -870,15 +941,49 @@ mod desktop {
                     .ok()
                     .flatten();
 
-            if llama_gpu_layers.is_none() && !llama_strict_mode {
+            let backend_supports_gpu_offload = shared_backend()?.supports_gpu_offload();
+            let llama_mtp_bundled = llama_mtp_enabled && mtp::model_has_mtp(model_path);
+            let llama_mtp_external_path = if llama_mtp_enabled && !llama_mtp_bundled {
+                llama_mtp_model_path
+                    .clone()
+                    .or_else(|| mtp::discover_external_mtp(model_path))
+            } else {
+                None
+            };
+            if let Some(ref external) = llama_mtp_external_path {
+                log_info(
+                    &app,
+                    "llama_cpp",
+                    format!("MTP external draft model resolved: {}", external),
+                );
+            }
+            let sidecar_vram_reserve_bytes = if backend_supports_gpu_offload {
+                let mmproj_reserve = llama_mmproj_path
+                    .as_deref()
+                    .and_then(|path| std::fs::metadata(path).ok())
+                    .map(|meta| meta.len())
+                    .unwrap_or(0);
+                let mtp_reserve = llama_mtp_external_path
+                    .as_deref()
+                    .and_then(|path| std::fs::metadata(path).ok())
+                    .map(|meta| meta.len())
+                    .unwrap_or(0);
+                mmproj_reserve.saturating_add(mtp_reserve)
+            } else {
+                0
+            };
+
+            if llama_gpu_layers.is_none() && !llama_strict_mode && backend_supports_gpu_offload {
                 let mut smart_offload_plan = plan_smart_gpu_offload(
                     model_path,
                     available_memory_bytes,
                     available_vram_bytes,
                     requested_context,
+                    llama_batch_size,
                     resolved_offload_kqv,
                     llama_kv_type_raw.as_deref(),
                     resolved_flash_attention_policy,
+                    sidecar_vram_reserve_bytes,
                 )?;
                 let current_context_bucket =
                     context_bucket_upper(smart_offload_plan.planned_context.max(1));
@@ -984,6 +1089,11 @@ mod desktop {
                 );
                 update_runtime_report_field(
                     &mut runtime_report,
+                    "smartOffloadSidecarVramReserveBytes",
+                    json!(smart_offload_plan.estimated_sidecar_vram_reserve_bytes),
+                );
+                update_runtime_report_field(
+                    &mut runtime_report,
                     "smartOffloadRuntimeReserveBytes",
                     json!(smart_offload_plan.estimated_runtime_reserve_bytes),
                 );
@@ -996,7 +1106,7 @@ mod desktop {
                     &app,
                     "llama_cpp",
                     format!(
-                        "smart gpu offload plan: total_layers={} planned_ctx={} estimated_gpu_layers={} candidates={:?} planning_offload_kqv={:?} reserve_kqv_vram={} kv_bytes={} runtime_reserve_bytes={} effective_vram_budget_bytes={}",
+                        "smart gpu offload plan: total_layers={} planned_ctx={} estimated_gpu_layers={} candidates={:?} planning_offload_kqv={:?} reserve_kqv_vram={} kv_bytes={} sidecar_vram_reserve_bytes={} runtime_reserve_bytes={} effective_vram_budget_bytes={}",
                         smart_offload_plan.total_layers,
                         smart_offload_plan.planned_context,
                         smart_offload_plan.estimated_gpu_layers,
@@ -1004,9 +1114,16 @@ mod desktop {
                         smart_offload_plan.planning_offload_kqv,
                         smart_offload_plan.kqv_vram_reserved,
                         smart_offload_plan.estimated_kv_bytes,
+                        smart_offload_plan.estimated_sidecar_vram_reserve_bytes,
                         smart_offload_plan.estimated_runtime_reserve_bytes,
                         smart_offload_plan.effective_vram_budget_bytes,
                     ),
+                );
+            } else if llama_gpu_layers.is_none() && !llama_strict_mode {
+                log_info(
+                    &app,
+                    "llama_cpp",
+                    "skipping smart gpu offload planning because this backend has no GPU offload support",
                 );
             }
 
@@ -1019,7 +1136,9 @@ mod desktop {
                 smart_gpu_layer_candidates.as_deref(),
                 llama_strict_mode,
                 llama_mmproj_path.as_deref(),
+                llama_mtp_external_path.as_deref(),
             )?;
+            let llama_mtp_draft_model = engine.mtp_model.clone();
             let model = engine.model.as_ref();
             let backend = engine.backend.as_ref();
             let mtmd_ctx = engine.mtmd_ctx.as_ref();
@@ -1040,6 +1159,27 @@ mod desktop {
                 }
             }
             let use_vision = vision_requested && mtmd_ctx.is_some();
+            let llama_mtp_active = llama_mtp_enabled
+                && !use_vision
+                && {
+                    let capable = llama_mtp_bundled || llama_mtp_draft_model.is_some();
+                    if !capable {
+                        log_warn(
+                            &app,
+                            "llama_cpp",
+                            "MTP requested but the model has no bundled NextN/MTP layers and no external MTP draft model was found; continuing without MTP",
+                        );
+                    }
+                    capable
+                };
+            if llama_mtp_enabled && use_vision {
+                log_warn(
+                    &app,
+                    "llama_cpp",
+                    "MTP requested but disabled for this request because vision input is active",
+                );
+            }
+            let model_reloaded = engine.model_reloaded;
             let max_ctx = model.n_ctx_train().max(1);
             let backend_path_used = engine.backend_path_used.as_deref().unwrap_or("unknown");
             let gpu_load_fallback_activated = engine.gpu_load_fallback_activated;
@@ -1065,6 +1205,7 @@ mod desktop {
                 available_memory_bytes,
                 available_vram_bytes,
                 max_ctx,
+                actual_gpu_layers_used.unwrap_or(0),
                 runtime_offload_kqv,
                 llama_kv_type_raw.as_deref(),
             );
@@ -1073,6 +1214,7 @@ mod desktop {
                     model,
                     available_memory_bytes,
                     max_ctx,
+                    actual_gpu_layers_used.unwrap_or(0),
                     llama_kv_type_raw.as_deref(),
                     None,
                     llama_batch_size,
@@ -1155,18 +1297,21 @@ mod desktop {
                 "strictModeEnabled",
                 json!(llama_strict_mode),
             );
-            emit_model_load_finalizing(
-                &app,
-                request_id.as_deref(),
-                model_path,
-                Some(backend_path_used),
-                gpu_load_fallback_activated,
-            );
+            if model_reloaded {
+                emit_model_load_finalizing(
+                    &app,
+                    request_id.as_deref(),
+                    model_path,
+                    Some(backend_path_used),
+                    gpu_load_fallback_activated,
+                );
+            }
             if !llama_strict_mode && cpu_runtime_active {
                 if let Some((safe_ctx, safe_batch)) = compute_cpu_fallback_limits(
                     model,
                     available_memory_bytes,
                     max_ctx,
+                    actual_gpu_layers_used.unwrap_or(0),
                     llama_kv_type_raw.as_deref(),
                     requested_context,
                     llama_batch_size,
@@ -1477,11 +1622,17 @@ mod desktop {
                     if let Some(offload) = attempt_offload_kqv {
                         ctx_params = ctx_params.with_offload_kqv(offload);
                     }
+                    if let Some(swa_full) = llama_swa_full {
+                        ctx_params = ctx_params.with_swa_full(swa_full);
+                    }
                     if let Some(kv_type) = llama_kv_type {
                         ctx_params = ctx_params.with_type_k(kv_type).with_type_v(kv_type);
                     }
                     ctx_params =
                         ctx_params.with_flash_attention_policy(resolved_flash_attention_policy);
+                    if llama_mtp_active {
+                        ctx_params = ctx_params.with_n_rs_seq(llama_mtp_draft_tokens);
+                    }
                     if let Some(base) = llama_rope_freq_base {
                         ctx_params = ctx_params.with_rope_freq_base(base as f32);
                     }
@@ -1544,9 +1695,8 @@ mod desktop {
                                 llama_kv_type_raw.as_deref(),
                             );
 
-                            let has_explicit_kv = llama_kv_type_raw.is_some();
                             let likely_oom = is_likely_context_oom_error(&raw_error);
-                            if has_explicit_kv || !likely_oom {
+                            if !likely_oom {
                                 return Err(crate::utils::err_msg(
                                     module_path!(),
                                     line!(),
@@ -1585,6 +1735,83 @@ mod desktop {
             let n_batch = resolved_n_batch;
             let context_fallback_activated =
                 (ctx_size, n_batch) != (requested_ctx_size, initial_batch);
+
+            let mut mtp_runtime = if llama_mtp_active {
+                let mut draft_params = LlamaContextParams::default()
+                    .with_n_ctx(NonZeroU32::new(resolved_ctx_size))
+                    .with_n_batch(resolved_n_batch)
+                    .with_n_rs_seq(llama_mtp_draft_tokens)
+                    .with_flash_attention_policy(resolved_flash_attention_policy);
+                if let Some(n_threads) = llama_threads {
+                    draft_params = draft_params.with_n_threads(n_threads as i32);
+                }
+                if let Some(n_threads_batch) = llama_threads_batch {
+                    draft_params = draft_params.with_n_threads_batch(n_threads_batch as i32);
+                }
+                if let Some(offload) = resolved_offload_kqv {
+                    draft_params = draft_params.with_offload_kqv(offload);
+                }
+                if let Some(swa_full) = llama_swa_full {
+                    draft_params = draft_params.with_swa_full(swa_full);
+                }
+                if let Some(kv_type) = llama_kv_type {
+                    draft_params = draft_params.with_type_k(kv_type).with_type_v(kv_type);
+                }
+                if let Some(base) = llama_rope_freq_base {
+                    draft_params = draft_params.with_rope_freq_base(base as f32);
+                }
+                if let Some(scale) = llama_rope_freq_scale {
+                    draft_params = draft_params.with_rope_freq_scale(scale as f32);
+                }
+
+                match mtp::create_runtime(
+                    model,
+                    llama_mtp_draft_model.as_deref().unwrap_or(model),
+                    &ctx,
+                    backend,
+                    draft_params,
+                    llama_mtp_draft_tokens as usize,
+                ) {
+                    Ok(mut runtime) => match mtp::enable_nextn_embeddings(&mut ctx, &mut runtime) {
+                        Ok(()) => {
+                            log_info(
+                                &app,
+                                "llama_cpp",
+                                format!(
+                                    "MTP active: mode={} draft_tokens={} ctx={} n_batch={}",
+                                    if runtime.shared {
+                                        "shared-assistant"
+                                    } else {
+                                        "embedded"
+                                    },
+                                    llama_mtp_draft_tokens,
+                                    resolved_ctx_size,
+                                    resolved_n_batch
+                                ),
+                            );
+                            Some(runtime)
+                        }
+                        Err(err) => {
+                            log_warn(
+                                &app,
+                                "llama_cpp",
+                                format!("MTP setup failed, continuing without MTP: {err}"),
+                            );
+                            None
+                        }
+                    },
+                    Err(err) => {
+                        log_warn(
+                            &app,
+                            "llama_cpp",
+                            format!("MTP draft context creation failed, continuing without MTP: {err}"),
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             if kqv_fallback_activated {
                 match consume_kqv_fallback_toast(&app, model_path) {
                     Ok(true) => {
@@ -1654,6 +1881,16 @@ mod desktop {
                     "kqvFallbackActivated": kqv_fallback_activated,
                     "contextFallbackActivated": context_fallback_activated,
                     "mmprojPath": llama_mmproj_path,
+                    "mtpRequested": llama_mtp_enabled,
+                    "mtpActive": llama_mtp_active,
+                    "mtpDraftTokens": llama_mtp_draft_tokens,
+                    "mtpSource": if llama_mtp_bundled {
+                        "bundled"
+                    } else if llama_mtp_draft_model.is_some() {
+                        "external"
+                    } else {
+                        "none"
+                    },
                     "visionRequested": vision_requested,
                     "visionActive": use_vision,
                     "imageCount": image_bytes.len(),
@@ -1721,13 +1958,15 @@ mod desktop {
                 ),
             );
             crate::utils::emit_debug(&app, "llama_runtime", runtime_settings);
-            emit_model_load_complete(
-                &app,
-                request_id.as_deref(),
-                model_path,
-                Some(backend_path_used.as_str()),
-                gpu_load_fallback_activated,
-            );
+            if model_reloaded {
+                emit_model_load_complete(
+                    &app,
+                    request_id.as_deref(),
+                    model_path,
+                    Some(backend_path_used.as_str()),
+                    gpu_load_fallback_activated,
+                );
+            }
 
             failure_stage = "prompt_evaluation";
             check_abort_signal(abort_rx.as_mut())?;
@@ -1765,6 +2004,18 @@ mod desktop {
                                 format!("llama_decode failed during prompt evaluation: {e}"),
                             )
                         })?;
+                        if let Some(runtime) = mtp_runtime.as_mut() {
+                            mtp::prefill_draft_chunk(
+                                runtime,
+                                &ctx,
+                                &tokens[chunk_start..chunk_end],
+                                global_pos,
+                                chunk_end == tokens_len,
+                            )
+                            .map_err(|e| {
+                                crate::utils::err_msg(module_path!(), line!(), e)
+                            })?;
+                        }
                         check_abort_signal(abort_rx.as_mut())?;
                         global_pos += (chunk_end - chunk_start) as i32;
                         chunk_start = chunk_end;
@@ -1820,6 +2071,11 @@ mod desktop {
                 top_k,
                 min_p,
                 typical_p,
+                dry_multiplier,
+                dry_base,
+                dry_allowed_length,
+                dry_penalty_last_n,
+                dry_sequence_breakers,
                 frequency_penalty,
                 presence_penalty,
                 seed: llama_seed,
@@ -1895,18 +2151,35 @@ mod desktop {
             let mut reached_stop_sequence = false;
             let mut pending_utf8 = Vec::<u8>::new();
             let mut sample_index = prompt_last_logits_index;
+            let mut last_heartbeat_at = Instant::now();
+            let mut heartbeat_emitted = false;
             failure_stage = "generation";
             while n_cur < target_len {
                 check_abort_signal(abort_rx.as_mut())?;
 
-                let token = sample_generated_token(&mut sampler, &ctx, sample_index);
+                let token = if let Some(runtime) = mtp_runtime.as_mut() {
+                    if runtime.pending.is_empty() {
+                        let accepted =
+                            mtp::mtp_round(&mut ctx, runtime, &mut sampler, model, n_cur, target_len)
+                                .map_err(|e| {
+                                    crate::utils::err_msg(module_path!(), line!(), e)
+                                })?;
+                        runtime.pending.extend(accepted);
+                    }
+                    match runtime.pending.pop_front() {
+                        Some(token) => token,
+                        None => break,
+                    }
+                } else {
+                    sample_generated_token(&mut sampler, &ctx, sample_index)
+                };
 
                 if model.is_eog_token(token) {
                     reached_eos = true;
                     break;
                 }
 
-                let piece_bytes = token_piece_bytes(&model, token)?;
+                let piece_bytes = token_piece_bytes(model, token)?;
 
                 pending_utf8.extend_from_slice(&piece_bytes);
                 let mut piece = String::new();
@@ -2042,6 +2315,34 @@ mod desktop {
                     first_token_ms = Some(inference_started_at.elapsed().as_millis() as u64);
                 }
 
+                if !heartbeat_emitted || last_heartbeat_at.elapsed().as_secs() >= 1 {
+                    heartbeat_emitted = true;
+                    last_heartbeat_at = Instant::now();
+                    let elapsed_ms = inference_started_at.elapsed().as_millis() as u64;
+                    let tps = if elapsed_ms > 0 {
+                        (completion_tokens as f64) / (elapsed_ms as f64 / 1000.0)
+                    } else {
+                        0.0
+                    };
+                    if let Some(ref id) = request_id {
+                        let _ = app.emit(
+                            "llm-generation-heartbeat",
+                            json!({
+                                "requestId": id,
+                                "tokens": completion_tokens,
+                                "elapsedMs": elapsed_ms,
+                                "tokensPerSecond": tps,
+                                "recentText": output,
+                            }),
+                        );
+                    }
+                }
+
+                if mtp_runtime.is_some() {
+                    n_cur += 1;
+                    continue;
+                }
+
                 batch.clear();
                 batch.add(token, n_cur, &[0], true).map_err(|e| {
                     crate::utils::err_msg(
@@ -2101,6 +2402,44 @@ mod desktop {
             }
 
             generation_elapsed_ms = Some(inference_started_at.elapsed().as_millis() as u64);
+
+            if let Some(runtime) = mtp_runtime.as_ref() {
+                let tokens_per_round = if runtime.rounds > 0 {
+                    runtime.accepted as f64 / runtime.rounds as f64
+                } else {
+                    0.0
+                };
+                let draft_acceptance = if runtime.drafted > 0 {
+                    runtime.accepted.saturating_sub(runtime.rounds) as f64
+                        / runtime.drafted as f64
+                } else {
+                    0.0
+                };
+                log_info(
+                    &app,
+                    "llama_cpp",
+                    format!(
+                        "MTP stats: rounds={} drafted={} accepted={} tokens_per_round={:.2} draft_acceptance={:.2}",
+                        runtime.rounds,
+                        runtime.drafted,
+                        runtime.accepted,
+                        tokens_per_round,
+                        draft_acceptance
+                    ),
+                );
+                update_runtime_report_field(
+                    &mut runtime_report,
+                    "mtpStats",
+                    json!({
+                        "draftTokens": llama_mtp_draft_tokens,
+                        "rounds": runtime.rounds,
+                        "drafted": runtime.drafted,
+                        "accepted": runtime.accepted,
+                        "tokensPerRound": tokens_per_round,
+                        "draftAcceptance": draft_acceptance,
+                    }),
+                );
+            }
 
             if let Some(parser) = structured_parser.as_mut() {
                 let is_partial = !reached_eos && !reached_stop_sequence;
@@ -2556,8 +2895,20 @@ pub(crate) fn is_unified_memory() -> bool {
     desktop::context::is_unified_memory()
 }
 
+#[cfg(not(mobile))]
+pub(crate) fn supports_gpu_offload() -> bool {
+    desktop::engine::shared_backend()
+        .map(|backend| backend.supports_gpu_offload())
+        .unwrap_or(false)
+}
+
 #[cfg(mobile)]
 pub(crate) fn is_unified_memory() -> bool {
+    false
+}
+
+#[cfg(mobile)]
+pub(crate) fn supports_gpu_offload() -> bool {
     false
 }
 
@@ -2582,6 +2933,9 @@ pub async fn llamacpp_context_info(
     llama_offload_kqv: Option<bool>,
     llama_kv_type: Option<String>,
     llama_gpu_layers: Option<u32>,
+    llama_mmproj_path: Option<String>,
+    llama_mtp_enabled: Option<bool>,
+    llama_mtp_model_path: Option<String>,
 ) -> Result<serde_json::Value, String> {
     #[cfg(not(mobile))]
     {
@@ -2591,15 +2945,18 @@ pub async fn llamacpp_context_info(
             llama_offload_kqv,
             llama_kv_type,
             llama_gpu_layers,
+            llama_mmproj_path,
+            llama_mtp_enabled,
+            llama_mtp_model_path,
         )
         .await?;
-        return serde_json::to_value(info).map_err(|e| {
+        serde_json::to_value(info).map_err(|e| {
             crate::utils::err_msg(
                 module_path!(),
                 line!(),
                 format!("Failed to serialize context info: {e}"),
             )
-        });
+        })
     }
     #[cfg(mobile)]
     {
@@ -2665,13 +3022,13 @@ pub async fn llamacpp_embedded_chat_template(
             )
         })?;
 
-        return template.to_string().map_err(|e| {
+        template.to_string().map_err(|e| {
             crate::utils::err_msg(
                 module_path!(),
                 line!(),
                 format!("Failed to decode embedded GGUF chat template: {e}"),
             )
-        });
+        })
     }
     #[cfg(mobile)]
     {
@@ -2688,7 +3045,7 @@ pub async fn llamacpp_embedded_chat_template(
 pub async fn llamacpp_unload(app: AppHandle) -> Result<(), String> {
     #[cfg(not(mobile))]
     {
-        return desktop::engine::unload_engine(&app);
+        desktop::engine::unload_engine(&app)
     }
     #[cfg(mobile)]
     {

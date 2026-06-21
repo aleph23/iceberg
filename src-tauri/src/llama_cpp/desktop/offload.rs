@@ -24,6 +24,7 @@ pub(super) struct SmartGpuOffloadPlan {
     pub(super) kqv_vram_reserved: bool,
     pub(super) planning_offload_kqv: Option<bool>,
     pub(super) estimated_kv_bytes: u64,
+    pub(super) estimated_sidecar_vram_reserve_bytes: u64,
     pub(super) estimated_runtime_reserve_bytes: u64,
     pub(super) effective_vram_budget_bytes: u64,
 }
@@ -122,10 +123,8 @@ fn load_model_metadata_uncached(model_path: &str) -> Result<LlamaModelMetadata, 
         layer_count: model.n_layer().max(1),
         max_context_length: model.n_ctx_train().max(1),
         n_embd: u64::try_from(model.n_embd()).unwrap_or(0).max(1),
-        n_head: u64::try_from(model.n_head()).unwrap_or(1).max(1),
-        n_head_kv: u64::try_from(model.n_head_kv())
-            .unwrap_or_else(|_| u64::try_from(model.n_head()).unwrap_or(1))
-            .max(1),
+        n_head: u64::from(model.n_head()).max(1),
+        n_head_kv: u64::from(model.n_head_kv()).max(1),
     })
 }
 
@@ -153,18 +152,29 @@ fn push_unique(out: &mut Vec<u32>, value: u32) {
     }
 }
 
+const ATTENTION_SCORE_BYTES: u64 = 4;
+const COMPUTE_BUFFER_SAFETY_FACTOR: u64 = 2;
+const COMPUTE_RESERVE_FLOOR_BYTES: u64 = 256 * 1024 * 1024;
+
 fn estimated_runtime_reserve_bytes(
+    metadata: &LlamaModelMetadata,
     available_vram_bytes: u64,
+    planned_context: u32,
+    n_batch: u32,
     flash_attention_policy: llama_flash_attn_type,
 ) -> u64 {
-    let base_reserve = (available_vram_bytes / 10).max(256 * 1024 * 1024);
-    let flash_reserve = if flash_attention_policy == llama_cpp_sys_2::LLAMA_FLASH_ATTN_TYPE_ENABLED
-    {
-        (available_vram_bytes / 20).max(128 * 1024 * 1024)
-    } else {
-        0
-    };
-    base_reserve.saturating_add(flash_reserve)
+    let floor = (available_vram_bytes / 20).max(COMPUTE_RESERVE_FLOOR_BYTES);
+    let attention_reserve =
+        if flash_attention_policy == llama_cpp_sys_2::LLAMA_FLASH_ATTN_TYPE_ENABLED {
+            0
+        } else {
+            u64::from(planned_context.max(1))
+                .saturating_mul(u64::from(n_batch.max(1)))
+                .saturating_mul(metadata.n_head_kv.max(1))
+                .saturating_mul(ATTENTION_SCORE_BYTES)
+                .saturating_mul(COMPUTE_BUFFER_SAFETY_FACTOR)
+        };
+    floor.saturating_add(attention_reserve)
 }
 
 fn candidate_gpu_layers(total_layers: u32, estimated_gpu_layers: u32) -> Vec<u32> {
@@ -178,14 +188,6 @@ fn candidate_gpu_layers(total_layers: u32, estimated_gpu_layers: u32) -> Vec<u32
     }
 
     let mut candidates = Vec::new();
-    if estimate.saturating_mul(4) >= total_layers.saturating_mul(3) {
-        push_unique(&mut candidates, total_layers);
-    } else {
-        push_unique(
-            &mut candidates,
-            (estimate.saturating_add((total_layers - estimate) / 2)).min(total_layers),
-        );
-    }
     push_unique(&mut candidates, estimate);
     push_unique(&mut candidates, estimate.saturating_mul(3) / 4);
     push_unique(&mut candidates, estimate / 2);
@@ -251,12 +253,14 @@ pub(super) fn compute_recommended_context_for_gpu_layers(
     gpu_layers: u32,
     llama_offload_kqv: Option<bool>,
     llama_kv_type: Option<&str>,
+    sidecar_vram_reserve_bytes: u64,
 ) -> Option<u32> {
     let (cpu_weight_bytes, gpu_weight_bytes) = model_weight_split_bytes(metadata, gpu_layers);
     let available_for_ctx = if llama_offload_kqv == Some(true) {
         let vram = available_vram_bytes?;
         let reserve = default_memory_reserve_bytes(vram);
         vram.saturating_sub(gpu_weight_bytes.saturating_add(reserve))
+            .saturating_sub(sidecar_vram_reserve_bytes)
     } else {
         let ram = available_memory_bytes?;
         let reserve = default_memory_reserve_bytes(ram);
@@ -278,9 +282,11 @@ pub(super) fn plan_smart_gpu_offload(
     available_memory_bytes: Option<u64>,
     available_vram_bytes: Option<u64>,
     requested_context: Option<u32>,
+    n_batch: u32,
     resolved_offload_kqv: Option<bool>,
     llama_kv_type: Option<&str>,
     flash_attention_policy: llama_flash_attn_type,
+    sidecar_vram_reserve_bytes: u64,
 ) -> Result<SmartGpuOffloadPlan, String> {
     let metadata = load_model_metadata(model_path)?;
     let total_layers = metadata.layer_count.max(1);
@@ -298,8 +304,13 @@ pub(super) fn plan_smart_gpu_offload(
 
     let available_vram = available_vram_bytes.unwrap_or(0);
     let effective_vram_budget_bytes = available_vram.saturating_mul(9) / 10;
-    let estimated_runtime_reserve_bytes =
-        estimated_runtime_reserve_bytes(available_vram, flash_attention_policy);
+    let estimated_runtime_reserve_bytes = estimated_runtime_reserve_bytes(
+        &metadata,
+        available_vram,
+        planned_context,
+        n_batch,
+        flash_attention_policy,
+    );
     let bytes_per_layer = metadata
         .model_size_bytes
         .checked_add(u64::from(total_layers) - 1)
@@ -323,6 +334,7 @@ pub(super) fn plan_smart_gpu_offload(
         };
         let available_for_layers = effective_vram_budget_bytes
             .saturating_sub(estimated_runtime_reserve_bytes)
+            .saturating_sub(sidecar_vram_reserve_bytes)
             .saturating_sub(estimated_kv_bytes);
         let estimated_gpu_layers = if available_for_layers == 0 || bytes_per_layer == 0 {
             0
@@ -366,6 +378,7 @@ pub(super) fn plan_smart_gpu_offload(
         kqv_vram_reserved,
         planning_offload_kqv,
         estimated_kv_bytes,
+        estimated_sidecar_vram_reserve_bytes: sidecar_vram_reserve_bytes,
         estimated_runtime_reserve_bytes,
         effective_vram_budget_bytes,
     })

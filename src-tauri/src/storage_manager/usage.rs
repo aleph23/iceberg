@@ -1,5 +1,7 @@
 use rusqlite::OptionalExtension;
+use std::collections::HashSet;
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::Manager;
 
@@ -27,12 +29,43 @@ pub fn storage_clear_all(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn delete_dir_if_exists(path: &Path) {
+    if path.exists() {
+        let _ = fs::remove_dir_all(path);
+    }
+}
+
+fn is_within_root(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
 #[tauri::command]
 pub async fn storage_reset_database(app: tauri::AppHandle) -> Result<(), String> {
-    // Clear database contents in-place to avoid file lock issues on Windows.
+    let lettuce_dir = crate::infra::utils::ensure_lettuce_dir(&app)?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let whisper_models_dir = lettuce_dir.join("models").join("whisper");
+    let default_kokoro_root = lettuce_dir.join("kokoro");
+    let mut kokoro_asset_roots = HashSet::<PathBuf>::from([default_kokoro_root.clone()]);
+
     if let Ok(mut conn) = open_db(&app) {
         let _ = conn.busy_timeout(Duration::from_secs(2));
         let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA foreign_keys=OFF;");
+
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT asset_root FROM audio_providers WHERE provider_type = 'kokoro' AND asset_root IS NOT NULL",
+        ) {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for row in rows.flatten() {
+                    let trimmed = row.trim();
+                    if !trimmed.is_empty() {
+                        kokoro_asset_roots.insert(PathBuf::from(trimmed));
+                    }
+                }
+            }
+        }
 
         let tables: Vec<String> = {
             let mut stmt = conn
@@ -69,9 +102,6 @@ pub async fn storage_reset_database(app: tauri::AppHandle) -> Result<(), String>
         let _ = conn.execute_batch("VACUUM;");
     }
 
-    // Delete managed media directories.
-    // Session attachments live under `sessions/`, and generated images can also
-    // be stored outside the storage root in the app data directory.
     let storage = storage_root(&app)?;
     let dirs_to_clear = ["images", "avatars", "attachments", "sessions"];
     for dir_name in dirs_to_clear {
@@ -90,19 +120,15 @@ pub async fn storage_reset_database(app: tauri::AppHandle) -> Result<(), String>
         let _ = fs::remove_dir_all(&generated_images_dir);
     }
 
-    // Delete embedding model files
-    let lettuce_dir = crate::utils::lettuce_dir(&app)?;
     let model_dir = lettuce_dir.join("models").join("embedding");
-    if model_dir.exists() {
-        let _ = fs::remove_dir_all(&model_dir);
+    delete_dir_if_exists(&model_dir);
+    delete_dir_if_exists(&whisper_models_dir);
+    for asset_root in kokoro_asset_roots {
+        if is_within_root(&asset_root, &lettuce_dir) || is_within_root(&asset_root, &app_data_dir) {
+            delete_dir_if_exists(&asset_root);
+        }
     }
-
-    // Reset the download state since we deleted the model files
     crate::embedding::reset_download_state().await;
-
-    // Note: The database pool will be re-created automatically on next access
-    // We don't try to re-manage it here because app.manage() won't replace existing state
-    // The app should be restarted after reset for clean state
 
     Ok(())
 }
@@ -153,7 +179,7 @@ pub fn storage_usage_summary(app: tauri::AppHandle) -> Result<StorageUsageSummar
     }
     let last_updated_ms = latest.or_else(|| now_millis().ok());
     Ok(StorageUsageSummary {
-        file_count: file_count as usize,
+        file_count,
         estimated_sessions: session_count as usize,
         last_updated_ms,
     })

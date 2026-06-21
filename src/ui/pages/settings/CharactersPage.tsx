@@ -1,8 +1,11 @@
 import { useNavigate } from "react-router-dom";
+import { useState } from "react";
 import { Trash2, Edit2, Sparkles } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Character } from "../../../core/storage/schemas";
 import { BottomMenu } from "../../components";
+import { NoModelMenu } from "../../components/CreateMenus/NoModelMenu";
+import { hasConfiguredModel } from "../../../core/storage/repo";
 import { AvatarImage } from "../../components/AvatarImage";
 import { typography, radius, interactive, cn } from "../../design-tokens";
 import { useCharactersController } from "../characters/hooks/useCharactersController";
@@ -49,7 +52,7 @@ function isImageLike(s?: string) {
 }
 
 function CharacterAvatar({ character }: { character: Character }) {
-  const avatarUrl = useAvatar("character", character.id, character.avatarPath);
+  const avatarUrl = useAvatar("character", character.id, character.avatarPath, "round");
 
   if (avatarUrl && isImageLike(avatarUrl)) {
     return (
@@ -69,12 +72,20 @@ function CharacterAvatar({ character }: { character: Character }) {
 export function CharactersPage() {
   const navigate = useNavigate();
   const { t } = useI18n();
+  const [showNoModel, setShowNoModel] = useState(false);
   const {
     state: { characters, loading, selectedCharacter, showDeleteConfirm, deleting },
     setSelectedCharacter,
     setShowDeleteConfirm,
     handleDelete,
   } = useCharactersController();
+
+  const handleCreateCharacter = () => {
+    void hasConfiguredModel().then((ok) => {
+      if (ok) navigate("/create/character");
+      else setShowNoModel(true);
+    });
+  };
 
   // Get gradients for all characters at once (follows React rules of hooks)
   const { getGradientCss, hasGradient, getTextColor, getTextSecondary } =
@@ -84,6 +95,7 @@ export function CharactersPage() {
         id: c.id,
         avatarPath: c.avatarPath,
         disableGradient: c.disableAvatarGradient,
+        source: c.avatarGradientSource ?? "base",
       })),
     );
 
@@ -92,12 +104,12 @@ export function CharactersPage() {
   };
 
   return (
-    <div className="flex h-full flex-col pb-16 text-fg/90">
-      <main className="flex-1 overflow-y-auto px-4 pt-4">
+    <div className="flex h-full flex-col text-fg/90">
+      <main className="flex-1 overflow-y-auto px-4 pt-4 pb-6">
         {loading ? (
           <CharacterSkeleton />
         ) : characters.length === 0 ? (
-          <EmptyState onCreate={() => navigate("/create/character")} />
+          <EmptyState onCreate={handleCreateCharacter} />
         ) : (
           <div className="space-y-3">
             {/* Characters List */}
@@ -180,7 +192,7 @@ export function CharactersPage() {
                           "border border-fg/10 bg-fg/25 text-fg/70",
                           "transition-all hover:border-fg/50 hover:text-fg",
                         )}
-                        aria-label="Edit Character"
+                        aria-label={t("characters.actions.editCharacter")}
                       >
                         <Edit2 size={12} />
                       </button>
@@ -195,7 +207,7 @@ export function CharactersPage() {
                           "border border-danger/30 bg-danger/70 text-danger/80",
                           "transition-all hover:border-danger/90 hover:bg-danger/20",
                         )}
-                        aria-label="Delete Character"
+                        aria-label={t("characters.actions.deleteCharacter")}
                       >
                         <Trash2 size={12} />
                       </button>
@@ -212,12 +224,11 @@ export function CharactersPage() {
       <BottomMenu
         isOpen={showDeleteConfirm}
         onClose={() => setShowDeleteConfirm(false)}
-        title="Delete Character?"
+        title={t("characters.delete.title")}
       >
         <div className="space-y-4">
           <p className="text-sm text-fg/70">
-            Are you sure you want to delete "{selectedCharacter?.name}"? This will also delete all
-            chat sessions with this character.
+            {t("characters.delete.confirmMessage", { name: selectedCharacter?.name ?? "" })}
           </p>
           <div className="flex gap-3">
             <button
@@ -237,6 +248,8 @@ export function CharactersPage() {
           </div>
         </div>
       </BottomMenu>
+
+      <NoModelMenu isOpen={showNoModel} onClose={() => setShowNoModel(false)} />
     </div>
   );
 }

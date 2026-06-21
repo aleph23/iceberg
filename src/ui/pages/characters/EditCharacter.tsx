@@ -2,6 +2,7 @@ import React from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import {
   Loader2,
+  RefreshCw,
   Plus,
   X,
   Sparkles,
@@ -24,16 +25,25 @@ import {
   MessageSquare,
   ChevronRight,
   FolderOpen,
+  Heart,
+  Trash2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useEditCharacterForm } from "./hooks/useEditCharacterForm";
 import { AvatarPicker } from "../../components/AvatarPicker";
 import { DesignReferenceEditor } from "../../components/DesignReferenceEditor";
+import { LoraSelector } from "../../components/LoraSelector";
+import { CompanionSoulEditor } from "./components/CompanionSoulEditor";
+import { CompanionScheduledNotesEditor } from "./components/CompanionScheduledNotesEditor";
+import { SoulGenerationReviewOverlay } from "./components/SoulGenerationReviewOverlay";
+import { normalizeCompanionConfig } from "./utils/companionDefaults";
 import { BottomMenu, MenuButton, MenuButtonGroup, MenuSection } from "../../components/BottomMenu";
 import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
 import { BackgroundPositionModal } from "../../components/BackgroundPositionModal";
 import { CharacterExportMenu } from "../../components/CharacterExportMenu";
 import { Switch } from "../../components/Switch";
+import { ActiveLorebooksSelector } from "./components/ActiveLorebooksSelector";
+import { InteractionModeSelector } from "./components/InteractionModeSelector";
 import { cn, radius, colors, interactive, spacing, typography } from "../../design-tokens";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { useI18n } from "../../../core/i18n/context";
@@ -52,12 +62,123 @@ import {
   type CachedVoice,
   type UserVoice,
 } from "../../../core/storage/audioProviders";
+import {
+  APP_COMPANION_TEMPLATE_ID,
+  APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID,
+  APP_GROUP_CHAT_TEMPLATE_ID,
+} from "../../../core/prompts/constants";
+import { generateCompanionSoulDraft } from "../../../core/companion/soul";
+import { recalculateGradient } from "../../../core/storage/avatars";
+import { useImageData } from "../../hooks/useImageData";
+import { useAvatarGradient } from "../../hooks/useAvatarGradient";
+import { toast } from "../../components/toast";
+import { processBackgroundImage } from "../../../core/utils/image";
 
 const wordCount = (text: string) => {
   const trimmed = text.trim();
   if (!trimmed) return 0;
   return trimmed.split(/\s+/).length;
 };
+
+const summarizeAvatarValue = (value?: string | null) => {
+  if (!value) return "(empty)";
+  if (value.startsWith("data:")) return `data-url(${value.slice(0, 24)}..., len=${value.length})`;
+  return value.length > 96 ? `${value.slice(0, 96)}...` : value;
+};
+
+const GradientColorField = React.memo(function GradientColorField({
+  label,
+  value,
+  placeholder,
+  fallback,
+  onCommit,
+  onRemove,
+}: {
+  label: string;
+  value?: string;
+  placeholder: string;
+  fallback: string;
+  onCommit: (value: string) => void;
+  onRemove?: () => void;
+}) {
+  const [draft, setDraft] = React.useState(value || "");
+
+  React.useEffect(() => {
+    setDraft(value || "");
+  }, [value]);
+
+  const commit = React.useCallback(
+    (nextValue: string) => {
+      if (nextValue !== (value || "")) {
+        onCommit(nextValue);
+      }
+    },
+    [onCommit, value],
+  );
+
+  return (
+    <div className="flex items-center gap-3">
+      <label className="w-12 text-xs text-fg/50">{label}</label>
+      <div className="relative shrink-0">
+        <input
+          type="color"
+          value={draft || fallback}
+          onInput={(e) => {
+            setDraft(e.currentTarget.value);
+          }}
+          onChange={(e) => {
+            const nextValue = e.currentTarget.value;
+            setDraft(nextValue);
+            commit(nextValue);
+          }}
+          className="h-10 w-10 cursor-pointer rounded-lg border-2 border-fg/20 p-0.5"
+          style={{
+            backgroundColor: draft || fallback,
+          }}
+        />
+      </div>
+      <input
+        type="text"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => commit(draft)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.currentTarget.blur();
+          }
+        }}
+        placeholder={placeholder}
+        className="flex-1 rounded-lg border border-fg/10 bg-surface-el/50 px-3 py-2 text-sm font-mono text-fg placeholder:text-fg/30 focus:border-secondary/50 focus:outline-none"
+      />
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="shrink-0 text-xs text-danger hover:text-danger"
+        >
+          ✕
+        </button>
+      ) : null}
+    </div>
+  );
+});
+
+type EditCharacterTab = "character" | "soul" | "settings";
+
+const buildOpeningContext = (
+  scenes: Array<{ title?: string | null; content: string; direction?: string | null }>,
+) =>
+  scenes
+    .filter((scene) => scene.content.trim())
+    .slice(0, 3)
+    .map((scene, index) => {
+      const title = scene.title?.trim() || `Scene ${index + 1}`;
+      const direction = scene.direction?.trim();
+      return direction
+        ? `${title}\n${scene.content.trim()}\nDirection: ${direction}`
+        : `${title}\n${scene.content.trim()}`;
+    })
+    .join("\n\n");
 
 export function EditCharacterPage() {
   const { t } = useI18n();
@@ -74,17 +195,27 @@ export function EditCharacterPage() {
   const [showBackgroundPositionModal, setShowBackgroundPositionModal] = React.useState(false);
 
   // Tab state
-  const [activeTab, setActiveTab] = React.useState<"character" | "settings">("character");
+  const [activeTab, setActiveTab] = React.useState<EditCharacterTab>("character");
+  const [generatingSoul, setGeneratingSoul] = React.useState(false);
+  const [soulError, setSoulError] = React.useState<string | null>(null);
+  const [soulDraft, setSoulDraft] = React.useState<Partial<import("../../../core/storage/schemas").CompanionConfig> | null>(null);
+  const [soulDirection, setSoulDirection] = React.useState("");
   const [showModelMenu, setShowModelMenu] = React.useState(false);
   const [showFallbackModelMenu, setShowFallbackModelMenu] = React.useState(false);
   const [showVoiceMenu, setShowVoiceMenu] = React.useState(false);
   const [voiceSearchQuery, setVoiceSearchQuery] = React.useState("");
   const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
+  const [recalculatingGradient, setRecalculatingGradient] = React.useState(false);
+  const [sceneBackgroundLibraryTarget, setSceneBackgroundLibraryTarget] = React.useState<
+    "new" | "edit" | null
+  >(null);
   const tabsId = React.useId();
   const tabPanelId = `${tabsId}-panel`;
   const characterTabId = `${tabsId}-tab-character`;
+  const soulTabId = `${tabsId}-tab-soul`;
   const settingsTabId = `${tabsId}-tab-settings`;
   const returnPath = `${location.pathname}${location.search}`;
+  const sceneBackgroundLibraryReturnPath = `${returnPath}:scene-background`;
 
   const {
     loading,
@@ -102,20 +233,28 @@ export function EditCharacterPage() {
     avatarPath,
     avatarCrop,
     avatarRoundPath,
+    avatarBannerPath,
+    bannerCrop,
+    cardType,
     designDescription,
     designReferenceImageIds,
+    loraName,
+    loraStrength,
     backgroundImagePath,
     scenes,
     chatTemplates,
     defaultSceneId,
     newSceneContent,
     newSceneDirection,
+    newSceneBackgroundImagePath,
     selectedModelId,
     selectedFallbackModelId,
     groupChatPromptTemplateId,
     groupChatRoleplayPromptTemplateId,
+    activeLorebookIds,
 
     disableAvatarGradient,
+    avatarGradientSource,
     customGradientEnabled,
     customGradientColors,
     customTextColor: _customTextColor,
@@ -127,12 +266,16 @@ export function EditCharacterPage() {
     promptTemplates,
     loadingTemplates,
     systemPromptTemplateId,
+    companionPromptTemplateId,
+    mode,
     voiceConfig,
     voiceAutoplay,
+    companion,
 
     editingSceneId,
     editingSceneContent,
     editingSceneDirection,
+    editingSceneBackgroundImagePath,
   } = state;
 
   const {
@@ -154,16 +297,97 @@ export function EditCharacterPage() {
   const groupChatTemplates = promptTemplates.filter(
     (template) =>
       template.promptType === "groupChatConversational" &&
-      template.id !== "prompt_app_group_chat",
+      template.id !== APP_GROUP_CHAT_TEMPLATE_ID,
   );
   const groupChatRoleplayTemplates = promptTemplates.filter(
     (template) =>
       template.promptType === "groupChatRoleplay" &&
-      template.id !== "prompt_app_group_chat_roleplay",
+      template.id !== APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID,
   );
+  const companionPromptTemplates = promptTemplates.filter(
+    (template) =>
+      template.promptType === "companionChat" && template.id !== APP_COMPANION_TEMPLATE_ID,
+  );
+  const { colors: autoGradientColors, refreshGradient } = useAvatarGradient(
+    "character",
+    characterId ?? "",
+    avatarPath ?? undefined,
+    false,
+    undefined,
+    avatarGradientSource,
+  );
+  const suggestedCustomGradientColors = React.useMemo(() => {
+    if (customGradientColors.length > 0) return customGradientColors;
+
+    const detected = autoGradientColors
+      .map((color) => color.hex)
+      .filter((hex): hex is string => typeof hex === "string" && hex.length > 0)
+      .slice(0, 3);
+
+    return detected.length >= 2 ? detected : ["#4f46e5", "#7c3aed"];
+  }, [autoGradientColors, customGradientColors]);
+  const handleRecalculateGradient = React.useCallback(async () => {
+    if (!characterId || !avatarPath || recalculatingGradient) return;
+
+    setRecalculatingGradient(true);
+    try {
+      await recalculateGradient("character", characterId, avatarGradientSource);
+      await refreshGradient(true);
+      toast.success(
+        t("characters.edit.gradientRecalculatedTitle"),
+        t("characters.edit.gradientRecalculatedMessage"),
+      );
+    } catch (error) {
+      console.error("Failed to recalculate avatar gradient:", error);
+      toast.error(
+        t("characters.edit.gradientRecalculateFailedTitle"),
+        t("characters.edit.gradientRecalculateFailedMessage"),
+      );
+    } finally {
+      setRecalculatingGradient(false);
+    }
+  }, [avatarGradientSource, avatarPath, characterId, recalculatingGradient, refreshGradient, t]);
+
+  React.useEffect(() => {
+    console.log("[EditCharacter] avatar state", {
+      avatarPath: summarizeAvatarValue(avatarPath),
+      avatarRoundPath: summarizeAvatarValue(avatarRoundPath),
+    });
+  }, [avatarPath, avatarRoundPath]);
+  const tabItems = React.useMemo(
+    () =>
+      [
+        { id: "character" as const, icon: User, label: t("characters.edit.tabCharacter"), disabled: false, hint: undefined as string | undefined },
+        mode === "companion"
+          ? {
+              id: "soul" as const,
+              icon: Heart,
+              label: t("characters.edit.tabSoul"),
+              disabled: false,
+              hint: undefined as string | undefined,
+            }
+          : null,
+        { id: "settings" as const, icon: Settings, label: t("characters.edit.tabSettings"), disabled: false, hint: undefined as string | undefined },
+      ].filter(
+        (item): item is {
+          id: EditCharacterTab;
+          icon: typeof User;
+          label: string;
+          disabled: boolean;
+          hint: string | undefined;
+        } => Boolean(item),
+      ),
+    [mode, t],
+  );
+  const activeTabId =
+    activeTab === "character" ? characterTabId : activeTab === "soul" ? soulTabId : settingsTabId;
 
   const closeNewSceneEditor = React.useCallback(() => {
-    setFields({ newSceneContent: "", newSceneDirection: "" });
+    setFields({
+      newSceneContent: "",
+      newSceneDirection: "",
+      newSceneBackgroundImagePath: "",
+    });
     setNewSceneEditorOpen(false);
   }, [setFields]);
 
@@ -173,12 +397,92 @@ export function EditCharacterPage() {
     setNewSceneEditorOpen(false);
   }, [addScene, newSceneContent]);
 
+  const sceneBackgroundInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const handleSceneBackgroundUpload = React.useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      const input = event.target;
+      if (!file) return;
+
+      try {
+        const dataUrl = await processBackgroundImage(file);
+        setFields(
+          editingSceneId !== null
+            ? { editingSceneBackgroundImagePath: dataUrl }
+            : { newSceneBackgroundImagePath: dataUrl },
+        );
+      } catch (error) {
+        console.warn("EditCharacter: failed to process scene background image", error);
+      } finally {
+        input.value = "";
+      }
+    },
+    [editingSceneId, setFields],
+  );
+
   const handleExportFormat = React.useCallback(
     async (format: CharacterFileFormat) => {
       await handleExport(format);
       setExportMenuOpen(false);
     },
     [handleExport],
+  );
+
+  const soulGenerationDisabledReason = React.useMemo<string | null>(() => {
+    if (!name.trim()) return t("characters.companionSoul.addNameFirst");
+    if (!definition.trim()) return t("characters.companionSoul.addDefinitionFirst");
+    return null;
+  }, [name, definition, t]);
+
+  const soulModelLabel = React.useMemo(() => {
+    if (!selectedModelId) return null;
+    return models.find((m) => m.id === selectedModelId)?.displayName ?? null;
+  }, [selectedModelId, models]);
+
+  const handleGenerateSoul = React.useCallback(async () => {
+    if (soulGenerationDisabledReason || generatingSoul) {
+      if (soulGenerationDisabledReason) setSoulError(soulGenerationDisabledReason);
+      return;
+    }
+    setGeneratingSoul(true);
+    setSoulError(null);
+    try {
+      const draft = await generateCompanionSoulDraft({
+        characterName: name.trim(),
+        characterDefinition: definition,
+        characterDescription: description,
+        openingContext: buildOpeningContext(scenes),
+        currentSoul: companion,
+        userNotes: soulDirection.trim() || null,
+        modelId: selectedModelId,
+      });
+      setSoulDraft(draft);
+    } catch (err) {
+      console.error("Failed to generate companion soul:", err);
+      setSoulError(err instanceof Error ? err.message : t("characters.edit.soulGenerateFailed"));
+    } finally {
+      setGeneratingSoul(false);
+    }
+  }, [
+    companion,
+    definition,
+    description,
+    generatingSoul,
+    name,
+    scenes,
+    selectedModelId,
+    soulDirection,
+    soulGenerationDisabledReason,
+    t,
+  ]);
+
+  const handleApplySoulDraft = React.useCallback(
+    (next: import("../../../core/storage/schemas").CompanionConfig) => {
+      setFields({ companion: next });
+      setSoulDraft(null);
+    },
+    [setFields],
   );
 
   const [audioProviders, setAudioProviders] = React.useState<AudioProvider[]>([]);
@@ -252,6 +556,42 @@ export function EditCharacterPage() {
     };
   }, [loading, returnPath, setFields]);
 
+  React.useEffect(() => {
+    if (loading) return;
+
+    const storageKey = buildBackgroundLibrarySelectionKey(sceneBackgroundLibraryReturnPath);
+    const rawSelection = sessionStorage.getItem(storageKey);
+    if (!rawSelection) return;
+
+    sessionStorage.removeItem(storageKey);
+
+    let parsed: BackgroundLibrarySelectionPayload | null = null;
+    try {
+      parsed = JSON.parse(rawSelection) as BackgroundLibrarySelectionPayload;
+    } catch (error) {
+      console.error("Failed to parse scene background library selection:", error);
+      return;
+    }
+
+    if (!parsed?.filePath) return;
+
+    let cancelled = false;
+    void (async () => {
+      const dataUrl = await convertFilePathToDataUrl(parsed.filePath);
+      if (!dataUrl || cancelled) return;
+      setFields(
+        sceneBackgroundLibraryTarget === "edit"
+          ? { editingSceneBackgroundImagePath: dataUrl }
+          : { newSceneBackgroundImagePath: dataUrl },
+      );
+      setSceneBackgroundLibraryTarget(null);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, sceneBackgroundLibraryReturnPath, sceneBackgroundLibraryTarget, setFields]);
+
   const handleChooseBackgroundFromLibrary = React.useCallback(() => {
     navigate("/library/images/pick", {
       state: {
@@ -260,6 +600,20 @@ export function EditCharacterPage() {
       },
     });
   }, [navigate, returnPath]);
+
+  const handleChooseSceneBackgroundFromLibrary = React.useCallback(
+    (target: "new" | "edit") => {
+      setSceneBackgroundLibraryTarget(target);
+      navigate("/library/images/pick", {
+        state: {
+          returnPath,
+          selectionStorageKey: sceneBackgroundLibraryReturnPath,
+          selectionKind: "background",
+        },
+      });
+    },
+    [navigate, sceneBackgroundLibraryReturnPath],
+  );
 
   const loadVoices = React.useCallback(async () => {
     setLoadingVoices(true);
@@ -273,7 +627,10 @@ export function EditCharacterPage() {
       await Promise.all(
         providers.map(async (provider) => {
           try {
-            if (provider.providerType === "elevenlabs" && provider.apiKey) {
+            if (
+              (provider.providerType === "elevenlabs" || provider.providerType === "fish_tts") &&
+              provider.apiKey
+            ) {
               voicesByProvider[provider.id] = await refreshProviderVoices(provider.id);
             } else {
               voicesByProvider[provider.id] = await getProviderVoices(provider.id);
@@ -293,16 +650,22 @@ export function EditCharacterPage() {
       setHasLoadedVoices(true);
     } catch (err) {
       console.error("Failed to load voices:", err);
-      setVoiceError("Failed to load voices");
+      setVoiceError(t("characters.voiceLoading.failed"));
     } finally {
       setLoadingVoices(false);
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     if (activeTab !== "settings" || hasLoadedVoices) return;
     void loadVoices();
   }, [activeTab, hasLoadedVoices, loadVoices]);
+
+  React.useEffect(() => {
+    if (mode !== "companion" && activeTab === "soul") {
+      setActiveTab("settings");
+    }
+  }, [activeTab, mode]);
 
   if (loading) {
     return (
@@ -317,7 +680,7 @@ export function EditCharacterPage() {
       <main
         id={tabPanelId}
         role="tabpanel"
-        aria-labelledby={activeTab === "character" ? characterTabId : settingsTabId}
+        aria-labelledby={activeTabId}
         tabIndex={0}
         className="flex-1 overflow-y-auto px-4"
       >
@@ -350,14 +713,20 @@ export function EditCharacterPage() {
           {/* Settings Tab Content */}
           {activeTab === "settings" && (
             <>
+              <InteractionModeSelector
+                mode={mode}
+                onChange={(nextMode) => setFields({ mode: nextMode })}
+                disabled={saving}
+              />
+
               {/* Background Image Section */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <div className="rounded-lg border border-secondary/30 bg-secondary/10 p-1.5">
                     <Image className="h-4 w-4 text-secondary" />
                   </div>
-                  <h3 className="text-sm font-semibold text-fg">Chat Background</h3>
-                  <span className="text-xs text-fg/40">(Optional)</span>
+                  <h3 className="text-sm font-semibold text-fg">{t("characters.edit.chatBackgroundTitle")}</h3>
+                  <span className="text-xs text-fg/40">{t("characters.edit.optionalSuffix")}</span>
                 </div>
 
                 <div className="overflow-hidden rounded-xl border border-fg/10 bg-surface-el/20">
@@ -365,19 +734,19 @@ export function EditCharacterPage() {
                     <div className="relative">
                       <img
                         src={backgroundImagePath}
-                        alt="Background preview"
+                        alt={t("characters.edit.backgroundPreviewAlt")}
                         className="h-32 w-full object-cover"
                       />
                       <div className="absolute inset-0 bg-surface-el/30 flex items-center justify-center">
                         <span className="text-xs text-fg/80 bg-surface-el/50 px-2 py-1 rounded">
-                          Background Preview
+                          {t("characters.edit.backgroundPreviewBadge")}
                         </span>
                       </div>
                       <button
                         type="button"
                         onClick={() => setFields({ backgroundImagePath: "" })}
                         className="absolute top-2 right-2 rounded-full border border-fg/20 bg-surface-el/50 p-1 text-fg/70 transition hover:bg-surface-el/70 active:scale-95"
-                        aria-label="Remove background image"
+                        aria-label={t("characters.edit.removeBackgroundImage")}
                       >
                         <X size={14} />
                       </button>
@@ -388,8 +757,8 @@ export function EditCharacterPage() {
                         <Image size={20} className="text-fg/40" />
                       </div>
                       <div className="text-center">
-                        <p className="text-sm text-fg/70">Add Background Image</p>
-                        <p className="text-xs text-fg/40">Upload one or pick from library</p>
+                        <p className="text-sm text-fg/70">{t("characters.edit.addBackgroundImage")}</p>
+                        <p className="text-xs text-fg/40">{t("characters.edit.addBackgroundHint")}</p>
                       </div>
                     </div>
                   )}
@@ -397,7 +766,7 @@ export function EditCharacterPage() {
                 <div className="grid grid-cols-2 gap-2">
                   <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-3 text-sm text-fg/75 transition hover:bg-surface-el/30">
                     <Upload size={14} />
-                    Upload image
+                    {t("characters.edit.uploadImage")}
                     <input
                       type="file"
                       accept="image/*"
@@ -422,11 +791,11 @@ export function EditCharacterPage() {
                     className="flex items-center justify-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-3 py-3 text-sm text-fg/75 transition hover:bg-surface-el/30"
                   >
                     <FolderOpen size={14} />
-                    Choose from library
+                    {t("characters.edit.chooseFromLibrary")}
                   </button>
                 </div>
                 <p className="text-xs text-fg/50">
-                  Optional background image for chat conversations with this character
+                  {t("characters.edit.chatBackgroundHint")}
                 </p>
               </div>
 
@@ -438,13 +807,32 @@ export function EditCharacterPage() {
                       <div className="flex-1">
                         <div className="flex items-center gap-2">
                           <Sparkles className="h-4 w-4 text-accent" />
-                          <p className="text-sm font-medium text-fg">Avatar Gradient</p>
+                          <p className="text-sm font-medium text-fg">{t("characters.edit.avatarGradientTitle")}</p>
                         </div>
                         <p className="mt-0.5 text-xs text-fg/50">
-                          Generate colorful gradients from avatar colors
+                          {t("characters.edit.avatarGradientDesc")}
                         </p>
                       </div>
-                      <div className="ml-3">
+                      <div className="ml-3 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleRecalculateGradient}
+                          disabled={recalculatingGradient}
+                          className={cn(
+                            "inline-flex h-8 w-8 items-center justify-center rounded-lg border border-fg/10 bg-fg/5 text-fg/65 transition",
+                            recalculatingGradient
+                              ? "cursor-wait opacity-70"
+                              : "hover:bg-fg/10 hover:text-fg active:scale-95",
+                          )}
+                          aria-label={t("characters.edit.recalculateGradientAria")}
+                          title={t("characters.edit.recalculateGradientAria")}
+                        >
+                          {recalculatingGradient ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          )}
+                        </button>
                         <Switch
                           checked={!disableAvatarGradient}
                           onChange={(next) => setFields({ disableAvatarGradient: !next })}
@@ -452,6 +840,48 @@ export function EditCharacterPage() {
                       </div>
                     </div>
                     <AnimatePresence initial={false}>
+                      {!disableAvatarGradient && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -6 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -6 }}
+                          transition={{ duration: 0.18, ease: "easeOut" }}
+                          className="rounded-lg border border-fg/10 bg-surface-el/10 p-2"
+                        >
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="text-xs font-medium text-fg/75">{t("characters.edit.gradientSourceLabel")}</span>
+                            <span className="text-[11px] text-fg/45">
+                              {t("characters.edit.gradientSourceHint")}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setFields({ avatarGradientSource: "base" })}
+                              className={cn(
+                                "rounded-lg border px-3 py-2 text-sm transition",
+                                avatarGradientSource === "base"
+                                  ? "border-accent/40 bg-accent/12 text-accent"
+                                  : "border-fg/10 bg-fg/5 text-fg/70 hover:bg-fg/10",
+                              )}
+                            >
+                              {t("characters.edit.gradientSourceBase")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setFields({ avatarGradientSource: "round" })}
+                              className={cn(
+                                "rounded-lg border px-3 py-2 text-sm transition",
+                                avatarGradientSource === "round"
+                                  ? "border-accent/40 bg-accent/12 text-accent"
+                                  : "border-fg/10 bg-fg/5 text-fg/70 hover:bg-fg/10",
+                              )}
+                            >
+                              {t("characters.edit.gradientSourceCropped")}
+                            </button>
+                          </div>
+                        </motion.div>
+                      )}
                       {customGradientEnabled && !disableAvatarGradient && (
                         <motion.div
                           initial={{ opacity: 0, y: -6 }}
@@ -463,7 +893,7 @@ export function EditCharacterPage() {
                           <div className="flex min-h-4 items-center gap-2 text-xs text-warning/85">
                             <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
                             <span className="block leading-none">
-                              Custom Gradient overrides the automatic avatar gradient.
+                              {t("characters.edit.customGradientOverrideWarning")}
                             </span>
                           </div>
                         </motion.div>
@@ -478,10 +908,10 @@ export function EditCharacterPage() {
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
                             <Sparkles className="h-4 w-4 text-secondary" />
-                            <p className="text-sm font-medium text-fg">Custom Gradient</p>
+                            <p className="text-sm font-medium text-fg">{t("characters.edit.customGradientTitle")}</p>
                           </div>
                           <p className="mt-0.5 text-xs text-fg/50">
-                            Override auto-detected colors with your own
+                            {t("characters.edit.customGradientDesc")}
                           </p>
                         </div>
                         <div className="ml-3">
@@ -489,13 +919,9 @@ export function EditCharacterPage() {
                             checked={customGradientEnabled}
                             onChange={(next) => {
                               if (next) {
-                                const colors =
-                                  customGradientColors.length > 0
-                                    ? customGradientColors
-                                    : ["#4f46e5", "#7c3aed"];
                                 setFields({
                                   customGradientEnabled: true,
-                                  customGradientColors: colors,
+                                  customGradientColors: suggestedCustomGradientColors,
                                 });
                               } else {
                                 setFields({ customGradientEnabled: false });
@@ -511,130 +937,76 @@ export function EditCharacterPage() {
                             className="h-16 w-full rounded-lg"
                             style={{
                               background:
-                                customGradientColors.length >= 3
-                                  ? `linear-gradient(135deg, ${customGradientColors[0]}, ${customGradientColors[2]}, ${customGradientColors[1]})`
-                                  : customGradientColors.length >= 2
-                                    ? `linear-gradient(135deg, ${customGradientColors[0]}, ${customGradientColors[1]})`
-                                    : customGradientColors[0],
+                                suggestedCustomGradientColors.length >= 3
+                                  ? `linear-gradient(135deg, ${suggestedCustomGradientColors[0]}, ${suggestedCustomGradientColors[2]}, ${suggestedCustomGradientColors[1]})`
+                                  : suggestedCustomGradientColors.length >= 2
+                                    ? `linear-gradient(135deg, ${suggestedCustomGradientColors[0]}, ${suggestedCustomGradientColors[1]})`
+                                    : suggestedCustomGradientColors[0],
                             }}
                           />
 
-                          <div className="flex items-center gap-3">
-                            <label className="w-12 text-xs text-fg/50">Start</label>
-                            <div className="relative shrink-0">
-                              <input
-                                type="color"
-                                value={customGradientColors[0] || "#4f46e5"}
-                                onChange={(e) => {
-                                  const newColors = [...customGradientColors];
-                                  newColors[0] = e.target.value;
-                                  setFields({ customGradientColors: newColors });
-                                }}
-                                className="h-10 w-10 cursor-pointer rounded-lg border-2 border-fg/20 p-0.5"
-                                style={{ backgroundColor: customGradientColors[0] || "#4f46e5" }}
-                              />
-                            </div>
-                            <input
-                              type="text"
-                              value={customGradientColors[0] || ""}
-                              onChange={(e) => {
-                                const newColors = [...customGradientColors];
-                                newColors[0] = e.target.value;
+                          <GradientColorField
+                            label={t("characters.edit.gradientColorStart")}
+                            value={suggestedCustomGradientColors[0] || ""}
+                            placeholder="#4f46e5"
+                            fallback="#4f46e5"
+                            onCommit={(nextValue) => {
+                              const newColors = [...suggestedCustomGradientColors];
+                              newColors[0] = nextValue;
+                              setFields({ customGradientColors: newColors });
+                            }}
+                          />
+
+                          {suggestedCustomGradientColors.length >= 3 ? (
+                            <GradientColorField
+                              label={t("characters.edit.gradientColorMid")}
+                              value={suggestedCustomGradientColors[2] || ""}
+                              placeholder="#a855f7"
+                              fallback="#a855f7"
+                              onCommit={(nextValue) => {
+                                const newColors = [...suggestedCustomGradientColors];
+                                newColors[2] = nextValue;
                                 setFields({ customGradientColors: newColors });
                               }}
-                              placeholder="#4f46e5"
-                              className="flex-1 rounded-lg border border-fg/10 bg-surface-el/50 px-3 py-2 text-sm font-mono text-fg placeholder:text-fg/30 focus:border-secondary/50 focus:outline-none"
+                              onRemove={() => {
+                                const newColors = [
+                                  suggestedCustomGradientColors[0],
+                                  suggestedCustomGradientColors[1],
+                                ];
+                                setFields({ customGradientColors: newColors });
+                              }}
                             />
-                          </div>
-
-                          {customGradientColors.length >= 3 ? (
-                            <div className="flex items-center gap-3">
-                              <label className="w-12 text-xs text-fg/50">Mid</label>
-                              <div className="relative shrink-0">
-                                <input
-                                  type="color"
-                                  value={customGradientColors[2] || "#a855f7"}
-                                  onChange={(e) => {
-                                    const newColors = [...customGradientColors];
-                                    newColors[2] = e.target.value;
-                                    setFields({ customGradientColors: newColors });
-                                  }}
-                                  className="h-10 w-10 cursor-pointer rounded-lg border-2 border-fg/20 p-0.5"
-                                  style={{ backgroundColor: customGradientColors[2] || "#a855f7" }}
-                                />
-                              </div>
-                              <input
-                                type="text"
-                                value={customGradientColors[2] || ""}
-                                onChange={(e) => {
-                                  const newColors = [...customGradientColors];
-                                  newColors[2] = e.target.value;
-                                  setFields({ customGradientColors: newColors });
-                                }}
-                                placeholder="#a855f7"
-                                className="flex-1 rounded-lg border border-fg/10 bg-surface-el/50 px-3 py-2 text-sm font-mono text-fg placeholder:text-fg/30 focus:border-secondary/50 focus:outline-none"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const newColors = [
-                                    customGradientColors[0],
-                                    customGradientColors[1],
-                                  ];
-                                  setFields({ customGradientColors: newColors });
-                                }}
-                                className="shrink-0 text-xs text-danger hover:text-danger"
-                              >
-                                ✕
-                              </button>
-                            </div>
                           ) : (
                             <button
                               type="button"
                               onClick={() => {
                                 const newColors = [
-                                  customGradientColors[0],
-                                  customGradientColors[1],
+                                  suggestedCustomGradientColors[0],
+                                  suggestedCustomGradientColors[1],
                                   "#a855f7",
                                 ];
                                 setFields({ customGradientColors: newColors });
                               }}
                               className="py-1 text-xs text-secondary hover:text-secondary"
                             >
-                              + Add middle color
+                              {t("characters.edit.addMiddleColor")}
                             </button>
                           )}
 
-                          <div className="flex items-center gap-3">
-                            <label className="w-12 text-xs text-fg/50">End</label>
-                            <div className="relative shrink-0">
-                              <input
-                                type="color"
-                                value={customGradientColors[1] || "#7c3aed"}
-                                onChange={(e) => {
-                                  const newColors = [...customGradientColors];
-                                  newColors[1] = e.target.value;
-                                  setFields({ customGradientColors: newColors });
-                                }}
-                                className="h-10 w-10 cursor-pointer rounded-lg border-2 p-0.5"
-                                style={{ backgroundColor: customGradientColors[1] || "#7c3aed" }}
-                              />
-                            </div>
-                            <input
-                              type="text"
-                              value={customGradientColors[1] || ""}
-                              onChange={(e) => {
-                                const newColors = [...customGradientColors];
-                                newColors[1] = e.target.value;
-                                setFields({ customGradientColors: newColors });
-                              }}
-                              placeholder="#7c3aed"
-                              className="flex-1 rounded-lg border border-fg/10 bg-surface-el/50 px-3 py-2 text-sm font-mono text-fg placeholder:text-fg/30 focus:border-secondary/50 focus:outline-none"
-                            />
-                          </div>
+                          <GradientColorField
+                            label={t("characters.edit.gradientColorEnd")}
+                            value={suggestedCustomGradientColors[1] || ""}
+                            placeholder="#7c3aed"
+                            fallback="#7c3aed"
+                            onCommit={(nextValue) => {
+                              const newColors = [...suggestedCustomGradientColors];
+                              newColors[1] = nextValue;
+                              setFields({ customGradientColors: newColors });
+                            }}
+                          />
 
                           <p className="mt-2 text-[10px] text-fg/40">
-                            Text colors are auto-calculated based on gradient brightness
+                            {t("characters.edit.textColorsAutoHint")}
                           </p>
                         </div>
                       )}
@@ -643,6 +1015,78 @@ export function EditCharacterPage() {
                 </div>
               )}
             </>
+          )}
+
+          {activeTab === "soul" && mode === "companion" && (
+            <div className="mx-auto w-full max-w-5xl space-y-4">
+              <div className={spacing.tight}>
+                <div className="flex items-center gap-2">
+                  <div className={cn("border border-rose-400/30 bg-rose-500/10 p-1.5", radius.md)}>
+                    <Heart className="h-4 w-4 text-rose-300" />
+                  </div>
+                  <h2 className={cn(typography.h1.size, typography.h1.weight, "text-fg")}>
+                    {t("characters.edit.companionSoulTitle")}
+                  </h2>
+                </div>
+                <p className={cn(typography.body.size, "text-fg/50")}>
+                  {t("characters.edit.companionSoulSubtitle")}
+                </p>
+              </div>
+
+              {soulError && (
+                <div
+                  className={cn(
+                    "flex items-start gap-2 border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger",
+                    radius.lg,
+                  )}
+                >
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <span className="flex-1">{soulError}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSoulError(null);
+                      void handleGenerateSoul();
+                    }}
+                    className={cn(
+                      "border border-danger/30 bg-danger/15 px-2 py-1 text-xs font-medium text-danger hover:bg-danger/25",
+                      radius.md,
+                      interactive.transition.fast,
+                    )}
+                  >
+                    {t("characters.companionSoul.retry")}
+                  </button>
+                </div>
+              )}
+
+              <CompanionSoulEditor
+                companion={companion}
+                onChange={(next) => setFields({ companion: next })}
+                disabled={saving || generatingSoul}
+                onGenerate={handleGenerateSoul}
+                generating={generatingSoul}
+                generationDisabledReason={soulGenerationDisabledReason}
+                modelLabel={soulModelLabel}
+                direction={soulDirection}
+                onDirectionChange={setSoulDirection}
+              />
+
+              <SoulGenerationReviewOverlay
+                isOpen={soulDraft !== null}
+                baseline={normalizeCompanionConfig(companion)}
+                draft={soulDraft}
+                direction={soulDirection}
+                onDirectionChange={setSoulDirection}
+                onApply={handleApplySoulDraft}
+                onCancel={() => setSoulDraft(null)}
+                onRegenerate={handleGenerateSoul}
+                regenerating={generatingSoul}
+              />
+
+              {characterId ? (
+                <CompanionScheduledNotesEditor characterId={characterId} />
+              ) : null}
+            </div>
           )}
 
           {/* Character Tab: Personality & Scenes */}
@@ -654,15 +1098,24 @@ export function EditCharacterPage() {
                     <div className="relative">
                       <AvatarPicker
                         currentAvatarPath={avatarPath}
-                        onAvatarChange={(path) => setFields({ avatarPath: path })}
+                        onAvatarChange={(path) => {
+                          console.log("[EditCharacter] onAvatarChange", {
+                            path: summarizeAvatarValue(path),
+                          });
+                          setFields({ avatarPath: path });
+                        }}
                         promptSubjectName={name}
                         promptSubjectDescription={definition}
+                        loraTag={loraName ? `<lora:${loraName}:${loraStrength ?? 0.8}>` : null}
                         avatarCrop={avatarCrop}
                         onAvatarCropChange={(crop) => setFields({ avatarCrop: crop })}
                         avatarRoundPath={avatarRoundPath}
-                        onAvatarRoundChange={(roundPath) =>
-                          setFields({ avatarRoundPath: roundPath })
-                        }
+                        onAvatarRoundChange={(roundPath) => {
+                          console.log("[EditCharacter] onAvatarRoundChange", {
+                            roundPath: summarizeAvatarValue(roundPath),
+                          });
+                          setFields({ avatarRoundPath: roundPath });
+                        }}
                         placeholder={avatarInitial}
                       />
 
@@ -670,7 +1123,13 @@ export function EditCharacterPage() {
                         <button
                           type="button"
                           onClick={() =>
-                            setFields({ avatarPath: "", avatarCrop: null, avatarRoundPath: null })
+                            setFields({
+                              avatarPath: "",
+                              avatarCrop: null,
+                              avatarRoundPath: null,
+                              avatarBannerPath: null,
+                              bannerCrop: null,
+                            })
                           }
                           className="absolute -top-1 -left-1 z-30 flex h-10 w-10 items-center justify-center rounded-full border border-fg/10 bg-surface-el text-fg/60 transition hover:bg-danger/80 hover:border-danger/50 hover:text-fg active:scale-95"
                           aria-label={t("common.buttons.remove")}
@@ -680,8 +1139,81 @@ export function EditCharacterPage() {
                       )}
                     </div>
                     <p className="mt-3 text-center text-xs text-fg/40">
-                      Tap to add or generate avatar
+                      {t("characters.edit.tapToAddAvatar")}
                     </p>
+                  </div>
+
+                  <div className="space-y-4 rounded-2xl border border-fg/10 bg-surface-el/10 p-4">
+                    <div>
+                      <p className="text-sm font-medium text-fg">{t("characters.edit.cardTypeLabel")}</p>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        {(["circle", "banner"] as const).map((value) => (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => setFields({ cardType: value })}
+                            className={cn(
+                              "rounded-xl border px-3 py-2 text-sm font-medium transition",
+                              cardType === value
+                                ? "border-accent/50 bg-accent/10 text-fg"
+                                : "border-fg/10 bg-surface-el/20 text-fg/60 hover:border-fg/20 hover:text-fg",
+                            )}
+                          >
+                            {value === "circle"
+                              ? t("characters.edit.cardTypeCircle")
+                              : t("characters.edit.cardTypeBanner")}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-fg">{t("characters.edit.bannerImageLabel")}</p>
+                          <p className="mt-1 text-xs text-fg/45">
+                            {t("characters.edit.bannerImageHint")}
+                          </p>
+                        </div>
+                        {avatarBannerPath ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setFields({ avatarBannerPath: null, bannerCrop: null })
+                            }
+                            className={cn(
+                              "flex shrink-0 items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium",
+                              "border-danger/25 bg-danger/10 text-danger/90",
+                              "transition hover:border-danger/40 hover:bg-danger/15 active:scale-[0.98]",
+                            )}
+                            aria-label={t("characters.edit.removeBannerImage")}
+                          >
+                            <Trash2 size={12} strokeWidth={2.2} />
+                            <span>{t("common.buttons.remove")}</span>
+                          </button>
+                        ) : null}
+                      </div>
+
+                      <div className="mt-3 flex flex-col items-center gap-2">
+                        <AvatarPicker
+                          currentAvatarPath={avatarBannerPath || ""}
+                          onAvatarChange={(path) => setFields({ avatarBannerPath: path })}
+                          librarySelectionScope="character-banner"
+                          promptSubjectName={name}
+                          promptSubjectDescription={definition}
+                          loraTag={loraName ? `<lora:${loraName}:${loraStrength ?? 0.8}>` : null}
+                          avatarCrop={bannerCrop}
+                          onAvatarCropChange={(crop) => setFields({ bannerCrop: crop })}
+                          shape="banner"
+                          size="lg"
+                        />
+                        {!avatarBannerPath && (
+                          <p className="text-[11px] text-fg/35">
+                            {t("characters.edit.bannerImageTapHint")}
+                          </p>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   <div className={spacing.field}>
@@ -693,12 +1225,12 @@ export function EditCharacterPage() {
                         "uppercase text-fg/70",
                       )}
                     >
-                      Character Name
+                      {t("characters.edit.characterNameLabel")}
                     </label>
                     <input
                       value={name}
                       onChange={(e) => setFields({ name: e.target.value })}
-                      placeholder="Enter character name..."
+                      placeholder={t("characters.edit.characterNamePlaceholder")}
                       className={cn(
                         "w-full border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
                         radius.md,
@@ -719,12 +1251,12 @@ export function EditCharacterPage() {
                         "uppercase text-fg/70",
                       )}
                     >
-                      Nickname
+                      {t("characters.edit.nicknameLabel")}
                     </label>
                     <input
                       value={nickname}
                       onChange={(e) => setFields({ nickname: e.target.value })}
-                      placeholder="Optional nickname..."
+                      placeholder={t("characters.edit.nicknamePlaceholder")}
                       className={cn(
                         "w-full border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
                         radius.md,
@@ -745,12 +1277,12 @@ export function EditCharacterPage() {
                         "uppercase text-fg/70",
                       )}
                     >
-                      Creator
+                      {t("characters.edit.creatorLabel")}
                     </label>
                     <input
                       value={creator}
                       onChange={(e) => setFields({ creator: e.target.value })}
-                      placeholder="Optional creator name..."
+                      placeholder={t("characters.edit.creatorPlaceholder")}
                       className={cn(
                         "w-full border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
                         radius.md,
@@ -771,13 +1303,13 @@ export function EditCharacterPage() {
                         "uppercase text-fg/70",
                       )}
                     >
-                      Tags
+                      {t("characters.edit.tagsLabel")}
                     </label>
                     <textarea
                       value={tagsText}
                       onChange={(e) => setFields({ tagsText: e.target.value })}
                       rows={2}
-                      placeholder="tag1, tag2"
+                      placeholder={t("characters.edit.tagsPlaceholder")}
                       className={cn(
                         "w-full resize-none border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
                         radius.md,
@@ -798,13 +1330,13 @@ export function EditCharacterPage() {
                         "uppercase text-fg/70",
                       )}
                     >
-                      Creator Notes
+                      {t("characters.edit.creatorNotesLabel")}
                     </label>
                     <textarea
                       value={creatorNotes}
                       onChange={(e) => setFields({ creatorNotes: e.target.value })}
                       rows={4}
-                      placeholder="Optional creator notes..."
+                      placeholder={t("characters.edit.creatorNotesPlaceholder")}
                       className={cn(
                         "w-full resize-none border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
                         radius.md,
@@ -825,7 +1357,7 @@ export function EditCharacterPage() {
                         "uppercase text-fg/70",
                       )}
                     >
-                      Creator Notes Multilingual (JSON)
+                      {t("characters.edit.creatorNotesMultilingualLabel")}
                     </label>
                     <textarea
                       value={creatorNotesMultilingualText}
@@ -856,7 +1388,7 @@ export function EditCharacterPage() {
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <div className="text-sm font-medium text-fg">Chat Templates</div>
+                            <div className="text-sm font-medium text-fg">{t("characters.edit.chatTemplatesTitle")}</div>
                             {(chatTemplates?.length ?? 0) > 0 && (
                               <span className="rounded-full border border-fg/10 bg-fg/5 px-2 py-0.5 text-xs text-fg/70">
                                 {chatTemplates?.length ?? 0}
@@ -865,8 +1397,10 @@ export function EditCharacterPage() {
                           </div>
                           <p className="mt-0.5 text-xs text-fg/50">
                             {(chatTemplates?.length ?? 0) > 0
-                              ? `${chatTemplates?.length} template${(chatTemplates?.length ?? 0) !== 1 ? "s" : ""} — multi-message conversation starters`
-                              : "Create conversation starters with multiple messages"}
+                              ? t("characters.edit.chatTemplatesSummary", {
+                                  count: chatTemplates?.length ?? 0,
+                                })
+                              : t("characters.edit.chatTemplatesEmptyDesc")}
                           </p>
                         </div>
                         <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 group-hover:text-fg/50" />
@@ -875,7 +1409,7 @@ export function EditCharacterPage() {
                       <button
                         type="button"
                         onClick={() =>
-                          navigate(`/settings/accessibility/chat?characterId=${characterId}`)
+                          navigate(`/settings/customization/chat?characterId=${characterId}`)
                         }
                         className={cn(
                           "group flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left",
@@ -888,9 +1422,9 @@ export function EditCharacterPage() {
                           <MessageSquare className="h-4 w-4 text-info" />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-fg">Chat Appearance</div>
+                          <div className="text-sm font-medium text-fg">{t("characters.edit.chatAppearanceTitle")}</div>
                           <p className="mt-0.5 text-xs text-fg/50">
-                            Customize bubbles, fonts, and layout
+                            {t("characters.edit.chatAppearanceDesc")}
                           </p>
                         </div>
                         <ChevronRight className="h-4 w-4 shrink-0 text-fg/30 group-hover:text-fg/50" />
@@ -905,12 +1439,12 @@ export function EditCharacterPage() {
                         {exporting ? (
                           <>
                             <Loader2 className="h-4 w-4 animate-spin" />
-                            Exporting...
+                            {t("characters.edit.exporting")}
                           </>
                         ) : (
                           <>
                             <Download className="h-4 w-4" />
-                            Export Character
+                            {t("characters.edit.exportCharacter")}
                           </>
                         )}
                       </motion.button>
@@ -924,13 +1458,13 @@ export function EditCharacterPage() {
                       <div className="rounded-lg border border-fg/10 bg-fg/5 p-1.5">
                         <Info className="h-4 w-4 text-fg/60" />
                       </div>
-                      <h3 className="text-sm font-semibold text-fg">Description</h3>
+                      <h3 className="text-sm font-semibold text-fg">{t("characters.edit.descriptionTitle")}</h3>
                     </div>
                     <textarea
                       value={description}
                       onChange={(e) => setFields({ description: e.target.value })}
                       rows={5}
-                      placeholder="Short summary shown in lists and cards..."
+                      placeholder={t("characters.edit.descriptionPlaceholder")}
                       className={cn(
                         "w-full resize-none border bg-surface-el/20 px-4 py-3.5 text-sm leading-relaxed text-fg placeholder-fg/40 backdrop-blur-xl",
                         radius.md,
@@ -940,7 +1474,7 @@ export function EditCharacterPage() {
                       )}
                     />
                     <p className="text-xs text-fg/50">
-                      Optional short description for display purposes.
+                      {t("characters.edit.descriptionHint")}
                     </p>
                   </section>
 
@@ -950,34 +1484,32 @@ export function EditCharacterPage() {
                         <div className="rounded-lg border border-accent/30 bg-accent/10 p-1.5">
                           <Sparkles className="h-4 w-4 text-accent" />
                         </div>
-                        <h3 className="text-sm font-semibold text-fg">Definition</h3>
+                        <h3 className="text-sm font-semibold text-fg">{t("characters.edit.definitionTitle")}</h3>
                       </div>
                       <textarea
                         value={definition}
                         onChange={(e) => setFields({ definition: e.target.value })}
                         rows={18}
-                        placeholder="Describe who this character is, their personality, background, speaking style, and how they should interact..."
+                        placeholder={t("characters.edit.definitionPlaceholder")}
                         className="w-full resize-none rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-sm leading-relaxed text-fg placeholder-fg/40 transition focus:border-fg/25 focus:outline-none"
                       />
                       <div className="flex justify-between text-[11px] text-fg/50">
-                        <span>Be detailed to create a unique personality</span>
-                        <span>{wordCount(definition)} words</span>
+                        <span>{t("characters.edit.definitionDetailHint")}</span>
+                        <span>{t("characters.edit.wordsCount", { count: wordCount(definition) })}</span>
                       </div>
                       <div className="rounded-xl border border-warning/30 bg-warning/10 px-3.5 py-3">
                         <div className="text-[11px] font-medium text-warning">
-                          Available Placeholders
+                          {t("characters.edit.availablePlaceholders")}
                         </div>
                         <div className="mt-2 space-y-1 text-xs text-fg/60">
                           <div>
-                            <code className="text-accent">{"{{char}}"}</code> - Character name
+                            <code className="text-accent">{"{{char}}"}</code> {t("characters.edit.placeholderChar")}
                           </div>
                           <div>
-                            <code className="text-accent">{"{{user}}"}</code> - Persona name
-                            (preferred, empty if none)
+                            <code className="text-accent">{"{{user}}"}</code> {t("characters.edit.placeholderUser")}
                           </div>
                           <div>
-                            <code className="text-accent">{"{{persona}}"}</code> - Persona name
-                            (alias)
+                            <code className="text-accent">{"{{persona}}"}</code> {t("characters.edit.placeholderPersona")}
                           </div>
                         </div>
                       </div>
@@ -990,7 +1522,7 @@ export function EditCharacterPage() {
                         <div className="rounded-lg border border-fg/10 bg-fg/5 p-1.5">
                           <Image className="h-4 w-4 text-fg/60" />
                         </div>
-                        <h3 className="text-sm font-semibold text-fg">Design references</h3>
+                        <h3 className="text-sm font-semibold text-fg">{t("characters.edit.designReferencesTitle")}</h3>
                       </div>
                       <DesignReferenceEditor
                         designDescription={designDescription}
@@ -1005,7 +1537,14 @@ export function EditCharacterPage() {
                         subjectDescription={definition || description}
                         avatarImage={avatarPath}
                         showHeader={false}
-                        description="Attach a few stable image references and one concise visual note so scene generation keeps the same face, proportions, outfit cues, and style."
+                        description={t("characters.edit.designReferencesEditorHint")}
+                      />
+                      <LoraSelector
+                        loraName={loraName}
+                        loraStrength={loraStrength}
+                        onChange={(name, strength) =>
+                          setFields({ loraName: name, loraStrength: strength })
+                        }
                       />
                     </div>
                   </section>
@@ -1018,7 +1557,11 @@ export function EditCharacterPage() {
                   <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
                     <BookOpen className="h-4 w-4 text-info" />
                   </div>
-                  <h3 className="text-sm font-semibold text-fg">Starting Scenes</h3>
+                  <h3 className="text-sm font-semibold text-fg">
+                    {mode === "companion"
+                      ? t("characters.edit.openingContextTitle")
+                      : t("characters.edit.startingScenesTitle")}
+                  </h3>
                   {scenes.length > 0 && (
                     <span className="ml-auto rounded-full border border-fg/10 bg-fg/5 px-2 py-0.5 text-xs text-fg/70">
                       {scenes.length}
@@ -1069,7 +1612,7 @@ export function EditCharacterPage() {
                                 <div className="flex items-center gap-1 rounded-full border border-accent/40 bg-accent/20 px-2 py-0.5">
                                   <div className="h-1.5 w-1.5 rounded-full bg-accent" />
                                   <span className="text-[10px] font-medium text-accent/80">
-                                    Default
+                                    {t("characters.edit.sceneDefaultBadge")}
                                   </span>
                                 </div>
                               )}
@@ -1078,7 +1621,7 @@ export function EditCharacterPage() {
                               {scene.direction && (
                                 <div
                                   className="flex items-center gap-1 rounded-full border border-fg/10 bg-fg/5 px-1.5 py-0.5"
-                                  title="Has scene direction"
+                                  title={t("characters.edit.hasSceneDirection")}
                                 >
                                   <EyeOff className="h-3 w-3 text-fg/40" />
                                 </div>
@@ -1121,12 +1664,20 @@ export function EditCharacterPage() {
                                       {scene.direction && (
                                         <div className="pt-2 border-t border-fg/5">
                                           <p className="text-[10px] font-medium text-fg/40 mb-1">
-                                            Scene Direction
+                                            {t("characters.edit.sceneDirectionLabel")}
                                           </p>
                                           <p className="text-xs leading-relaxed text-fg/50 italic">
                                             {scene.direction}
                                           </p>
                                         </div>
+                                      )}
+
+                                      {scene.backgroundImagePath && (
+                                        <SceneBackgroundCard
+                                          path={scene.backgroundImagePath}
+                                          label={t("characters.edit.sceneBackgroundLabel")}
+                                          compact
+                                        />
                                       )}
 
                                       {/* Actions when expanded */}
@@ -1139,7 +1690,7 @@ export function EditCharacterPage() {
                                             }}
                                             className="rounded-lg border border-fg/10 bg-fg/5 px-2.5 py-1.5 text-xs font-medium text-fg/60 transition active:scale-95 active:bg-fg/10"
                                           >
-                                            Set as Default
+                                            {t("characters.edit.setAsDefault")}
                                           </button>
                                         )}
                                         <button
@@ -1149,7 +1700,7 @@ export function EditCharacterPage() {
                                             startEditingScene(scene);
                                           }}
                                           className="rounded-lg border border-fg/10 bg-fg/5 p-1.5 text-fg/60 transition active:scale-95 active:bg-fg/10"
-                                          aria-label={`Edit scene ${index + 1}`}
+                                          aria-label={t("characters.edit.editSceneAria", { number: index + 1 })}
                                         >
                                           <Edit2 className="h-3.5 w-3.5" />
                                         </button>
@@ -1159,7 +1710,7 @@ export function EditCharacterPage() {
                                             deleteScene(scene.id);
                                           }}
                                           className="rounded-lg border border-fg/10 bg-fg/5 p-1.5 text-fg/50 transition active:bg-danger/10 active:text-danger"
-                                          aria-label={`Delete scene ${index + 1}`}
+                                          aria-label={t("characters.edit.deleteSceneAria", { number: index + 1 })}
                                         >
                                           <X className="h-3.5 w-3.5" />
                                         </button>
@@ -1179,9 +1730,15 @@ export function EditCharacterPage() {
                 {/* Add New Scene */}
                 <motion.div layout className="space-y-2">
                   <div className="rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3">
-                    <div className="text-sm font-medium text-fg">New starting scene</div>
+                    <div className="text-sm font-medium text-fg">
+                      {mode === "companion"
+                        ? t("characters.edit.newOpeningContextTitle")
+                        : t("characters.edit.newStartingSceneTitle")}
+                    </div>
                     <p className="mt-1 text-xs text-fg/50">
-                      Create a scenario and optional direction for the opening moment.
+                      {mode === "companion"
+                        ? t("characters.edit.newOpeningContextDesc")
+                        : t("characters.edit.newStartingSceneDesc")}
                     </p>
                     <div className="mt-3 flex items-center gap-2">
                       <motion.button
@@ -1190,7 +1747,7 @@ export function EditCharacterPage() {
                         className="flex items-center gap-2 rounded-xl border border-accent/50 bg-accent/20 px-3.5 py-2 text-sm font-medium text-accent transition active:bg-accent/30"
                       >
                         <Plus className="h-4 w-4" />
-                        Create Scene
+                        {t("characters.edit.createScene")}
                       </motion.button>
                       {newSceneContent.trim() && (
                         <button
@@ -1198,7 +1755,7 @@ export function EditCharacterPage() {
                           onClick={() => setNewSceneEditorOpen(true)}
                           className="text-xs text-fg/50 transition hover:text-fg/70"
                         >
-                          Continue draft
+                          {t("characters.edit.continueDraft")}
                         </button>
                       )}
                     </div>
@@ -1206,7 +1763,9 @@ export function EditCharacterPage() {
                 </motion.div>
 
                 <p className="text-xs text-fg/50">
-                  Create multiple starting scenarios. One will be selected when starting a new chat.
+                  {mode === "companion"
+                    ? t("characters.edit.companionScenesOptionalHint")
+                    : t("characters.edit.multipleScenesHint")}
                 </p>
               </div>
             </>
@@ -1222,14 +1781,14 @@ export function EditCharacterPage() {
                     <div className="rounded-lg border border-secondary/30 bg-secondary/10 p-1.5">
                       <Cpu className="h-4 w-4 text-secondary" />
                     </div>
-                    <h3 className="text-sm font-semibold text-fg">Default Model</h3>
-                    <span className="ml-auto text-xs text-fg/40">(Optional)</span>
+                    <h3 className="text-sm font-semibold text-fg">{t("characters.edit.defaultModelTitle")}</h3>
+                    <span className="ml-auto text-xs text-fg/40">{t("characters.edit.optionalSuffix")}</span>
                   </div>
 
                   {loadingModels ? (
                     <div className="flex items-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
                       <Loader2 className="h-4 w-4 animate-spin text-fg/50" />
-                      <span className="text-sm text-fg/50">Loading models...</span>
+                      <span className="text-sm text-fg/50">{t("characters.edit.loadingModels")}</span>
                     </div>
                   ) : models.length > 0 ? (
                     <button
@@ -1248,19 +1807,19 @@ export function EditCharacterPage() {
                         <span className={`text-sm ${selectedModelId ? "text-fg" : "text-fg/50"}`}>
                           {selectedModelId
                             ? models.find((m) => m.id === selectedModelId)?.displayName ||
-                              "Selected Model"
-                            : "Use global default model"}
+                              t("characters.edit.selectedModelFallback")
+                            : t("characters.edit.useGlobalDefaultModel")}
                         </span>
                       </div>
                       <ChevronDown className="h-4 w-4 text-fg/40" />
                     </button>
                   ) : (
                     <div className="rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
-                      <p className="text-sm text-fg/50">No models available</p>
+                      <p className="text-sm text-fg/50">{t("characters.edit.noModelsAvailable")}</p>
                     </div>
                   )}
                   <p className="text-xs text-fg/50">
-                    Override the default AI model for this character
+                    {t("characters.edit.defaultModelHint")}
                   </p>
                 </div>
 
@@ -1270,14 +1829,14 @@ export function EditCharacterPage() {
                     <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
                       <Cpu className="h-4 w-4 text-info" />
                     </div>
-                    <h3 className="text-sm font-semibold text-fg">Fallback Model</h3>
-                    <span className="ml-auto text-xs text-fg/40">(Optional)</span>
+                    <h3 className="text-sm font-semibold text-fg">{t("characters.edit.fallbackModelTitle")}</h3>
+                    <span className="ml-auto text-xs text-fg/40">{t("characters.edit.optionalSuffix")}</span>
                   </div>
 
                   {loadingModels ? (
                     <div className="flex items-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
                       <Loader2 className="h-4 w-4 animate-spin text-fg/50" />
-                      <span className="text-sm text-fg/50">Loading models...</span>
+                      <span className="text-sm text-fg/50">{t("characters.edit.loadingModels")}</span>
                     </div>
                   ) : (
                     <button
@@ -1298,124 +1857,200 @@ export function EditCharacterPage() {
                         >
                           {selectedFallbackModelId
                             ? models.find((m) => m.id === selectedFallbackModelId)?.displayName ||
-                              "Selected Fallback Model"
-                            : "Off (no fallback)"}
+                              t("characters.edit.selectedFallbackFallback")
+                            : t("characters.edit.fallbackOff")}
                         </span>
                       </div>
                       <ChevronDown className="h-4 w-4 text-fg/40" />
                     </button>
                   )}
                   <p className="text-xs text-fg/50">
-                    Retry with this model only when the primary model fails
+                    {t("characters.edit.fallbackModelHint")}
                   </p>
                 </div>
               </div>
 
               <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-                {/* Voice Selection */}
-                <div className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <div className="rounded-lg border border-accent/30 bg-accent/10 p-1.5">
-                      <Volume2 className="h-4 w-4 text-accent/80" />
+                <div className="space-y-4">
+                  {/* Voice Selection */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-lg border border-accent/30 bg-accent/10 p-1.5">
+                        <Volume2 className="h-4 w-4 text-accent/80" />
+                      </div>
+                      <h3 className="text-sm font-semibold text-fg">{t("characters.edit.voiceTitle")}</h3>
+                      <span className="ml-auto text-xs text-fg/40">{t("characters.edit.optionalSuffix")}</span>
                     </div>
-                    <h3 className="text-sm font-semibold text-fg">Voice</h3>
-                    <span className="ml-auto text-xs text-fg/40">(Optional)</span>
+
+                    {loadingVoices ? (
+                      <div className="flex items-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
+                        <Loader2 className="h-4 w-4 animate-spin text-fg/50" />
+                        <span className="text-sm text-fg/50">{t("characters.edit.loadingVoices")}</span>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setShowVoiceMenu(true)}
+                        className="flex w-full items-center justify-between rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-left transition hover:bg-surface-el/30 focus:border-fg/25 focus:outline-none"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Volume2 className="h-5 w-5 text-fg/40" />
+                          <span
+                            className={`text-sm ${voiceSelectionValue ? "text-fg" : "text-fg/50"}`}
+                          >
+                            {voiceSelectionValue
+                              ? (() => {
+                                  if (voiceConfig?.source === "user") {
+                                    const v = userVoices.find(
+                                      (uv) => uv.id === voiceConfig.userVoiceId,
+                                    );
+                                    return v?.name || t("characters.edit.customVoiceFallback");
+                                  }
+                                  if (voiceConfig?.source === "provider") {
+                                    const pv = providerVoices[voiceConfig.providerId || ""]?.find(
+                                      (pv) => pv.voiceId === voiceConfig.voiceId,
+                                    );
+                                    return pv?.name || t("characters.edit.providerVoiceFallback");
+                                  }
+                                  return t("characters.edit.selectedVoiceFallback");
+                                })()
+                              : t("characters.edit.noVoiceAssigned")}
+                          </span>
+                        </div>
+                        <ChevronDown className="h-4 w-4 text-fg/40" />
+                      </button>
+                    )}
+
+                    {voiceError && <p className="text-xs font-medium text-danger">{voiceError}</p>}
+                    {!loadingVoices && audioProviders.length === 0 && userVoices.length === 0 && (
+                      <p className="text-xs text-fg/40">{t("characters.edit.addVoicesHint")}</p>
+                    )}
+                    <p className="text-xs text-fg/50">
+                      {t("characters.edit.voiceAssignHint")}
+                    </p>
+                    <div
+                      className={cn(
+                        "flex items-center justify-between rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3",
+                        !voiceConfig && "opacity-50",
+                      )}
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-fg">{t("characters.edit.autoplayLabel")}</p>
+                        <p className="mt-1 text-xs text-fg/50">
+                          {voiceConfig
+                            ? t("characters.edit.autoplayOn")
+                            : t("characters.edit.autoplayOff")}
+                        </p>
+                      </div>
+                      <Switch
+                        id="character-voice-autoplay"
+                        checked={voiceAutoplay}
+                        onChange={(next) => setFields({ voiceAutoplay: next })}
+                        disabled={!voiceConfig}
+                      />
+                    </div>
                   </div>
 
-                  {loadingVoices ? (
-                    <div className="flex items-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
-                      <Loader2 className="h-4 w-4 animate-spin text-fg/50" />
-                      <span className="text-sm text-fg/50">Loading voices...</span>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      onClick={() => setShowVoiceMenu(true)}
-                      className="flex w-full items-center justify-between rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-left transition hover:bg-surface-el/30 focus:border-fg/25 focus:outline-none"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Volume2 className="h-5 w-5 text-fg/40" />
-                        <span
-                          className={`text-sm ${voiceSelectionValue ? "text-fg" : "text-fg/50"}`}
-                        >
-                          {voiceSelectionValue
-                            ? (() => {
-                                if (voiceConfig?.source === "user") {
-                                  const v = userVoices.find(
-                                    (uv) => uv.id === voiceConfig.userVoiceId,
-                                  );
-                                  return v?.name || "Custom Voice";
-                                }
-                                if (voiceConfig?.source === "provider") {
-                                  const pv = providerVoices[voiceConfig.providerId || ""]?.find(
-                                    (pv) => pv.voiceId === voiceConfig.voiceId,
-                                  );
-                                  return pv?.name || "Provider Voice";
-                                }
-                                return "Selected Voice";
-                              })()
-                            : "No voice assigned"}
-                        </span>
+                  {/* Memory Mode */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-lg border border-warning/30 bg-warning/10 p-1.5">
+                        <Layers className="h-4 w-4 text-warning" />
                       </div>
-                      <ChevronDown className="h-4 w-4 text-fg/40" />
-                    </button>
-                  )}
-
-                  {voiceError && <p className="text-xs font-medium text-danger">{voiceError}</p>}
-                  {!loadingVoices && audioProviders.length === 0 && userVoices.length === 0 && (
-                    <p className="text-xs text-fg/40">Add voices in Settings → Voices</p>
-                  )}
-                  <p className="text-xs text-fg/50">
-                    Assign a voice for future text-to-speech playback
-                  </p>
-                  <div
-                    className={cn(
-                      "flex items-center justify-between rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3",
-                      !voiceConfig && "opacity-50",
-                    )}
-                  >
-                    <div>
-                      <p className="text-sm font-medium text-fg">Autoplay voice</p>
-                      <p className="mt-1 text-xs text-fg/50">
-                        {voiceConfig
-                          ? "Play this character's replies automatically"
-                          : "Select a voice first"}
-                      </p>
+                      <h3 className="text-sm font-semibold text-fg">{t("characters.edit.memoryModeTitle")}</h3>
+                      {!dynamicMemoryEnabled && (
+                        <span className="ml-auto text-xs text-fg/40">
+                          {t("characters.edit.enableDynamicMemoryHint")}
+                        </span>
+                      )}
                     </div>
-                    <Switch
-                      id="character-voice-autoplay"
-                      checked={voiceAutoplay}
-                      onChange={(next) => setFields({ voiceAutoplay: next })}
-                      disabled={!voiceConfig}
-                    />
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setFields({ memoryType: "manual" })}
+                        className={`rounded-xl border px-3.5 py-3 text-left transition ${
+                          memoryType === "manual"
+                            ? "border-accent/40 bg-accent/15 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
+                            : "border-fg/15 bg-surface-el/20 hover:border-fg/20 hover:bg-surface-el/30"
+                        }`}
+                      >
+                        <p
+                          className={`text-sm font-semibold ${memoryType === "manual" ? "text-fg" : "text-fg/70"}`}
+                        >
+                          {t("characters.edit.memoryManualTitle")}
+                        </p>
+                        <p className="mt-1 text-xs text-fg/50">
+                          {t("characters.edit.memoryManualDesc")}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!dynamicMemoryEnabled}
+                        onClick={() => dynamicMemoryEnabled && setFields({ memoryType: "dynamic" })}
+                        className={`rounded-xl border px-3.5 py-3 text-left transition ${
+                          memoryType === "dynamic" && dynamicMemoryEnabled
+                            ? "border-info/50 bg-info/20 shadow-[0_0_0_1px_rgba(96,165,250,0.3)]"
+                            : "border-fg/15 bg-surface-el/15"
+                        } ${!dynamicMemoryEnabled ? "cursor-not-allowed opacity-50" : "hover:border-fg/20 hover:bg-surface-el/25"}`}
+                      >
+                        <p
+                          className={`text-sm font-semibold ${memoryType === "dynamic" && dynamicMemoryEnabled ? "text-fg" : "text-fg/70"}`}
+                        >
+                          {t("characters.edit.memoryDynamicTitle")}
+                        </p>
+                        <p className="mt-1 text-xs text-fg/50">
+                          {t("characters.edit.memoryDynamicDesc")}
+                        </p>
+                      </button>
+                    </div>
+                    <p className="text-xs text-fg/50">
+                      {t("characters.edit.memoryModeHint")}
+                    </p>
                   </div>
                 </div>
 
-                {/* System Prompt Template Section */}
-                <div className="space-y-3">
+                <div className="space-y-4">
+                  {/* Prompt Template Section */}
+                  <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
                       <BookOpen className="h-4 w-4 text-info" />
                     </div>
-                    <h3 className="text-sm font-semibold text-fg">System Prompt</h3>
-                    <span className="ml-auto text-xs text-fg/40">(Optional)</span>
+                    <h3 className="text-sm font-semibold text-fg">
+                      {mode === "companion"
+                        ? t("characters.edit.companionPromptTitle")
+                        : t("characters.edit.systemPromptTitle")}
+                    </h3>
+                    <span className="ml-auto text-xs text-fg/40">{t("characters.edit.optionalSuffix")}</span>
                   </div>
 
                   {loadingTemplates ? (
                     <div className="flex items-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
                       <Loader2 className="h-4 w-4 animate-spin text-fg/50" />
-                      <span className="text-sm text-fg/50">Loading templates...</span>
+                      <span className="text-sm text-fg/50">{t("characters.edit.loadingTemplates")}</span>
                     </div>
                   ) : promptTemplates.length > 0 ? (
                     <select
-                      value={systemPromptTemplateId || ""}
+                      value={
+                        mode === "companion"
+                          ? companionPromptTemplateId || ""
+                          : systemPromptTemplateId || ""
+                      }
                       onChange={(e) =>
-                        setFields({ systemPromptTemplateId: e.target.value || null })
+                        setFields(
+                          mode === "companion"
+                            ? { companionPromptTemplateId: e.target.value || null }
+                            : { systemPromptTemplateId: e.target.value || null },
+                        )
                       }
                       className="w-full appearance-none rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-sm text-fg transition focus:border-fg/25 focus:outline-none"
                     >
-                      <option value="">Use default system prompt</option>
-                      {directPromptTemplates.map((template) => (
+                      <option value="">
+                        {mode === "companion"
+                          ? t("characters.edit.useDefaultCompanionPrompt")
+                          : t("characters.edit.useDefaultSystemPrompt")}
+                      </option>
+                      {(mode === "companion" ? companionPromptTemplates : directPromptTemplates).map((template) => (
                         <option key={template.id} value={template.id}>
                           {template.name}
                         </option>
@@ -1423,30 +2058,40 @@ export function EditCharacterPage() {
                     </select>
                   ) : (
                     <div className="rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
-                      <p className="text-sm text-fg/50">Using app default</p>
+                      <p className="text-sm text-fg/50">{t("characters.edit.usingAppDefault")}</p>
                       <p className="mt-1 text-xs text-fg/40">
-                        No custom direct-chat templates yet. Create one in Settings → Prompts.
+                        {mode === "companion"
+                          ? t("characters.edit.noCompanionTemplatesHint")
+                          : t("characters.edit.noDirectTemplatesHint")}
                       </p>
                     </div>
                   )}
                   <p className="text-xs text-fg/50">
-                    Override the default system prompt for this character
+                    {mode === "companion"
+                      ? t("characters.edit.companionPromptStoredHint")
+                      : t("characters.edit.systemPromptOverrideHint")}
                   </p>
                 </div>
+
+                <ActiveLorebooksSelector
+                  selectedIds={activeLorebookIds}
+                  onChange={(ids) => setFields({ activeLorebookIds: ids })}
+                  disabled={saving}
+                />
 
                 <div className="space-y-3">
                   <div className="flex items-center gap-2">
                     <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
                       <BookOpen className="h-4 w-4 text-info" />
                     </div>
-                    <h3 className="text-sm font-semibold text-fg">Group Chat Prompt</h3>
-                    <span className="ml-auto text-xs text-fg/40">(Conversation)</span>
+                    <h3 className="text-sm font-semibold text-fg">{t("characters.edit.groupChatPromptTitle")}</h3>
+                    <span className="ml-auto text-xs text-fg/40">{t("characters.edit.conversationSuffix")}</span>
                   </div>
 
                   {loadingTemplates ? (
                     <div className="flex items-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
                       <Loader2 className="h-4 w-4 animate-spin text-fg/50" />
-                      <span className="text-sm text-fg/50">Loading templates...</span>
+                      <span className="text-sm text-fg/50">{t("characters.edit.loadingTemplates")}</span>
                     </div>
                   ) : groupChatTemplates.length > 0 ? (
                     <select
@@ -1456,7 +2101,7 @@ export function EditCharacterPage() {
                       }
                       className="w-full appearance-none rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-sm text-fg transition focus:border-fg/25 focus:outline-none"
                     >
-                      <option value="">Use default group conversation prompt</option>
+                      <option value="">{t("characters.edit.useDefaultGroupConversationPrompt")}</option>
                       {groupChatTemplates.map((template) => (
                         <option key={template.id} value={template.id}>
                           {template.name}
@@ -1465,15 +2110,14 @@ export function EditCharacterPage() {
                     </select>
                   ) : (
                     <div className="rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
-                      <p className="text-sm text-fg/50">Using app default</p>
+                      <p className="text-sm text-fg/50">{t("characters.edit.usingAppDefault")}</p>
                       <p className="mt-1 text-xs text-fg/40">
-                        No custom conversation group chat templates yet. Create one in Settings →
-                        Prompts.
+                        {t("characters.edit.noGroupConversationTemplatesHint")}
                       </p>
                     </div>
                   )}
                   <p className="text-xs text-fg/50">
-                    Override this character&apos;s conversation prompt in group chats
+                    {t("characters.edit.groupConversationOverrideHint")}
                   </p>
                 </div>
 
@@ -1482,14 +2126,14 @@ export function EditCharacterPage() {
                     <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
                       <BookOpen className="h-4 w-4 text-info" />
                     </div>
-                    <h3 className="text-sm font-semibold text-fg">Group Chat Prompt</h3>
-                    <span className="ml-auto text-xs text-fg/40">(Roleplay)</span>
+                    <h3 className="text-sm font-semibold text-fg">{t("characters.edit.groupChatPromptTitle")}</h3>
+                    <span className="ml-auto text-xs text-fg/40">{t("characters.edit.roleplaySuffix")}</span>
                   </div>
 
                   {loadingTemplates ? (
                     <div className="flex items-center gap-2 rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
                       <Loader2 className="h-4 w-4 animate-spin text-fg/50" />
-                      <span className="text-sm text-fg/50">Loading templates...</span>
+                      <span className="text-sm text-fg/50">{t("characters.edit.loadingTemplates")}</span>
                     </div>
                   ) : groupChatRoleplayTemplates.length > 0 ? (
                     <select
@@ -1501,7 +2145,7 @@ export function EditCharacterPage() {
                       }
                       className="w-full appearance-none rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-sm text-fg transition focus:border-fg/25 focus:outline-none"
                     >
-                      <option value="">Use default group roleplay prompt</option>
+                      <option value="">{t("characters.edit.useDefaultGroupRoleplayPrompt")}</option>
                       {groupChatRoleplayTemplates.map((template) => (
                         <option key={template.id} value={template.id}>
                           {template.name}
@@ -1510,75 +2154,17 @@ export function EditCharacterPage() {
                     </select>
                   ) : (
                     <div className="rounded-xl border border-fg/10 bg-surface-el/20 px-4 py-3">
-                      <p className="text-sm text-fg/50">Using app default</p>
+                      <p className="text-sm text-fg/50">{t("characters.edit.usingAppDefault")}</p>
                       <p className="mt-1 text-xs text-fg/40">
-                        No custom roleplay group chat templates yet. Create one in Settings →
-                        Prompts.
+                        {t("characters.edit.noGroupRoleplayTemplatesHint")}
                       </p>
                     </div>
                   )}
                   <p className="text-xs text-fg/50">
-                    Override this character&apos;s roleplay prompt in group chats
+                    {t("characters.edit.groupRoleplayOverrideHint")}
                   </p>
                 </div>
               </div>
-
-              {/* Memory Mode */}
-              <div className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <div className="rounded-lg border border-warning/30 bg-warning/10 p-1.5">
-                    <Layers className="h-4 w-4 text-warning" />
-                  </div>
-                  <h3 className="text-sm font-semibold text-fg">Memory Mode</h3>
-                  {!dynamicMemoryEnabled && (
-                    <span className="ml-auto text-xs text-fg/40">
-                      Enable Dynamic Memory to switch
-                    </span>
-                  )}
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setFields({ memoryType: "manual" })}
-                    className={`rounded-xl border px-3.5 py-3 text-left transition ${
-                      memoryType === "manual"
-                        ? "border-accent/40 bg-accent/15 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
-                        : "border-fg/15 bg-surface-el/20 hover:border-fg/20 hover:bg-surface-el/30"
-                    }`}
-                  >
-                    <p
-                      className={`text-sm font-semibold ${memoryType === "manual" ? "text-fg" : "text-fg/70"}`}
-                    >
-                      Manual Memory
-                    </p>
-                    <p className="mt-1 text-xs text-fg/50">
-                      Manage notes yourself (current system).
-                    </p>
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!dynamicMemoryEnabled}
-                    onClick={() => dynamicMemoryEnabled && setFields({ memoryType: "dynamic" })}
-                    className={`rounded-xl border px-3.5 py-3 text-left transition ${
-                      memoryType === "dynamic" && dynamicMemoryEnabled
-                        ? "border-info/50 bg-info/20 shadow-[0_0_0_1px_rgba(96,165,250,0.3)]"
-                        : "border-fg/15 bg-surface-el/15"
-                    } ${!dynamicMemoryEnabled ? "cursor-not-allowed opacity-50" : "hover:border-fg/20 hover:bg-surface-el/25"}`}
-                  >
-                    <p
-                      className={`text-sm font-semibold ${memoryType === "dynamic" && dynamicMemoryEnabled ? "text-fg" : "text-fg/70"}`}
-                    >
-                      Dynamic Memory
-                    </p>
-                    <p className="mt-1 text-xs text-fg/50">
-                      Automatic summaries when enabled globally.
-                    </p>
-                  </button>
-                </div>
-                <p className="text-xs text-fg/50">
-                  Dynamic Memory must be turned on in Advanced settings; otherwise manual memory is
-                  used.
-                </p>
               </div>
             </>
           )}
@@ -1601,26 +2187,35 @@ export function EditCharacterPage() {
       >
         <div
           role="tablist"
-          aria-label="Character editor tabs"
-          className={cn(radius.lg, "grid grid-cols-2 gap-2 p-1", colors.surface.elevated)}
+          aria-label={t("characters.edit.tabsAria")}
+          className={cn(
+            radius.lg,
+            "grid gap-2 p-1",
+            tabItems.length === 3 ? "grid-cols-3" : "grid-cols-2",
+            colors.surface.elevated,
+          )}
         >
-          {[
-            { id: "character" as const, icon: User, label: "Character" },
-            { id: "settings" as const, icon: Settings, label: "Settings" },
-          ].map(({ id, icon: Icon, label }) => (
+          {tabItems.map(({ id, icon: Icon, label, disabled: tabDisabled, hint }) => (
             <button
               key={id}
               type="button"
-              onClick={() => setActiveTab(id)}
+              onClick={() => !tabDisabled && setActiveTab(id)}
+              disabled={tabDisabled}
+              title={hint}
               role="tab"
-              id={id === "character" ? characterTabId : settingsTabId}
+              id={id === "character" ? characterTabId : id === "soul" ? soulTabId : settingsTabId}
               aria-selected={activeTab === id}
               aria-controls={tabPanelId}
+              aria-disabled={tabDisabled}
               className={cn(
                 radius.md,
                 "px-3 py-2.5 text-sm font-semibold transition flex items-center justify-center gap-2",
                 interactive.active.scale,
-                activeTab === id ? "bg-fg/10 text-fg" : cn(colors.text.tertiary, "hover:text-fg"),
+                tabDisabled
+                  ? "cursor-not-allowed text-fg/30"
+                  : activeTab === id
+                    ? "bg-fg/10 text-fg"
+                    : cn(colors.text.tertiary, "hover:text-fg"),
               )}
             >
               <Icon size={16} className="block" />
@@ -1634,7 +2229,7 @@ export function EditCharacterPage() {
       <AnimatePresence>
         {(editingSceneId !== null || newSceneEditorOpen) && (
           <motion.div
-            className="fixed inset-0 z-50 flex h-full flex-col bg-surface"
+            className="fixed inset-x-0 bottom-0 top-[var(--titlebar-h,0px)] z-50 flex flex-col bg-surface"
             style={{ paddingTop: "env(safe-area-inset-top)" }}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1643,7 +2238,9 @@ export function EditCharacterPage() {
           >
             <div className="flex items-center justify-between border-b border-fg/10 px-4 py-3">
               <div className="text-base font-semibold text-fg">
-                {editingSceneId !== null ? "Edit Scene" : "New Scene"}
+                {editingSceneId !== null
+                  ? t("characters.edit.editSceneTitle")
+                  : t("characters.edit.newSceneTitle")}
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -1651,7 +2248,7 @@ export function EditCharacterPage() {
                   onClick={editingSceneId !== null ? cancelEditingScene : closeNewSceneEditor}
                   className="rounded-full border border-fg/10 px-3 py-1.5 text-xs font-medium text-fg/70 transition hover:bg-fg/10 hover:text-fg"
                 >
-                  Close
+                  {t("characters.edit.close")}
                 </button>
                 <button
                   type="button"
@@ -1666,15 +2263,26 @@ export function EditCharacterPage() {
                     "disabled:cursor-not-allowed disabled:opacity-50",
                   )}
                 >
-                  {editingSceneId !== null ? "Save" : "Add"}
+                  {editingSceneId !== null
+                    ? t("common.buttons.save")
+                    : t("common.buttons.add")}
                 </button>
               </div>
             </div>
 
             <div className="flex-1 overflow-y-auto px-4 pb-6 pt-4">
+              <input
+                ref={sceneBackgroundInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  void handleSceneBackgroundUpload(event);
+                }}
+              />
               <div className="space-y-6">
                 <div className="space-y-2">
-                  <div className="text-sm font-medium text-fg/80">Scene</div>
+                  <div className="text-sm font-medium text-fg/80">{t("characters.edit.sceneLabel")}</div>
                   <textarea
                     value={editingSceneId !== null ? editingSceneContent : newSceneContent}
                     onChange={(e) =>
@@ -1686,15 +2294,19 @@ export function EditCharacterPage() {
                     }
                     rows={14}
                     className="min-h-[40vh] w-full resize-none rounded-2xl border border-fg/10 bg-surface-el/40 px-4 py-4 text-sm leading-relaxed text-fg placeholder-fg/40 transition focus:border-fg/20 focus:outline-none"
-                    placeholder="Enter scene content..."
+                    placeholder={t("characters.edit.sceneContentPlaceholder")}
                   />
                   <div className="flex items-center justify-between text-[11px] text-fg/40">
                     <span>
-                      {wordCount(editingSceneId !== null ? editingSceneContent : newSceneContent)}{" "}
-                      words
+                      {t("characters.edit.wordsCount", {
+                        count: wordCount(
+                          editingSceneId !== null ? editingSceneContent : newSceneContent,
+                        ),
+                      })}
                     </span>
                     <span>
-                      Use <code className="text-accent/80">{"{{char}}"}</code>,{" "}
+                      {t("characters.edit.usePrefix")}{" "}
+                      <code className="text-accent/80">{"{{char}}"}</code>,{" "}
                       <code className="text-accent/80">{"{{user}}"}</code>
                     </span>
                   </div>
@@ -1703,7 +2315,7 @@ export function EditCharacterPage() {
                 <div className="space-y-2">
                   <div className="flex items-center gap-1.5 text-sm font-medium text-fg/80">
                     <EyeOff className="h-4 w-4 text-fg/50" />
-                    Scene Direction
+                    {t("characters.edit.sceneDirectionLabel")}
                   </div>
                   <textarea
                     value={editingSceneId !== null ? editingSceneDirection : newSceneDirection}
@@ -1716,11 +2328,75 @@ export function EditCharacterPage() {
                     }
                     rows={6}
                     className="min-h-[18vh] w-full resize-none rounded-2xl border border-fg/10 bg-surface-el/35 px-4 py-3 text-sm leading-relaxed text-fg placeholder-fg/30 transition focus:border-fg/20 focus:outline-none"
-                    placeholder="e.g., 'The hostage will be rescued' or 'Build tension gradually'"
+                    placeholder={t("characters.edit.sceneDirectionPlaceholder")}
                   />
                   <p className="text-[11px] text-fg/40">
-                    Hidden guidance for the AI on how this scene should unfold.
+                    {t("characters.edit.sceneDirectionHint")}
                   </p>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-1.5 text-sm font-medium text-fg/80">
+                        <Image className="h-4 w-4 text-fg/50" />
+                        {t("characters.edit.sceneBackgroundTitle")}
+                      </div>
+                      <p className="mt-1 text-[11px] text-fg/40">
+                        {t("characters.edit.sceneBackgroundHint")}
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleChooseSceneBackgroundFromLibrary(
+                            editingSceneId !== null ? "edit" : "new",
+                          )
+                        }
+                        className="flex items-center gap-2 rounded-full border border-fg/10 px-3 py-1.5 text-xs font-medium text-fg/60 transition hover:bg-fg/10 hover:text-fg"
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                        {t("characters.edit.library")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          (editingSceneId !== null
+                            ? editingSceneBackgroundImagePath
+                            : newSceneBackgroundImagePath)
+                            ? setFields(
+                                editingSceneId !== null
+                                  ? { editingSceneBackgroundImagePath: "" }
+                                  : { newSceneBackgroundImagePath: "" },
+                              )
+                            : sceneBackgroundInputRef.current?.click()
+                        }
+                        className="rounded-full border border-fg/10 px-3 py-1.5 text-xs font-medium text-fg/70 transition hover:bg-fg/10 hover:text-fg"
+                      >
+                        {(editingSceneId !== null
+                          ? editingSceneBackgroundImagePath
+                          : newSceneBackgroundImagePath)
+                          ? t("common.buttons.remove")
+                          : t("characters.edit.upload")}
+                      </button>
+                    </div>
+                  </div>
+
+                  {(editingSceneId !== null
+                    ? editingSceneBackgroundImagePath
+                    : newSceneBackgroundImagePath) ? (
+                    <div>
+                      <SceneBackgroundCard
+                        path={
+                          editingSceneId !== null
+                            ? editingSceneBackgroundImagePath
+                            : newSceneBackgroundImagePath
+                        }
+                        label={t("characters.edit.sceneBackgroundPreviewLabel")}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
@@ -1739,16 +2415,16 @@ export function EditCharacterPage() {
       >
         <div className="space-y-4 px-1 pb-2">
           <div className="text-center">
-            <h3 className="text-lg font-semibold text-fg">Background Image</h3>
-            <p className="text-sm text-fg/50">Choose how to add your image</p>
+            <h3 className="text-lg font-semibold text-fg">{t("characters.edit.backgroundImageMenuTitle")}</h3>
+            <p className="text-sm text-fg/50">{t("characters.edit.backgroundImageMenuDesc")}</p>
           </div>
 
           <MenuSection>
             <MenuButtonGroup className="space-y-2">
               <MenuButton
                 icon={Upload}
-                title="Quick Upload"
-                description="Use full image without cropping"
+                title={t("characters.edit.quickUploadTitle")}
+                description={t("characters.edit.quickUploadDesc")}
                 color="from-emerald-500 to-emerald-600"
                 onClick={() => {
                   if (pendingBackgroundSrc) {
@@ -1760,8 +2436,8 @@ export function EditCharacterPage() {
               />
               <MenuButton
                 icon={Crop}
-                title="Position & Crop"
-                description="Adjust to fit portrait view"
+                title={t("characters.edit.positionCropTitle")}
+                description={t("characters.edit.positionCropDesc")}
                 color="from-blue-500 to-blue-600"
                 onClick={() => {
                   setShowBackgroundChoiceMenu(false);
@@ -1792,10 +2468,10 @@ export function EditCharacterPage() {
       <ModelSelectionBottomMenu
         isOpen={showModelMenu}
         onClose={() => setShowModelMenu(false)}
-        title="Select Model"
+        title={t("characters.edit.selectModelTitle")}
         models={models}
         selectedModelIds={selectedModelId ? [selectedModelId] : []}
-        searchPlaceholder="Search models..."
+        searchPlaceholder={t("characters.edit.searchModelsPlaceholder")}
         onSelectModel={(modelId) => {
           setFields({
             selectedModelId: modelId,
@@ -1805,7 +2481,7 @@ export function EditCharacterPage() {
           setShowModelMenu(false);
         }}
         clearOption={{
-          label: "Use global default model",
+          label: t("characters.edit.useGlobalDefaultModel"),
           icon: Cpu,
           selected: !selectedModelId,
           onClick: () => {
@@ -1818,16 +2494,16 @@ export function EditCharacterPage() {
       <ModelSelectionBottomMenu
         isOpen={showFallbackModelMenu}
         onClose={() => setShowFallbackModelMenu(false)}
-        title="Select Fallback Model"
+        title={t("characters.edit.selectFallbackModelTitle")}
         models={models.filter((m) => m.id !== selectedModelId)}
         selectedModelIds={selectedFallbackModelId ? [selectedFallbackModelId] : []}
-        searchPlaceholder="Search models..."
+        searchPlaceholder={t("characters.edit.searchModelsPlaceholder")}
         onSelectModel={(modelId) => {
           setFields({ selectedFallbackModelId: modelId });
           setShowFallbackModelMenu(false);
         }}
         clearOption={{
-          label: "Off (no fallback)",
+          label: t("characters.edit.fallbackOff"),
           icon: Cpu,
           selected: !selectedFallbackModelId,
           onClick: () => {
@@ -1844,7 +2520,7 @@ export function EditCharacterPage() {
           setShowVoiceMenu(false);
           setVoiceSearchQuery("");
         }}
-        title="Select Voice"
+        title={t("characters.edit.selectVoiceTitle")}
       >
         <div className="space-y-4">
           <div className="relative">
@@ -1852,7 +2528,7 @@ export function EditCharacterPage() {
               type="text"
               value={voiceSearchQuery}
               onChange={(e) => setVoiceSearchQuery(e.target.value)}
-              placeholder="Search voices..."
+              placeholder={t("characters.edit.searchVoicesPlaceholder")}
               className="w-full rounded-xl border border-fg/10 bg-surface-el/30 px-4 py-2.5 pl-10 text-sm text-fg placeholder-fg/40 focus:border-fg/20 focus:outline-none"
             />
             <svg
@@ -1884,13 +2560,13 @@ export function EditCharacterPage() {
               )}
             >
               <Volume2 className="h-5 w-5 text-fg/40" />
-              <span className="text-sm text-fg">No voice assigned</span>
+              <span className="text-sm text-fg">{t("characters.edit.noVoiceAssigned")}</span>
               {!voiceSelectionValue && <Check className="h-4 w-4 ml-auto text-accent" />}
             </button>
 
             {/* User Voices */}
             {userVoices.length > 0 && (
-              <MenuSection label="My Voices">
+              <MenuSection label={t("characters.edit.myVoices")}>
                 {userVoices
                   .filter((v) => {
                     if (!voiceSearchQuery) return true;
@@ -1900,7 +2576,8 @@ export function EditCharacterPage() {
                     const value = buildUserVoiceValue(voice.id);
                     const isSelected = voiceSelectionValue === value;
                     const providerLabel =
-                      audioProviders.find((p) => p.id === voice.providerId)?.label ?? "Provider";
+                      audioProviders.find((p) => p.id === voice.providerId)?.label ??
+                      t("characters.edit.providerFallback");
                     return (
                       <button
                         key={voice.id}
@@ -1944,7 +2621,10 @@ export function EditCharacterPage() {
               });
               if (voices.length === 0) return null;
               return (
-                <MenuSection key={provider.id} label={`${provider.label} Voices`}>
+                <MenuSection
+                  key={provider.id}
+                  label={t("characters.edit.providerVoicesLabel", { provider: provider.label })}
+                >
                   {voices.map((voice) => {
                     const value = buildProviderVoiceValue(provider.id, voice.voiceId);
                     const isSelected = voiceSelectionValue === value;
@@ -1957,6 +2637,10 @@ export function EditCharacterPage() {
                               source: "provider",
                               providerId: provider.id,
                               voiceId: voice.voiceId,
+                              modelId:
+                                provider.providerType === "kokoro"
+                                  ? provider.kokoroVariant
+                                  : undefined,
                               voiceName: voice.name,
                             },
                           });
@@ -1982,6 +2666,29 @@ export function EditCharacterPage() {
           </div>
         </div>
       </BottomMenu>
+    </div>
+  );
+}
+
+function SceneBackgroundCard({
+  path,
+  label,
+  compact = false,
+}: {
+  path: string;
+  label: string;
+  compact?: boolean;
+}) {
+  const imageData = useImageData(path) ?? path;
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-fg/10 bg-fg/4">
+      <img
+        src={imageData}
+        alt={label}
+        className={cn("w-full object-cover", compact ? "h-24" : "h-32")}
+      />
+      <div className="border-t border-fg/10 px-4 py-3 text-sm text-fg/60">{label}</div>
     </div>
   );
 }

@@ -4,6 +4,7 @@ import {
   Cpu,
   Zap,
   Hash,
+  History,
   Info,
   Check,
   ChevronDown,
@@ -11,7 +12,12 @@ import {
   BookOpen,
 } from "lucide-react";
 import { readSettings, saveAdvancedSettings } from "../../../core/storage/repo";
-import type { Model } from "../../../core/storage/schemas";
+import { listPromptTemplates } from "../../../core/prompts/service";
+import {
+  APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID,
+  APP_HELP_ME_REPLY_TEMPLATE_ID,
+} from "../../../core/prompts/constants";
+import type { Model, SystemPromptTemplate } from "../../../core/storage/schemas";
 import { cn, colors } from "../../design-tokens";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
@@ -30,7 +36,14 @@ export function HelpMeReplyPage() {
   const [streamingEnabled, setStreamingEnabled] = useState(true);
   const [maxTokens, setMaxTokens] = useState(150);
   const [maxTokensInput, setMaxTokensInput] = useState("150");
+  const [historyCount, setHistoryCount] = useState(10);
+  const [historyCountInput, setHistoryCountInput] = useState("10");
   const [replyStyle, setReplyStyle] = useState<ReplyStyle>("conversational");
+  const [templates, setTemplates] = useState<SystemPromptTemplate[]>([]);
+  const [roleplayPromptTemplateId, setRoleplayPromptTemplateId] = useState<string | null>(null);
+  const [conversationalPromptTemplateId, setConversationalPromptTemplateId] = useState<
+    string | null
+  >(null);
 
   // Menu states
   const [showModelMenu, setShowModelMenu] = useState(false);
@@ -38,7 +51,10 @@ export function HelpMeReplyPage() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const settings = await readSettings();
+        const [settings, promptTemplates] = await Promise.all([
+          readSettings(),
+          listPromptTemplates(),
+        ]);
         const textModels = settings.models.filter(
           (m) => !m.outputScopes || m.outputScopes.includes("text"),
         );
@@ -49,7 +65,17 @@ export function HelpMeReplyPage() {
         const tokens = settings.advancedSettings?.helpMeReplyMaxTokens ?? 150;
         setMaxTokens(tokens);
         setMaxTokensInput(String(tokens));
+        const history = settings.advancedSettings?.helpMeReplyHistoryCount ?? 10;
+        setHistoryCount(history);
+        setHistoryCountInput(String(history));
         setReplyStyle(settings.advancedSettings?.helpMeReplyStyle ?? "conversational");
+        setRoleplayPromptTemplateId(
+          settings.advancedSettings?.helpMeReplyRoleplayPromptTemplateId ?? null,
+        );
+        setConversationalPromptTemplateId(
+          settings.advancedSettings?.helpMeReplyConversationalPromptTemplateId ?? null,
+        );
+        setTemplates(promptTemplates);
         setIsLoading(false);
       } catch (err) {
         console.error("Failed to load settings:", err);
@@ -65,7 +91,10 @@ export function HelpMeReplyPage() {
       helpMeReplyModelId: string | undefined;
       helpMeReplyStreaming: boolean;
       helpMeReplyMaxTokens: number;
+      helpMeReplyHistoryCount: number;
       helpMeReplyStyle: ReplyStyle;
+      helpMeReplyRoleplayPromptTemplateId: string | undefined;
+      helpMeReplyConversationalPromptTemplateId: string | undefined;
     }>,
   ) => {
     try {
@@ -108,9 +137,35 @@ export function HelpMeReplyPage() {
     }
   };
 
+  const handleHistoryCountChange = async (value: number) => {
+    setHistoryCount(value);
+    setHistoryCountInput(String(value));
+    await saveSettings({ helpMeReplyHistoryCount: value });
+  };
+
+  const handleHistoryCountBlur = async () => {
+    const val = parseInt(historyCountInput);
+    if (!isNaN(val) && val >= 1 && val <= 100) {
+      setHistoryCount(val);
+      await saveSettings({ helpMeReplyHistoryCount: val });
+    } else {
+      setHistoryCountInput(String(historyCount));
+    }
+  };
+
   const handleStyleChange = async (style: ReplyStyle) => {
     setReplyStyle(style);
     await saveSettings({ helpMeReplyStyle: style });
+  };
+
+  const handleRoleplayPromptTemplateChange = async (templateId: string | null) => {
+    setRoleplayPromptTemplateId(templateId);
+    await saveSettings({ helpMeReplyRoleplayPromptTemplateId: templateId ?? undefined });
+  };
+
+  const handleConversationalPromptTemplateChange = async (templateId: string | null) => {
+    setConversationalPromptTemplateId(templateId);
+    await saveSettings({ helpMeReplyConversationalPromptTemplateId: templateId ?? undefined });
   };
 
   const selectedModel = selectedModelId ? models.find((m) => m.id === selectedModelId) : null;
@@ -119,6 +174,16 @@ export function HelpMeReplyPage() {
   const appDefaultLabel = t("helpMeReply.labels.useAppDefault", {
     model: defaultModel ? ` (${defaultModel.displayName})` : "",
   });
+  const conversationalTemplates = templates.filter(
+    (template) =>
+      template.promptType === "replyHelperConversational" &&
+      template.id !== APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID,
+  );
+  const roleplayTemplates = templates.filter(
+    (template) =>
+      template.promptType === "replyHelperRoleplay" &&
+      template.id !== APP_HELP_ME_REPLY_TEMPLATE_ID,
+  );
 
   if (isLoading) {
     return null;
@@ -276,6 +341,59 @@ export function HelpMeReplyPage() {
                   ))}
                 </div>
               </div>
+
+              {/* History Count */}
+              <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3">
+                <div className="flex items-center justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-3">
+                    <div className="rounded-lg border border-info/30 bg-info/10 p-1.5">
+                      <History className="h-4 w-4 text-info" />
+                    </div>
+                    <div>
+                      <span className="text-sm font-medium text-fg">
+                        {t("helpMeReply.labels.historyCount")}
+                      </span>
+                      <p className="text-[11px] text-fg/45">
+                        {t("helpMeReply.labels.historyCountDescription")}
+                      </p>
+                    </div>
+                  </div>
+                  <input
+                    type="number"
+                    value={historyCountInput}
+                    onChange={(e) => setHistoryCountInput(e.target.value)}
+                    onBlur={handleHistoryCountBlur}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.currentTarget.blur();
+                      }
+                    }}
+                    min={1}
+                    max={100}
+                    className={cn(
+                      "w-20 rounded-lg border border-fg/15 bg-surface-el/30 px-3 py-1.5",
+                      "text-center font-mono text-sm text-fg",
+                      "focus:border-fg/30 focus:outline-none",
+                    )}
+                  />
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {[5, 10, 20, 40].map((val) => (
+                    <button
+                      key={val}
+                      onClick={() => handleHistoryCountChange(val)}
+                      className={cn(
+                        "px-3 py-2 rounded-lg text-xs font-medium transition-all",
+                        historyCount === val
+                          ? "bg-info/20 border border-info/40 text-info/80"
+                          : "border border-fg/10 bg-fg/5 text-fg/60 hover:border-fg/20",
+                      )}
+                    >
+                      {val}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
 
             {/* Right Column - Response Style */}
@@ -381,6 +499,66 @@ export function HelpMeReplyPage() {
                   ? t("helpMeReply.labels.conversationalHint")
                   : t("helpMeReply.labels.roleplayHint")}
               </p>
+
+              <div className="space-y-4 pt-2">
+                <h3 className="px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
+                  {t("helpMeReply.promptTemplates.sectionTitle")}
+                </h3>
+
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-lg border border-warning/30 bg-warning/10 p-1.5">
+                        <BookOpen className="h-4 w-4 text-warning" />
+                      </div>
+                      <h3 className="text-sm font-semibold text-fg">{t("helpMeReply.promptTemplates.conversationalTitle")}</h3>
+                    </div>
+                    <select
+                      value={conversationalPromptTemplateId ?? ""}
+                      onChange={(e) =>
+                        void handleConversationalPromptTemplateChange(e.target.value || null)
+                      }
+                      className="w-full appearance-none rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-sm text-fg transition focus:border-fg/25 focus:outline-none"
+                    >
+                      <option value="">{t("helpMeReply.promptTemplates.useBuiltInDefault")}</option>
+                      {conversationalTemplates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="px-1 text-xs leading-relaxed text-fg/50">
+                      {t("helpMeReply.promptTemplates.conversationalDescription")}
+                    </p>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2">
+                      <div className="rounded-lg border border-warning/30 bg-warning/10 p-1.5">
+                        <BookOpen className="h-4 w-4 text-warning" />
+                      </div>
+                      <h3 className="text-sm font-semibold text-fg">{t("helpMeReply.promptTemplates.roleplayTitle")}</h3>
+                    </div>
+                    <select
+                      value={roleplayPromptTemplateId ?? ""}
+                      onChange={(e) =>
+                        void handleRoleplayPromptTemplateChange(e.target.value || null)
+                      }
+                      className="w-full appearance-none rounded-xl border border-fg/10 bg-surface-el/20 px-3.5 py-3 text-sm text-fg transition focus:border-fg/25 focus:outline-none"
+                    >
+                      <option value="">{t("helpMeReply.promptTemplates.useBuiltInDefault")}</option>
+                      {roleplayTemplates.map((template) => (
+                        <option key={template.id} value={template.id}>
+                          {template.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="px-1 text-xs leading-relaxed text-fg/50">
+                      {t("helpMeReply.promptTemplates.roleplayDescription")}
+                    </p>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
 

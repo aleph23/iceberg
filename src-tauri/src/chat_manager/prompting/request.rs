@@ -14,7 +14,7 @@ pub fn provider_base_url(cred: &ProviderCredential) -> String {
     )
 }
 
-fn selected_variant<'a>(message: &'a StoredMessage) -> Option<&'a MessageVariant> {
+fn selected_variant(message: &StoredMessage) -> Option<&MessageVariant> {
     if let Some(selected_id) = &message.selected_variant_id {
         message
             .variants
@@ -127,12 +127,12 @@ fn extract_explicit_reasoning(data: &Value) -> Option<String> {
     }
 }
 
-fn extract_raw_text(data: &Value, provider_id: Option<&str>) -> Option<String> {
+fn extract_raw_text(data: &Value, _provider_id: Option<&str>) -> Option<String> {
     match data {
         Value::Array(items) => {
             let mut combined = String::new();
             for item in items {
-                if let Some(part) = extract_raw_text(item, provider_id) {
+                if let Some(part) = extract_raw_text(item, _provider_id) {
                     combined.push_str(&part);
                 }
             }
@@ -283,8 +283,8 @@ pub fn extract_usage(data: &Value) -> Option<UsageSummary> {
             let mut found: Option<UsageSummary> = None;
             for line in raw.lines() {
                 let piece = line.trim();
-                if piece.starts_with("data:") {
-                    let payload = piece[5..].trim();
+                if let Some(stripped) = piece.strip_prefix("data:") {
+                    let payload = stripped.trim();
                     if payload.is_empty() || payload == "[DONE]" {
                         continue;
                     }
@@ -407,10 +407,20 @@ fn usage_from_map(map: &Map<String, Value>) -> Option<UsageSummary> {
                     .and_then(|details| take_first(details, &["image_tokens", "imageTokens"]))
             })
     });
-    let cached_prompt_tokens = map
-        .get("prompt_tokens_details")
-        .and_then(|v| v.as_object())
-        .and_then(|details| take_first(details, &["cached_tokens", "cachedTokens"]));
+    let cached_prompt_tokens = take_first(
+        map,
+        &[
+            "cached_content_token_count",
+            "cachedContentTokenCount",
+            "cache_read",
+            "cacheRead",
+        ],
+    )
+    .or_else(|| {
+        map.get("prompt_tokens_details")
+            .and_then(|v| v.as_object())
+            .and_then(|details| take_first(details, &["cached_tokens", "cachedTokens"]))
+    });
     let cache_write_tokens = map
         .get("prompt_tokens_details")
         .and_then(|v| v.as_object())
@@ -456,7 +466,14 @@ fn usage_from_map(map: &Map<String, Value>) -> Option<UsageSummary> {
         .and_then(|r| r.as_str())
         .map(|s| s.to_string());
 
-    if prompt_tokens.is_none() && completion_tokens.is_none() && total_tokens.is_none() {
+    if prompt_tokens.is_none()
+        && completion_tokens.is_none()
+        && total_tokens.is_none()
+        && reasoning_tokens.is_none()
+        && image_tokens.is_none()
+        && web_search_requests.is_none()
+        && api_cost.is_none()
+    {
         None
     } else {
         Some(UsageSummary {
@@ -676,16 +693,8 @@ pub fn new_assistant_variant(
     }
 }
 
-const MAX_ASSISTANT_VARIANTS_PER_MESSAGE: usize = 8;
-
 pub fn push_assistant_variant(message: &mut StoredMessage, variant: MessageVariant) {
     message.variants.push(variant);
-
-    // Keep a bounded history to avoid unbounded session growth on mobile.
-    if message.variants.len() > MAX_ASSISTANT_VARIANTS_PER_MESSAGE {
-        let overflow = message.variants.len() - MAX_ASSISTANT_VARIANTS_PER_MESSAGE;
-        message.variants.drain(0..overflow);
-    }
 
     if let Some(last) = message.variants.last() {
         message.selected_variant_id = Some(last.id.clone());

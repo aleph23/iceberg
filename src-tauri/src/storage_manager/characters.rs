@@ -2,52 +2,22 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use super::db::{now_ms, open_db};
-use crate::utils::{log_error, log_info};
+use crate::utils::{log_error, log_info, log_warn};
 
 fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, String> {
-    let (
-        name,
-        avatar_path,
-        avatar_crop_x,
-        avatar_crop_y,
-        avatar_crop_scale,
-        design_description,
-        design_reference_image_ids,
-        bg_path,
-        description,
-        definition,
-        nickname,
-        scenario,
-        creator_notes,
-        creator,
-        creator_notes_multilingual,
-        source,
-        tags,
-        default_scene_id,
-        default_model_id,
-        fallback_model_id,
-        prompt_template_id,
-        group_chat_prompt_template_id,
-        group_chat_roleplay_prompt_template_id,
-        system_prompt,
-        voice_config,
-        voice_autoplay,
-        memory_type,
-        disable_avatar_gradient,
-        custom_gradient_enabled,
-        custom_gradient_colors,
-        custom_text_color,
-        custom_text_secondary,
-        chat_appearance,
-        default_chat_template_id,
-        created_at,
-        updated_at,
-    ): (
+    let row: (
         String,
         Option<String>,
         Option<f64>,
         Option<f64>,
         Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<f64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -71,6 +41,7 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
         Option<i64>,
         Option<String>,
         i64,
+        Option<String>,
         i64,
         Option<String>,
         Option<String>,
@@ -81,13 +52,102 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
         i64,
     ) = conn
         .query_row(
-            "SELECT name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, fallback_model_id, prompt_template_id, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, chat_appearance, default_chat_template_id, created_at, updated_at FROM characters WHERE id = ?",
+            "SELECT name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, banner_crop_x, banner_crop_y, banner_crop_scale, card_type, design_description, design_reference_image_ids, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, fallback_model_id, mode, companion, prompt_template_id, active_lorebook_ids, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, avatar_gradient_source, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, chat_appearance, default_chat_template_id, created_at, updated_at FROM characters WHERE id = ?",
             params![id],
             |r| Ok((
-                r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?, r.get(11)?, r.get(12)?, r.get(13)?, r.get(14)?, r.get(15)?, r.get(16)?, r.get(17)?, r.get(18)?, r.get(19)?, r.get(20)?, r.get(21)?, r.get(22)?, r.get(23)?, r.get(24)?, r.get(25)?, r.get(26)?, r.get::<_, i64>(27)?, r.get::<_, i64>(28)?, r.get(29)?, r.get(30)?, r.get(31)?, r.get(32)?, r.get(33)?, r.get(34)?, r.get(35)?
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<f64>>(2)?,
+                r.get::<_, Option<f64>>(3)?,
+                r.get::<_, Option<f64>>(4)?,
+                r.get::<_, Option<f64>>(5)?,
+                r.get::<_, Option<f64>>(6)?,
+                r.get::<_, Option<f64>>(7)?,
+                r.get::<_, Option<String>>(8)?,
+                r.get::<_, Option<String>>(9)?,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, Option<String>>(11)?,
+                r.get::<_, Option<String>>(12)?,
+                r.get::<_, Option<String>>(13)?,
+                r.get::<_, Option<String>>(14)?,
+                r.get::<_, Option<String>>(15)?,
+                r.get::<_, Option<String>>(16)?,
+                r.get::<_, Option<String>>(17)?,
+                r.get::<_, Option<String>>(18)?,
+                r.get::<_, Option<String>>(19)?,
+                r.get::<_, Option<String>>(20)?,
+                r.get::<_, Option<String>>(21)?,
+                r.get::<_, Option<String>>(22)?,
+                r.get::<_, Option<String>>(23)?,
+                r.get::<_, Option<String>>(24)?,
+                r.get::<_, Option<String>>(25)?,
+                r.get::<_, Option<String>>(26)?,
+                r.get::<_, Option<String>>(27)?,
+                r.get::<_, Option<String>>(28)?,
+                r.get::<_, Option<String>>(29)?,
+                r.get::<_, Option<String>>(30)?,
+                r.get::<_, Option<String>>(31)?,
+                r.get::<_, Option<i64>>(32)?,
+                r.get::<_, Option<String>>(33)?,
+                r.get::<_, i64>(34)?,
+                r.get::<_, Option<String>>(35)?,
+                r.get::<_, i64>(36)?,
+                r.get::<_, Option<String>>(37)?,
+                r.get::<_, Option<String>>(38)?,
+                r.get::<_, Option<String>>(39)?,
+                r.get::<_, Option<String>>(40)?,
+                r.get::<_, Option<String>>(41)?,
+                r.get::<_, i64>(42)?,
+                r.get::<_, i64>(43)?
             )),
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let (
+        name,
+        avatar_path,
+        avatar_crop_x,
+        avatar_crop_y,
+        avatar_crop_scale,
+        banner_crop_x,
+        banner_crop_y,
+        banner_crop_scale,
+        card_type,
+        design_description,
+        design_reference_image_ids,
+        bg_path,
+        description,
+        definition,
+        nickname,
+        scenario,
+        creator_notes,
+        creator,
+        creator_notes_multilingual,
+        source,
+        tags,
+        default_scene_id,
+        default_model_id,
+        fallback_model_id,
+        mode,
+        companion,
+        prompt_template_id,
+        active_lorebook_ids,
+        group_chat_prompt_template_id,
+        group_chat_roleplay_prompt_template_id,
+        system_prompt,
+        voice_config,
+        voice_autoplay,
+        memory_type,
+        disable_avatar_gradient,
+        avatar_gradient_source,
+        custom_gradient_enabled,
+        custom_gradient_colors,
+        custom_text_color,
+        custom_text_secondary,
+        chat_appearance,
+        default_chat_template_id,
+        created_at,
+        updated_at,
+    ) = row;
 
     // rules
     let mut rules: Vec<JsonValue> = Vec::new();
@@ -95,7 +155,7 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
         .prepare("SELECT rule FROM character_rules WHERE character_id = ? ORDER BY idx ASC")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let q = stmt
-        .query_map(params![id], |r| Ok(r.get::<_, String>(0)?))
+        .query_map(params![id], |r| r.get::<_, String>(0))
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     for it in q {
         rules.push(JsonValue::String(it.map_err(|e| {
@@ -104,22 +164,29 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
     }
 
     // scenes
-    let mut scenes_stmt = conn.prepare("SELECT id, content, direction, created_at, selected_variant_id FROM scenes WHERE character_id = ? ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut scenes_stmt = conn.prepare("SELECT id, content, direction, background_image_path, created_at, selected_variant_id FROM scenes WHERE character_id = ? ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let scenes_rows = scenes_stmt
         .query_map(params![id], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, Option<String>>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut scenes: Vec<JsonValue> = Vec::new();
     for row in scenes_rows {
-        let (scene_id, content, direction, created_at_s, selected_variant_id) =
-            row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let (
+            scene_id,
+            content,
+            direction,
+            background_image_path,
+            created_at_s,
+            selected_variant_id,
+        ) = row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         // variants
         let mut var_stmt = conn.prepare("SELECT id, content, direction, created_at FROM scene_variants WHERE scene_id = ? ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let var_rows = var_stmt
@@ -149,6 +216,9 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
         if let Some(dir) = direction {
             obj.insert("direction".into(), JsonValue::String(dir));
         }
+        if let Some(path) = background_image_path {
+            obj.insert("backgroundImagePath".into(), JsonValue::String(path));
+        }
         obj.insert("createdAt".into(), JsonValue::from(created_at_s));
         if !variants.is_empty() {
             obj.insert("variants".into(), JsonValue::Array(variants));
@@ -160,7 +230,7 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
     }
 
     // chat templates
-    let mut templates_stmt = conn.prepare("SELECT id, name, scene_id, prompt_template_id, created_at FROM chat_templates WHERE character_id = ? ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let mut templates_stmt = conn.prepare("SELECT id, name, scene_id, prompt_template_id, lorebook_ids_override, created_at FROM chat_templates WHERE character_id = ? ORDER BY created_at ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let templates_rows = templates_stmt
         .query_map(params![id], |r| {
             Ok((
@@ -168,14 +238,21 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
                 r.get::<_, String>(1)?,
                 r.get::<_, Option<String>>(2)?,
                 r.get::<_, Option<String>>(3)?,
-                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut chat_templates: Vec<JsonValue> = Vec::new();
     for row in templates_rows {
-        let (tmpl_id, tmpl_name, tmpl_scene_id, tmpl_prompt_template_id, tmpl_created_at) =
-            row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let (
+            tmpl_id,
+            tmpl_name,
+            tmpl_scene_id,
+            tmpl_prompt_template_id,
+            tmpl_lorebook_ids_override,
+            tmpl_created_at,
+        ) = row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let mut msg_stmt = conn.prepare("SELECT id, role, content FROM chat_template_messages WHERE template_id = ? ORDER BY idx ASC").map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let msg_rows = msg_stmt
             .query_map(params![&tmpl_id], |r| {
@@ -204,6 +281,11 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
         if let Some(ref ptid) = tmpl_prompt_template_id {
             tmpl_json["promptTemplateId"] = JsonValue::String(ptid.clone());
         }
+        if let Some(ref lorebook_ids_json) = tmpl_lorebook_ids_override {
+            if let Ok(value) = serde_json::from_str::<JsonValue>(lorebook_ids_json) {
+                tmpl_json["lorebookIdsOverride"] = value;
+            }
+        }
         chat_templates.push(tmpl_json);
     }
 
@@ -220,6 +302,16 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
         crop.insert("scale".into(), JsonValue::from(scale));
         root.insert("avatarCrop".into(), JsonValue::Object(crop));
     }
+    if let (Some(x), Some(y), Some(scale)) = (banner_crop_x, banner_crop_y, banner_crop_scale) {
+        let mut crop = JsonMap::new();
+        crop.insert("x".into(), JsonValue::from(x));
+        crop.insert("y".into(), JsonValue::from(y));
+        crop.insert("scale".into(), JsonValue::from(scale));
+        root.insert("bannerCrop".into(), JsonValue::Object(crop));
+    }
+    if let Some(value) = card_type {
+        root.insert("cardType".into(), JsonValue::String(value));
+    }
     if let Some(value) = design_description {
         root.insert("designDescription".into(), JsonValue::String(value));
     }
@@ -230,6 +322,23 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
     }
     if let Some(b) = bg_path {
         root.insert("backgroundImagePath".into(), JsonValue::String(b));
+    }
+    if let Ok((lora_name, lora_strength)) = conn.query_row(
+        "SELECT lora_name, lora_strength FROM characters WHERE id = ?",
+        params![id],
+        |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<f64>>(1)?,
+            ))
+        },
+    ) {
+        if let Some(value) = lora_name {
+            root.insert("loraName".into(), JsonValue::String(value));
+        }
+        if let Some(value) = lora_strength {
+            root.insert("loraStrength".into(), JsonValue::from(value));
+        }
     }
     let resolved_definition = definition.or_else(|| description.clone());
     if let Some(def) = resolved_definition {
@@ -282,8 +391,24 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
     if let Some(fm) = fallback_model_id {
         root.insert("fallbackModelId".into(), JsonValue::String(fm));
     }
+    root.insert(
+        "mode".into(),
+        JsonValue::String(mode.unwrap_or_else(|| "roleplay".to_string())),
+    );
+    if let Some(companion_json) = companion {
+        if let Ok(parsed) = serde_json::from_str::<JsonValue>(&companion_json) {
+            if !parsed.is_null() {
+                root.insert("companion".into(), parsed);
+            }
+        }
+    }
     let memory_value = memory_type.unwrap_or_else(|| "manual".to_string());
     root.insert("memoryType".into(), JsonValue::String(memory_value));
+    if let Some(value) = active_lorebook_ids {
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&value) {
+            root.insert("activeLorebookIds".into(), serde_json::json!(parsed));
+        }
+    }
     if let Some(pt) = prompt_template_id {
         root.insert("promptTemplateId".into(), JsonValue::String(pt));
     }
@@ -313,6 +438,10 @@ fn read_character(conn: &rusqlite::Connection, id: &str) -> Result<JsonValue, St
     root.insert(
         "disableAvatarGradient".into(),
         JsonValue::Bool(disable_avatar_gradient != 0),
+    );
+    root.insert(
+        "avatarGradientSource".into(),
+        JsonValue::String(avatar_gradient_source.unwrap_or_else(|| "base".to_string())),
     );
     // Custom gradient fields
     root.insert(
@@ -351,17 +480,35 @@ where
         .prepare("SELECT id FROM characters ORDER BY created_at ASC")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let rows = stmt
-        .query_map([], |r| Ok(r.get::<_, String>(0)?))
+        .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     let mut out = Vec::new();
     for row in rows {
         let id = row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-        out.push(read_character(&conn, &id)?);
+        let value = match read_character(&conn, &id) {
+            Ok(value) => value,
+            Err(error) => {
+                log_warn(
+                    app,
+                    "characters_list_typed",
+                    format!("Skipping unreadable character {}: {}", id, error),
+                );
+                continue;
+            }
+        };
+        match serde_json::from_value::<T>(value) {
+            Ok(character) => out.push(character),
+            Err(error) => {
+                log_warn(
+                    app,
+                    "characters_list_typed",
+                    format!("Skipping unparseable character {}: {}", id, error),
+                );
+            }
+        }
     }
-
-    serde_json::from_value(JsonValue::Array(out))
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+    Ok(out)
 }
 
 pub fn character_upsert_typed<T, R>(app: &tauri::AppHandle, character: &T) -> Result<R, String>
@@ -389,16 +536,14 @@ pub fn characters_list(app: tauri::AppHandle) -> Result<String, String> {
             );
             e.to_string()
         })?;
-    let rows = stmt
-        .query_map([], |r| Ok(r.get::<_, String>(0)?))
-        .map_err(|e| {
-            log_error(
-                &app,
-                "characters_list",
-                format!("Failed to query map: {}", e),
-            );
-            e.to_string()
-        })?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| {
+        log_error(
+            &app,
+            "characters_list",
+            format!("Failed to query map: {}", e),
+        );
+        e.to_string()
+    })?;
     let mut out = Vec::new();
     for id in rows {
         let id = id.map_err(|e| {
@@ -408,12 +553,11 @@ pub fn characters_list(app: tauri::AppHandle) -> Result<String, String> {
         match read_character(&conn, &id) {
             Ok(char_data) => out.push(char_data),
             Err(e) => {
-                log_error(
+                log_warn(
                     &app,
                     "characters_list",
-                    format!("Failed to read character {}: {}", id, e),
+                    format!("Skipping unreadable character {}: {}", id, e),
                 );
-                return Err(e);
             }
         }
     }
@@ -422,8 +566,15 @@ pub fn characters_list(app: tauri::AppHandle) -> Result<String, String> {
         "characters_list",
         format!("Found {} characters", out.len()),
     );
-    Ok(serde_json::to_string(&out)
-        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?)
+    serde_json::to_string(&out).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+#[tauri::command]
+pub fn character_get(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    let character = read_character(&conn, &id)?;
+    serde_json::to_string(&character)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
 #[tauri::command]
@@ -432,6 +583,26 @@ pub fn character_upsert(app: tauri::AppHandle, character_json: String) -> Result
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let result = upsert_character_value(&app, &character)?;
     serde_json::to_string(&result)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+#[tauri::command]
+pub fn character_update_chat_appearance(
+    app: tauri::AppHandle,
+    id: String,
+    chat_appearance_json: Option<String>,
+) -> Result<String, String> {
+    let conn = open_db(&app)?;
+    let now = now_ms() as i64;
+
+    conn.execute(
+        "UPDATE characters SET chat_appearance = ?, updated_at = ? WHERE id = ?",
+        params![chat_appearance_json, now, id],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let refreshed = read_character(&conn, &id)?;
+    serde_json::to_string(&refreshed)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
@@ -461,6 +632,14 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
     let avatar_crop_x = avatar_crop.and_then(|crop| crop.get("x").and_then(|v| v.as_f64()));
     let avatar_crop_y = avatar_crop.and_then(|crop| crop.get("y").and_then(|v| v.as_f64()));
     let avatar_crop_scale = avatar_crop.and_then(|crop| crop.get("scale").and_then(|v| v.as_f64()));
+    let banner_crop = c.get("bannerCrop").and_then(|v| v.as_object());
+    let banner_crop_x = banner_crop.and_then(|crop| crop.get("x").and_then(|v| v.as_f64()));
+    let banner_crop_y = banner_crop.and_then(|crop| crop.get("y").and_then(|v| v.as_f64()));
+    let banner_crop_scale = banner_crop.and_then(|crop| crop.get("scale").and_then(|v| v.as_f64()));
+    let card_type = match c.get("cardType").and_then(|v| v.as_str()) {
+        Some("banner") => "banner".to_string(),
+        _ => "circle".to_string(),
+    };
     let design_description = c
         .get("designDescription")
         .and_then(|v| v.as_str())
@@ -523,10 +702,33 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
         .get("fallbackModelId")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let mode = match c.get("mode").and_then(|v| v.as_str()) {
+        Some("companion") => "companion".to_string(),
+        _ => "roleplay".to_string(),
+    };
+    let companion: Option<String> = c.get("companion").and_then(|v| {
+        if v.is_null() {
+            None
+        } else {
+            serde_json::to_string(v).ok()
+        }
+    });
     let prompt_template_id = c
         .get("promptTemplateId")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let active_lorebook_ids_json =
+        c.get("activeLorebookIds")
+            .and_then(|v| v.as_array())
+            .map(|values| {
+                serde_json::to_string(
+                    &values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(|id| id.to_string()))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_else(|_| "[]".to_string())
+            });
     let group_chat_prompt_template_id = c
         .get("groupChatPromptTemplateId")
         .and_then(|v| v.as_str())
@@ -558,6 +760,10 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
         .get("disableAvatarGradient")
         .and_then(|v| v.as_bool())
         .unwrap_or(false) as i64;
+    let avatar_gradient_source = match c.get("avatarGradientSource").and_then(|v| v.as_str()) {
+        Some("round") => "round".to_string(),
+        _ => "base".to_string(),
+    };
     // Custom gradient fields
     let custom_gradient_enabled = c
         .get("customGradientEnabled")
@@ -587,25 +793,39 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
     let tx = conn
         .transaction()
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-    let existing_created: Option<i64> = tx
+    let existing_character: Option<(i64, Option<String>)> = tx
         .query_row(
-            "SELECT created_at FROM characters WHERE id = ?",
+            "SELECT created_at, active_lorebook_ids FROM characters WHERE id = ?",
             params![&id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-    let created_at = existing_created.unwrap_or(now);
+    let created_at = existing_character
+        .as_ref()
+        .map(|(created_at, _)| *created_at)
+        .unwrap_or(now);
+    let active_lorebook_ids = active_lorebook_ids_json
+        .or_else(|| {
+            existing_character
+                .as_ref()
+                .and_then(|(_, active_lorebook_ids)| active_lorebook_ids.clone())
+        })
+        .unwrap_or_else(|| "[]".to_string());
 
     tx.execute(
-        r#"INSERT INTO characters (id, name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, design_description, design_reference_image_ids, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, fallback_model_id, prompt_template_id, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, chat_appearance, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        r#"INSERT INTO characters (id, name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, banner_crop_x, banner_crop_y, banner_crop_scale, card_type, design_description, design_reference_image_ids, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, fallback_model_id, mode, companion, prompt_template_id, active_lorebook_ids, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, avatar_gradient_source, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, chat_appearance, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               name=excluded.name,
               avatar_path=excluded.avatar_path,
               avatar_crop_x=excluded.avatar_crop_x,
               avatar_crop_y=excluded.avatar_crop_y,
               avatar_crop_scale=excluded.avatar_crop_scale,
+              banner_crop_x=excluded.banner_crop_x,
+              banner_crop_y=excluded.banner_crop_y,
+              banner_crop_scale=excluded.banner_crop_scale,
+              card_type=excluded.card_type,
               design_description=excluded.design_description,
               design_reference_image_ids=excluded.design_reference_image_ids,
               background_image_path=excluded.background_image_path,
@@ -620,7 +840,10 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
               tags=excluded.tags,
               default_model_id=excluded.default_model_id,
               fallback_model_id=excluded.fallback_model_id,
+              mode=excluded.mode,
+              companion=excluded.companion,
               prompt_template_id=excluded.prompt_template_id,
+              active_lorebook_ids=excluded.active_lorebook_ids,
               group_chat_prompt_template_id=excluded.group_chat_prompt_template_id,
               group_chat_roleplay_prompt_template_id=excluded.group_chat_roleplay_prompt_template_id,
               system_prompt=excluded.system_prompt,
@@ -628,6 +851,7 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
               voice_autoplay=excluded.voice_autoplay,
               memory_type=excluded.memory_type,
               disable_avatar_gradient=excluded.disable_avatar_gradient,
+              avatar_gradient_source=excluded.avatar_gradient_source,
               custom_gradient_enabled=excluded.custom_gradient_enabled,
               custom_gradient_colors=excluded.custom_gradient_colors,
               custom_text_color=excluded.custom_text_color,
@@ -641,6 +865,10 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
             avatar_crop_x,
             avatar_crop_y,
             avatar_crop_scale,
+            banner_crop_x,
+            banner_crop_y,
+            banner_crop_scale,
+            card_type,
             design_description,
             design_reference_image_ids,
             bg_path,
@@ -655,7 +883,10 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
             tags,
             default_model_id,
             fallback_model_id,
+            mode,
+            companion,
             prompt_template_id,
+            active_lorebook_ids,
             group_chat_prompt_template_id,
             group_chat_roleplay_prompt_template_id,
             system_prompt,
@@ -663,6 +894,7 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
             voice_autoplay,
             memory_type,
             disable_avatar_gradient,
+            avatar_gradient_source,
             custom_gradient_enabled,
             custom_gradient_colors,
             custom_text_color,
@@ -672,6 +904,16 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
             now
         ],
     ).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    tx.execute(
+        "UPDATE characters SET lora_name = ?, lora_strength = ? WHERE id = ?",
+        params![
+            c.get("loraName").and_then(|v| v.as_str()).map(str::to_string),
+            c.get("loraStrength").and_then(|v| v.as_f64()),
+            &id
+        ],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     // Replace rules
     tx.execute(
@@ -697,7 +939,7 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
             .prepare("SELECT id FROM scenes WHERE character_id = ?")
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let rows = s
-            .query_map(params![&id], |r| Ok(r.get::<_, String>(0)?))
+            .query_map(params![&id], |r| r.get::<_, String>(0))
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let mut v = Vec::new();
         for it in rows {
@@ -729,7 +971,8 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
                 .and_then(|v| v.as_str())
                 .map(|x| x.to_string());
             let direction = s.get("direction").and_then(|v| v.as_str());
-            tx.execute("INSERT INTO scenes (id, character_id, content, direction, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, ?)", params![&sid, &id, content, direction, created_at_s, selected_variant_id]).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+            let background_image_path = s.get("backgroundImagePath").and_then(|v| v.as_str());
+            tx.execute("INSERT INTO scenes (id, character_id, content, direction, background_image_path, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, ?, ?)", params![&sid, &id, content, direction, background_image_path, created_at_s, selected_variant_id]).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
             if i == 0 && new_default_scene_id.is_none() {
                 new_default_scene_id = Some(sid.clone());
             }
@@ -780,10 +1023,14 @@ fn upsert_character_value(app: &tauri::AppHandle, c: &JsonValue) -> Result<JsonV
             let tscene_id: Option<&str> = t.get("sceneId").and_then(|v| v.as_str());
             let tprompt_template_id: Option<&str> =
                 t.get("promptTemplateId").and_then(|v| v.as_str());
+            let tlorebook_ids_override = t
+                .get("lorebookIdsOverride")
+                .filter(|v| v.is_array())
+                .map(|v| v.to_string());
             let tcreated = t.get("createdAt").and_then(|v| v.as_i64()).unwrap_or(now);
             tx.execute(
-                "INSERT INTO chat_templates (id, character_id, name, scene_id, prompt_template_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                params![&tid, &id, tname, tscene_id, tprompt_template_id, tcreated],
+                "INSERT INTO chat_templates (id, character_id, name, scene_id, prompt_template_id, lorebook_ids_override, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![&tid, &id, tname, tscene_id, tprompt_template_id, tlorebook_ids_override, tcreated],
             )
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
             if let Some(msgs) = t.get("messages").and_then(|v| v.as_array()) {
@@ -844,8 +1091,26 @@ pub fn character_delete(app: tauri::AppHandle, id: String) -> Result<(), String>
         "character_delete",
         format!("Deleting character {}", id),
     );
-    let conn = open_db(&app)?;
-    conn.execute("DELETE FROM characters WHERE id = ?", params![id])
+    let mut conn = open_db(&app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    tx.execute(
+        "DELETE FROM memory_embeddings
+         WHERE session_kind = 'session'
+           AND session_id IN (SELECT id FROM sessions WHERE character_id = ?1)",
+        params![id],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    crate::storage_manager::memory_embeddings::delete_all_for_session(
+        &tx,
+        &id,
+        crate::storage_manager::memory_embeddings::SessionKind::CompanionShared,
+    )?;
+
+    tx.execute("DELETE FROM characters WHERE id = ?", params![id])
         .map_err(|e| {
             log_error(
                 &app,
@@ -854,10 +1119,454 @@ pub fn character_delete(app: tauri::AppHandle, id: String) -> Result<(), String>
             );
             e.to_string()
         })?;
+    tx.commit()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
     log_info(
         &app,
         "character_delete",
         format!("Successfully deleted character {}", id),
     );
     Ok(())
+}
+
+fn clone_copy_rows(
+    tx: &rusqlite::Transaction,
+    table: &str,
+    overrides: &[(&str, rusqlite::types::Value)],
+    where_cols: &[(&str, rusqlite::types::Value)],
+    exclude: &[&str],
+) -> Result<(), String> {
+    use rusqlite::types::Value;
+
+    let columns: Vec<String> = {
+        let mut stmt = tx
+            .prepare(&format!("PRAGMA table_info(\"{}\")", table))
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+    };
+
+    let mut binds: Vec<Value> = Vec::new();
+    let mut insert_cols: Vec<String> = Vec::new();
+    let mut select_exprs: Vec<String> = Vec::new();
+    for col in &columns {
+        if exclude.iter().any(|e| e.eq_ignore_ascii_case(col)) {
+            continue;
+        }
+        insert_cols.push(format!("\"{}\"", col));
+        if let Some((_, value)) = overrides.iter().find(|(name, _)| name.eq_ignore_ascii_case(col)) {
+            binds.push(value.clone());
+            select_exprs.push(format!("?{}", binds.len()));
+        } else {
+            select_exprs.push(format!("\"{}\"", col));
+        }
+    }
+
+    let mut where_parts: Vec<String> = Vec::new();
+    for (name, value) in where_cols {
+        binds.push(value.clone());
+        where_parts.push(format!("\"{}\" = ?{}", name, binds.len()));
+    }
+    let where_sql = if where_parts.is_empty() {
+        "1=1".to_string()
+    } else {
+        where_parts.join(" AND ")
+    };
+
+    let sql = format!(
+        "INSERT INTO \"{table}\" ({cols}) SELECT {exprs} FROM \"{table}\" WHERE {where_sql}",
+        table = table,
+        cols = insert_cols.join(", "),
+        exprs = select_exprs.join(", "),
+        where_sql = where_sql,
+    );
+    tx.execute(&sql, rusqlite::params_from_iter(binds))
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    Ok(())
+}
+
+fn clone_collect_ids(
+    tx: &rusqlite::Transaction,
+    sql: &str,
+    param: &str,
+) -> Result<Vec<String>, String> {
+    let mut stmt = tx
+        .prepare(sql)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let rows = stmt
+        .query_map(params![param], |row| row.get::<_, String>(0))
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
+}
+
+#[tauri::command]
+pub fn character_clone_deep(app: tauri::AppHandle, id: String) -> Result<String, String> {
+    use rusqlite::types::Value;
+    use std::collections::HashMap;
+
+    let mut conn = open_db(&app)?;
+    let now = now_ms() as i64;
+    let new_char_id = uuid::Uuid::new_v4().to_string();
+
+    let orig_name: String = conn
+        .query_row("SELECT name FROM characters WHERE id = ?", params![&id], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+        .ok_or_else(|| crate::utils::err_msg(module_path!(), line!(), "Character not found"))?;
+    let clone_name = format!("{} (Clone)", orig_name);
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    // 1. character row (fresh id, name, timestamps)
+    clone_copy_rows(
+        &tx,
+        "characters",
+        &[
+            ("id", Value::Text(new_char_id.clone())),
+            ("name", Value::Text(clone_name)),
+            ("created_at", Value::Integer(now)),
+            ("updated_at", Value::Integer(now)),
+        ],
+        &[("id", Value::Text(id.clone()))],
+        &[],
+    )?;
+
+    // 2. character rules (autoincrement id left to regenerate)
+    clone_copy_rows(
+        &tx,
+        "character_rules",
+        &[("character_id", Value::Text(new_char_id.clone()))],
+        &[("character_id", Value::Text(id.clone()))],
+        &["id"],
+    )?;
+
+    // 3. lorebook associations (shared lorebooks, new char link)
+    clone_copy_rows(
+        &tx,
+        "character_lorebooks",
+        &[("character_id", Value::Text(new_char_id.clone()))],
+        &[("character_id", Value::Text(id.clone()))],
+        &[],
+    )?;
+
+    // 4. scenes
+    let mut scene_map: HashMap<String, String> = HashMap::new();
+    for old in clone_collect_ids(&tx, "SELECT id FROM scenes WHERE character_id = ?", &id)? {
+        let new = uuid::Uuid::new_v4().to_string();
+        clone_copy_rows(
+            &tx,
+            "scenes",
+            &[
+                ("id", Value::Text(new.clone())),
+                ("character_id", Value::Text(new_char_id.clone())),
+            ],
+            &[("id", Value::Text(old.clone()))],
+            &[],
+        )?;
+        scene_map.insert(old, new);
+    }
+
+    // 5. scene variants
+    let mut scene_variant_map: HashMap<String, String> = HashMap::new();
+    for (old_scene, new_scene) in &scene_map {
+        for ov in
+            clone_collect_ids(&tx, "SELECT id FROM scene_variants WHERE scene_id = ?", old_scene)?
+        {
+            let nv = uuid::Uuid::new_v4().to_string();
+            clone_copy_rows(
+                &tx,
+                "scene_variants",
+                &[
+                    ("id", Value::Text(nv.clone())),
+                    ("scene_id", Value::Text(new_scene.clone())),
+                ],
+                &[("id", Value::Text(ov.clone()))],
+                &[],
+            )?;
+            scene_variant_map.insert(ov, nv);
+        }
+    }
+
+    // 6. remap scenes.selected_variant_id
+    for (old_scene, new_scene) in &scene_map {
+        let selected: Option<String> = tx
+            .query_row(
+                "SELECT selected_variant_id FROM scenes WHERE id = ?",
+                params![old_scene],
+                |r| r.get(0),
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        if let Some(osv) = selected {
+            if let Some(nsv) = scene_variant_map.get(&osv) {
+                tx.execute(
+                    "UPDATE scenes SET selected_variant_id = ? WHERE id = ?",
+                    params![nsv, new_scene],
+                )
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+            }
+        }
+    }
+
+    // 7. chat templates (remap scene_id)
+    let mut template_map: HashMap<String, String> = HashMap::new();
+    for old in clone_collect_ids(&tx, "SELECT id FROM chat_templates WHERE character_id = ?", &id)? {
+        let new = uuid::Uuid::new_v4().to_string();
+        let old_scene: Option<String> = tx
+            .query_row(
+                "SELECT scene_id FROM chat_templates WHERE id = ?",
+                params![&old],
+                |r| r.get(0),
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let mut overrides = vec![
+            ("id", Value::Text(new.clone())),
+            ("character_id", Value::Text(new_char_id.clone())),
+        ];
+        if let Some(os) = old_scene.as_ref().and_then(|s| scene_map.get(s)) {
+            overrides.push(("scene_id", Value::Text(os.clone())));
+        }
+        clone_copy_rows(
+            &tx,
+            "chat_templates",
+            &overrides,
+            &[("id", Value::Text(old.clone()))],
+            &[],
+        )?;
+        template_map.insert(old, new);
+    }
+
+    // 8. chat template messages
+    for (old_t, new_t) in &template_map {
+        for om in clone_collect_ids(
+            &tx,
+            "SELECT id FROM chat_template_messages WHERE template_id = ?",
+            old_t,
+        )? {
+            let nm = uuid::Uuid::new_v4().to_string();
+            clone_copy_rows(
+                &tx,
+                "chat_template_messages",
+                &[
+                    ("id", Value::Text(nm)),
+                    ("template_id", Value::Text(new_t.clone())),
+                ],
+                &[("id", Value::Text(om))],
+                &[],
+            )?;
+        }
+    }
+
+    // 9. remap characters.default_scene_id / default_chat_template_id
+    let (def_scene, def_template): (Option<String>, Option<String>) = tx
+        .query_row(
+            "SELECT default_scene_id, default_chat_template_id FROM characters WHERE id = ?",
+            params![&new_char_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    if let Some(ns) = def_scene.as_ref().and_then(|s| scene_map.get(s)) {
+        tx.execute(
+            "UPDATE characters SET default_scene_id = ? WHERE id = ?",
+            params![ns, &new_char_id],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    }
+    if let Some(nt) = def_template.as_ref().and_then(|t| template_map.get(t)) {
+        tx.execute(
+            "UPDATE characters SET default_chat_template_id = ? WHERE id = ?",
+            params![nt, &new_char_id],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    }
+
+    // 10. companion scheduled notes
+    for on in clone_collect_ids(
+        &tx,
+        "SELECT id FROM companion_scheduled_notes WHERE character_id = ?",
+        &id,
+    )? {
+        let nn = uuid::Uuid::new_v4().to_string();
+        clone_copy_rows(
+            &tx,
+            "companion_scheduled_notes",
+            &[
+                ("id", Value::Text(nn)),
+                ("character_id", Value::Text(new_char_id.clone())),
+            ],
+            &[("id", Value::Text(on))],
+            &[],
+        )?;
+    }
+
+    // 11. companion shared memory state (PK = character_id)
+    clone_copy_rows(
+        &tx,
+        "companion_shared_memory_state",
+        &[("character_id", Value::Text(new_char_id.clone()))],
+        &[("character_id", Value::Text(id.clone()))],
+        &[],
+    )?;
+
+    // 12. shared-memory embeddings (session_id == character_id)
+    clone_copy_rows(
+        &tx,
+        "memory_embeddings",
+        &[("session_id", Value::Text(new_char_id.clone()))],
+        &[
+            ("session_id", Value::Text(id.clone())),
+            ("session_kind", Value::Text("companion_shared".to_string())),
+        ],
+        &[],
+    )?;
+
+    // 13. sessions (remap selected_scene_id)
+    let mut session_map: HashMap<String, String> = HashMap::new();
+    for old in clone_collect_ids(&tx, "SELECT id FROM sessions WHERE character_id = ?", &id)? {
+        let new = uuid::Uuid::new_v4().to_string();
+        let old_scene: Option<String> = tx
+            .query_row(
+                "SELECT selected_scene_id FROM sessions WHERE id = ?",
+                params![&old],
+                |r| r.get(0),
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let mut overrides = vec![
+            ("id", Value::Text(new.clone())),
+            ("character_id", Value::Text(new_char_id.clone())),
+        ];
+        if let Some(ns) = old_scene.as_ref().and_then(|s| scene_map.get(s)) {
+            overrides.push(("selected_scene_id", Value::Text(ns.clone())));
+        }
+        clone_copy_rows(
+            &tx,
+            "sessions",
+            &overrides,
+            &[("id", Value::Text(old.clone()))],
+            &[],
+        )?;
+        session_map.insert(old, new);
+    }
+
+    // 14. per-session: messages, variants, turn effects, embeddings
+    for (old_s, new_s) in &session_map {
+        let mut msg_map: HashMap<String, String> = HashMap::new();
+        for om in clone_collect_ids(&tx, "SELECT id FROM messages WHERE session_id = ?", old_s)? {
+            let nm = uuid::Uuid::new_v4().to_string();
+            clone_copy_rows(
+                &tx,
+                "messages",
+                &[
+                    ("id", Value::Text(nm.clone())),
+                    ("session_id", Value::Text(new_s.clone())),
+                ],
+                &[("id", Value::Text(om.clone()))],
+                &[],
+            )?;
+            msg_map.insert(om, nm);
+        }
+
+        let mut variant_map: HashMap<String, String> = HashMap::new();
+        for (om, nm) in &msg_map {
+            for ov in
+                clone_collect_ids(&tx, "SELECT id FROM message_variants WHERE message_id = ?", om)?
+            {
+                let nv = uuid::Uuid::new_v4().to_string();
+                clone_copy_rows(
+                    &tx,
+                    "message_variants",
+                    &[
+                        ("id", Value::Text(nv.clone())),
+                        ("message_id", Value::Text(nm.clone())),
+                    ],
+                    &[("id", Value::Text(ov.clone()))],
+                    &[],
+                )?;
+                variant_map.insert(ov, nv);
+            }
+        }
+
+        for (om, nm) in &msg_map {
+            let selected: Option<String> = tx
+                .query_row(
+                    "SELECT selected_variant_id FROM messages WHERE id = ?",
+                    params![om],
+                    |r| r.get(0),
+                )
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+            if let Some(nv) = selected.as_ref().and_then(|v| variant_map.get(v)) {
+                tx.execute(
+                    "UPDATE messages SET selected_variant_id = ? WHERE id = ?",
+                    params![nv, nm],
+                )
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+            }
+        }
+
+        for oe in clone_collect_ids(
+            &tx,
+            "SELECT id FROM companion_turn_effects WHERE session_id = ?",
+            old_s,
+        )? {
+            let (old_user, old_assistant): (Option<String>, String) = tx
+                .query_row(
+                    "SELECT user_message_id, assistant_message_id FROM companion_turn_effects WHERE id = ?",
+                    params![&oe],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+            let Some(new_assistant) = msg_map.get(&old_assistant) else {
+                continue;
+            };
+            let ne = uuid::Uuid::new_v4().to_string();
+            let mut overrides = vec![
+                ("id", Value::Text(ne)),
+                ("session_id", Value::Text(new_s.clone())),
+                ("assistant_message_id", Value::Text(new_assistant.clone())),
+            ];
+            match old_user.as_ref().and_then(|u| msg_map.get(u)) {
+                Some(nu) => overrides.push(("user_message_id", Value::Text(nu.clone()))),
+                None => overrides.push(("user_message_id", Value::Null)),
+            }
+            clone_copy_rows(
+                &tx,
+                "companion_turn_effects",
+                &overrides,
+                &[("id", Value::Text(oe))],
+                &[],
+            )?;
+        }
+
+        clone_copy_rows(
+            &tx,
+            "memory_embeddings",
+            &[("session_id", Value::Text(new_s.clone()))],
+            &[
+                ("session_id", Value::Text(old_s.clone())),
+                ("session_kind", Value::Text("session".to_string())),
+            ],
+            &[],
+        )?;
+    }
+
+    tx.commit()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    log_info(
+        &app,
+        "character_clone_deep",
+        format!("Cloned character {} -> {}", id, new_char_id),
+    );
+
+    let conn2 = open_db(&app)?;
+    let json = read_character(&conn2, &new_char_id)?;
+    serde_json::to_string(&json).map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }

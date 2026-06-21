@@ -1,13 +1,19 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use rusqlite::{params, OptionalExtension};
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::time::sleep;
 use uuid::Uuid;
 
 use crate::api::{api_request, ApiRequest, ApiResponse};
 use crate::dynamic_memory_run_manager::{DynamicMemoryCancellationToken, DynamicMemoryRunManager};
 use crate::embedding;
+use crate::post_turn_memory_scheduler::{PostTurnMemoryJob, PostTurnMemoryScheduler};
+use crate::storage_manager::companion_turn_effects::{
+    create_processing_effect, mark_effect_failed, mark_effect_ready, CompanionTurnEffectSeed,
+};
 use crate::storage_manager::db::open_db;
 use crate::storage_manager::sessions::session_conversation_count;
 use crate::usage::tracking::UsageOperationType;
@@ -15,20 +21,25 @@ use crate::utils::{log_error, log_info, log_warn, now_millis};
 
 use super::dynamic::{
     apply_memory_decay, calculate_hot_memory_tokens, dynamic_cold_threshold, dynamic_decay_rate,
-    dynamic_hot_memory_token_budget, dynamic_max_entries, dynamic_memory_structured_fallback_format,
-    enforce_hot_memory_budget, ensure_pinned_hot, find_duplicate_memory_reason,
-    generate_memory_id, normalize_query_text, search_cold_memory_indices_by_keyword,
-    select_relevant_memory_indices, select_top_cosine_memory_indices, trim_memories_to_max,
+    dynamic_hot_memory_token_budget, dynamic_max_entries,
+    dynamic_memory_structured_fallback_format, enforce_hot_memory_budget, ensure_pinned_hot,
+    find_duplicate_memory_reason, generate_memory_id, normalize_query_text,
+    search_cold_memory_indices_by_keyword, select_relevant_memory_indices,
+    select_top_cosine_memory_indices, trim_memories_to_max,
 };
 use super::structured_fallback::{
     memory_operations_fallback_prompt, memory_repairs_fallback_prompt,
     parse_memory_operations_from_text, parse_memory_tag_repairs_from_text,
     structured_fallback_format_label,
 };
+use crate::chat_manager::companion;
 use crate::chat_manager::execution::{
     find_model_with_credential, prepare_default_sampling_request,
 };
 use crate::chat_manager::prompt_engine;
+use crate::chat_manager::prompting::entry_conditions::{
+    entry_is_active, PromptEntryConditionContext,
+};
 use crate::chat_manager::prompts::{
     self, APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID, APP_DYNAMIC_MEMORY_TEMPLATE_ID,
     APP_DYNAMIC_SUMMARY_TEMPLATE_ID,
@@ -37,13 +48,18 @@ use crate::chat_manager::request::{extract_error_message, extract_text, extract_
 use crate::chat_manager::request_builder;
 use crate::chat_manager::service::{record_usage_if_available, require_api_key, ChatContext};
 use crate::chat_manager::storage::save_session;
+use crate::chat_manager::temporal::{
+    companion_effective_now, companion_time_awareness_enabled, detect_temporal_query_range,
+    memory_matches_temporal_range,
+};
 use crate::chat_manager::thinking::normalize_thinking_content;
 use crate::chat_manager::tooling::{
     parse_tool_calls, ToolCall, ToolChoice, ToolConfig, ToolDefinition,
 };
 use crate::chat_manager::types::{
     Character, DynamicMemorySettings, MemoryEmbedding, MemoryRetrievalStrategy, Model, Persona,
-    ProviderCredential, Session, Settings, StoredMessage,
+    PromptEntryChatMode, PromptEntryInfoSource, ProviderCredential, Session, Settings,
+    StoredMessage, SystemPromptEntry,
 };
 
 const ALLOWED_MEMORY_CATEGORIES: &[&str] = &[
@@ -55,6 +71,81 @@ const ALLOWED_MEMORY_CATEGORIES: &[&str] = &[
     "other",
 ];
 const HARD_DELETE_CONFIDENCE_THRESHOLD: f32 = 0.7;
+const MEMORY_MIGRATION_EMBED_TIMEOUT_SECS: u64 = 90;
+
+fn dynamic_memory_summary_template_id(settings: &Settings) -> String {
+    settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| {
+            advanced
+                .dynamic_memory_summarizer_prompt_template_id
+                .clone()
+        })
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| APP_DYNAMIC_SUMMARY_TEMPLATE_ID.to_string())
+}
+
+fn dynamic_memory_manager_template_id(
+    settings: &Settings,
+    provider_cred: &ProviderCredential,
+    model: &Model,
+) -> String {
+    settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.dynamic_memory_manager_prompt_template_id.clone())
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| {
+            if uses_local_dynamic_memory_model(provider_cred, model) {
+                APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID.to_string()
+            } else {
+                APP_DYNAMIC_MEMORY_TEMPLATE_ID.to_string()
+            }
+        })
+}
+
+fn resolve_dynamic_memory_summarisation_model_id(
+    app: &AppHandle,
+    settings: &Settings,
+    override_model_id: Option<&str>,
+) -> Result<String, String> {
+    if let Some(id) = override_model_id {
+        log_info(
+            app,
+            "dynamic_memory",
+            format!("using override model: {}", id),
+        );
+        return Ok(id.to_string());
+    }
+
+    if let Some(id) = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.summarisation_model_id.as_ref())
+        .filter(|id| !id.trim().is_empty())
+    {
+        return Ok(id.clone());
+    }
+
+    if let Some(id) = settings
+        .default_model_id
+        .as_ref()
+        .filter(|id| !id.trim().is_empty())
+    {
+        log_info(
+            app,
+            "dynamic_memory",
+            format!(
+                "summarisation model not set; falling back to app default model: {}",
+                id
+            ),
+        );
+        return Ok(id.clone());
+    }
+
+    Err("Summarisation model not configured".to_string())
+}
 
 fn response_preview(provider_id: &str, value: &Value) -> String {
     if let Some(text) =
@@ -64,6 +155,21 @@ fn response_preview(provider_id: &str, value: &Value) -> String {
     } else {
         value.to_string()
     }
+}
+
+fn latest_observed_memory_context(
+    session: &Session,
+) -> (Option<u64>, Option<String>, Option<String>) {
+    let source = session.messages.iter().rev().find(|message| {
+        let role = message.role.trim().to_ascii_lowercase();
+        role == "user" || role == "assistant"
+    });
+
+    (
+        source.map(|_| companion_effective_now(session)),
+        source.map(|message| message.role.clone()),
+        source.map(|message| message.id.clone()),
+    )
 }
 
 fn log_text_parse_failure(app: &AppHandle, phase: &str, text: &str, err: &str) {
@@ -100,6 +206,95 @@ fn dynamic_memory_debug_capture_enabled(settings: &Settings) -> bool {
             .unwrap_or(false)
 }
 
+fn dynamic_memory_prompt_condition_context<'a>(
+    session: &'a Session,
+    character: &'a Character,
+    model: &'a Model,
+    recent_text: &'a str,
+    has_memory_summary: bool,
+    has_key_memories: bool,
+) -> PromptEntryConditionContext<'a> {
+    let companion_mode_enabled = companion::is_companion_mode(session, character);
+    PromptEntryConditionContext {
+        chat_mode: PromptEntryChatMode::Direct,
+        info_source: PromptEntryInfoSource::Messages,
+        scene_generation_enabled: false,
+        avatar_generation_enabled: false,
+        has_scene: session.selected_scene_id.is_some(),
+        has_scene_direction: false,
+        has_persona: false,
+        message_count: session.messages.len(),
+        participant_count: 2,
+        recent_text,
+        dynamic_memory_enabled: true,
+        has_memory_summary,
+        has_key_memories,
+        has_lorebook_content: false,
+        does_author_note_exists: session
+            .author_note
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+        has_active_scheduled_note: false,
+        has_subject_description: false,
+        has_current_description: false,
+        has_character_reference_images: false,
+        has_chat_background: false,
+        has_persona_reference_images: false,
+        has_character_reference_text: false,
+        has_persona_reference_text: false,
+        input_scopes: &model.input_scopes,
+        output_scopes: &model.output_scopes,
+        provider_id: Some(model.provider_id.as_str()),
+        reasoning_enabled: model
+            .advanced_model_settings
+            .as_ref()
+            .and_then(|cfg| cfg.reasoning_enabled)
+            .unwrap_or(false),
+        vision_enabled: model.input_scopes.iter().any(|scope| {
+            matches!(
+                scope.trim().to_ascii_lowercase().as_str(),
+                "image" | "vision"
+            )
+        }),
+        time_awareness_enabled: companion_mode_enabled && companion_time_awareness_enabled(session),
+        companion_mode_enabled,
+    }
+}
+
+fn render_active_prompt_entries(
+    app: &AppHandle,
+    entries: &[SystemPromptEntry],
+    condition_context: &PromptEntryConditionContext<'_>,
+    character: &Character,
+    persona: Option<&Persona>,
+    session: &Session,
+    settings: &Settings,
+) -> String {
+    entries
+        .iter()
+        .filter(|entry| entry_is_active(entry, condition_context))
+        .filter_map(|entry| {
+            let rendered = prompt_engine::render_with_context(
+                app,
+                &entry.content,
+                character,
+                persona,
+                session,
+                settings,
+                None,
+            );
+            let trimmed = rendered.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
 fn push_memory_debug_step(debug_steps: &mut Vec<Value>, enabled: bool, step: Value) {
     if enabled {
         debug_steps.push(step);
@@ -120,6 +315,14 @@ fn dynamic_memory_run_key(session_id: &str) -> String {
 
 fn dynamic_memory_request_id(session_id: &str, phase: &str) -> String {
     format!("dynamic-memory:{}:{}", session_id, phase)
+}
+
+const POST_TURN_MEMORY_DEBOUNCE_MS: u64 = 1_200;
+
+fn dynamic_memory_request_session(session: &Session) -> Session {
+    let mut sanitized = session.clone();
+    sanitized.advanced_model_settings = None;
+    sanitized
 }
 
 fn uses_local_dynamic_memory_model(provider_cred: &ProviderCredential, model: &Model) -> bool {
@@ -346,10 +549,11 @@ async fn request_memory_tool_calls(
                     .ok_or_else(|| {
                         "memory fallback returned neither tool calls nor text output".to_string()
                     })?;
-                let calls = parse_memory_operations_from_text(&text, fallback_format).map_err(|err| {
-                    log_text_parse_failure(app, "memory fallback", &text, &err);
-                    err
-                })?;
+                let calls = parse_memory_operations_from_text(&text, fallback_format).inspect_err(
+                    |err| {
+                        log_text_parse_failure(app, "memory fallback", &text, err);
+                    },
+                )?;
                 Ok((calls, "text_fallback_after_http_error"))
             } else {
                 let tool_calls = parse_tool_calls(&provider_cred.provider_id, api_response.data());
@@ -436,10 +640,10 @@ async fn request_memory_tool_calls(
                             "memory fallback returned neither tool calls nor text output"
                                 .to_string()
                         })?;
-                    let calls = parse_memory_operations_from_text(&text, fallback_format).map_err(|err| {
-                        log_text_parse_failure(app, "memory fallback", &text, &err);
-                        err
-                    })?;
+                    let calls = parse_memory_operations_from_text(&text, fallback_format)
+                        .inspect_err(|err| {
+                            log_text_parse_failure(app, "memory fallback", &text, err);
+                        })?;
                     Ok((calls, "text_fallback_after_empty_tool_calls"))
                 }
             }
@@ -534,10 +738,10 @@ async fn request_memory_tool_calls(
                 .ok_or_else(|| {
                     "memory fallback returned neither tool calls nor text output".to_string()
                 })?;
-            let calls = parse_memory_operations_from_text(&text, fallback_format).map_err(|err| {
-                log_text_parse_failure(app, "memory fallback", &text, &err);
-                err
-            })?;
+            let calls =
+                parse_memory_operations_from_text(&text, fallback_format).inspect_err(|err| {
+                    log_text_parse_failure(app, "memory fallback", &text, err);
+                })?;
             Ok((calls, "text_fallback_after_request_error"))
         }
     }
@@ -558,6 +762,150 @@ fn emit_dynamic_memory_transition_toast(
             "description": description,
         }),
     );
+}
+
+fn emit_memory_vector_migration_toast(
+    app: &AppHandle,
+    toast_id: &str,
+    title: &str,
+    subtitle: &str,
+    progress: f32,
+) {
+    let _ = app.emit(
+        "app://toast",
+        json!({
+            "id": toast_id,
+            "kind": "modelLoad",
+            "title": title,
+            "subtitle": subtitle,
+            "modelName": "Memory embeddings",
+            "progress": progress,
+        }),
+    );
+}
+
+fn dismiss_memory_vector_migration_toast(app: &AppHandle, toast_id: &str) {
+    let _ = app.emit(
+        "app://toast",
+        json!({
+            "id": toast_id,
+            "dismiss": true,
+        }),
+    );
+}
+
+fn memory_embedding_requires_migration(
+    memory: &MemoryEmbedding,
+    target_source_version: &str,
+    target_dimensions: usize,
+) -> bool {
+    if memory.embedding.is_empty() || memory.embedding.len() != target_dimensions {
+        return true;
+    }
+
+    if memory.embedding_dimensions != Some(target_dimensions) {
+        return true;
+    }
+
+    match memory.embedding_source_version.as_deref() {
+        Some(version) => version != target_source_version,
+        None => !(target_source_version == "v3" && target_dimensions == 512),
+    }
+}
+
+async fn migrate_session_memory_embeddings_if_needed(
+    app: &AppHandle,
+    session: &mut Session,
+) -> Result<(), String> {
+    if session.memory_embeddings.is_empty() {
+        return Ok(());
+    }
+
+    let (target_source_version, target_dimensions) =
+        embedding::resolve_active_embedding_signature(app)?;
+    let needs_migration = session.memory_embeddings.iter().any(|memory| {
+        memory_embedding_requires_migration(memory, &target_source_version, target_dimensions)
+    });
+    if !needs_migration {
+        return Ok(());
+    }
+
+    let toast_id = format!("memory-vector-migration:{}", session.id);
+    let total = session.memory_embeddings.len().max(1);
+    emit_memory_vector_migration_toast(
+        app,
+        &toast_id,
+        "Migrating memory vectors",
+        "Updating saved memories for the current memory model. Messages may be delayed briefly.",
+        0.0,
+    );
+
+    let migration_result: Result<(), String> = async {
+        for (idx, memory) in session.memory_embeddings.iter_mut().enumerate() {
+            if memory_embedding_requires_migration(
+                memory,
+                &target_source_version,
+                target_dimensions,
+            ) {
+                memory.embedding = tokio::time::timeout(
+                    Duration::from_secs(MEMORY_MIGRATION_EMBED_TIMEOUT_SECS),
+                    embedding::compute_embedding(app.clone(), memory.text.clone()),
+                )
+                .await
+                .map_err(|_| {
+                    crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        format!(
+                            "Timed out after {}s while re-embedding saved memory {}/{}",
+                            MEMORY_MIGRATION_EMBED_TIMEOUT_SECS,
+                            idx + 1,
+                            total
+                        ),
+                    )
+                })??;
+                memory.embedding_source_version = Some(target_source_version.clone());
+                memory.embedding_dimensions = Some(target_dimensions);
+            }
+
+            let progress = (idx + 1) as f32 / total as f32;
+            emit_memory_vector_migration_toast(
+                app,
+                &toast_id,
+                "Migrating memory vectors",
+                &format!("Re-embedded {}/{} saved memories.", idx + 1, total),
+                progress,
+            );
+        }
+
+        save_session(app, session)?;
+        Ok(())
+    }
+    .await;
+
+    dismiss_memory_vector_migration_toast(app, &toast_id);
+
+    if let Err(err) = migration_result {
+        let _ = app.emit(
+            "app://toast",
+            json!({
+                "variant": "error",
+                "title": "Memory migration failed",
+                "description": err.clone(),
+            }),
+        );
+        return Err(err);
+    }
+
+    let _ = app.emit(
+        "app://toast",
+        json!({
+            "variant": "success",
+            "title": "Memory migration complete",
+            "description": "Saved memory vectors are now using the current memory model.",
+        }),
+    );
+    Ok(())
 }
 
 async fn prepare_local_dynamic_memory_cycle(
@@ -772,6 +1120,8 @@ fn fetch_conversation_messages_range(
                 role: r.get(1)?,
                 content: r.get(2)?,
                 created_at: created_at.max(0) as u64,
+                visible_in_chat: false,
+                scene_edited: false,
                 usage: None,
                 variants: Vec::new(),
                 selected_variant_id: None,
@@ -801,16 +1151,111 @@ fn format_memories_with_ids(session: &Session) -> Vec<String> {
         .collect()
 }
 
+fn normalized_tokens(text: &str) -> Vec<String> {
+    text.to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| token.len() >= 3)
+        .map(|token| token.to_string())
+        .collect()
+}
+
+fn lexical_anchor_boost(query: &str, memory_text: &str) -> f32 {
+    let query_lower = query.to_ascii_lowercase();
+    let memory_lower = memory_text.to_ascii_lowercase();
+    let query_tokens = normalized_tokens(query);
+    if query_tokens.is_empty() {
+        return 0.0;
+    }
+
+    let token_overlap = query_tokens
+        .iter()
+        .filter(|token| memory_lower.contains(token.as_str()))
+        .count() as f32
+        / query_tokens.len() as f32;
+
+    let sequence_boost = if query_lower.contains("after ") {
+        let has_anchor = if let Some(anchor) = query_lower.split("after ").nth(1) {
+            let anchor_tokens = normalized_tokens(anchor);
+            !anchor_tokens.is_empty()
+                && anchor_tokens
+                    .iter()
+                    .all(|token| memory_lower.contains(token.as_str()))
+        } else {
+            false
+        };
+        let has_sequence_language = memory_lower.contains("then ")
+            || memory_lower.contains("after ")
+            || memory_lower.contains("afterward");
+        if has_anchor && has_sequence_language {
+            0.35
+        } else if has_anchor {
+            0.15
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    (token_overlap * 0.2) + sequence_boost
+}
+
 pub(crate) async fn select_relevant_memories(
     app: &AppHandle,
-    session: &Session,
+    session: &mut Session,
     query: &str,
     limit: usize,
     min_similarity: f32,
     strategy: MemoryRetrievalStrategy,
+    temporal_query_features_enabled: bool,
 ) -> Vec<MemoryEmbedding> {
     if query.is_empty() || session.memory_embeddings.is_empty() {
         return Vec::new();
+    }
+
+    let reference_ms = companion_effective_now(session);
+    let temporal_range = if temporal_query_features_enabled
+        && companion_time_awareness_enabled(session)
+    {
+        detect_temporal_query_range(query, reference_ms)
+    } else {
+        None
+    };
+    let filtered_candidates: Option<Vec<(usize, MemoryEmbedding)>> =
+        temporal_range.as_ref().map(|range| {
+            session
+                .memory_embeddings
+                .iter()
+                .cloned()
+                .enumerate()
+                .filter(|(_, memory)| memory_matches_temporal_range(memory, range))
+                .collect()
+        });
+    let (candidate_index_map, candidate_memories): (Vec<usize>, Vec<MemoryEmbedding>) =
+        if let Some(candidates) = filtered_candidates {
+            if candidates.is_empty() {
+                return Vec::new();
+            }
+            candidates.into_iter().unzip()
+        } else {
+            (
+                (0..session.memory_embeddings.len()).collect(),
+                session.memory_embeddings.clone(),
+            )
+        };
+    let temporal_query_active = temporal_range.is_some();
+    let effective_min_similarity = if temporal_query_active {
+        -1.0
+    } else {
+        min_similarity
+    };
+
+    if let Err(err) = migrate_session_memory_embeddings_if_needed(app, session).await {
+        log_warn(
+            app,
+            "memory_retrieval",
+            format!("memory vector migration failed: {}", err),
+        );
     }
 
     let query_embedding = match embedding::compute_embedding(app.clone(), query.to_string()).await {
@@ -828,9 +1273,9 @@ pub(crate) async fn select_relevant_memories(
     if matches!(strategy, MemoryRetrievalStrategy::Cosine) {
         let cosine_indices = select_top_cosine_memory_indices(
             &query_embedding,
-            &session.memory_embeddings,
+            &candidate_memories,
             limit,
-            min_similarity,
+            effective_min_similarity,
         );
         if cosine_indices.is_empty() {
             return Vec::new();
@@ -838,7 +1283,8 @@ pub(crate) async fn select_relevant_memories(
         return cosine_indices
             .into_iter()
             .filter_map(|(idx, score)| {
-                session.memory_embeddings.get(idx).map(|mem| {
+                let source_idx = *candidate_index_map.get(idx)?;
+                session.memory_embeddings.get(source_idx).map(|mem| {
                     let mut cloned = mem.clone();
                     cloned.match_score = Some(score);
                     cloned
@@ -847,34 +1293,58 @@ pub(crate) async fn select_relevant_memories(
             .collect();
     }
 
-    let cosine_limit = (limit.saturating_sub(2)).max(1);
+    // Smart strategy: try cosine for the full limit first. The "newest" and
+    // "most-accessed" picks below act as fallbacks for slots cosine could not
+    // fill, not as guaranteed reservations. With v4 retrieval quality this
+    // keeps unrelated padding out of the LLM context when cosine succeeds.
     let cosine_indices = select_relevant_memory_indices(
         &query_embedding,
-        &session.memory_embeddings,
-        cosine_limit,
-        min_similarity,
+        &candidate_memories,
+        limit,
+        effective_min_similarity,
     );
 
     let mut selected: HashSet<usize> = HashSet::new();
     let mut results: Vec<MemoryEmbedding> = Vec::new();
 
     for (idx, score) in &cosine_indices {
-        if let Some(mem) = session.memory_embeddings.get(*idx) {
+        let Some(source_idx) = candidate_index_map.get(*idx).copied() else {
+            continue;
+        };
+        if let Some(mem) = session.memory_embeddings.get(source_idx) {
             let mut cloned = mem.clone();
-            cloned.match_score = Some(*score);
+            let adjusted_score = *score
+                + if temporal_query_features_enabled {
+                    lexical_anchor_boost(query, &mem.text)
+                } else {
+                    0.0
+                };
+            cloned.match_score = Some(adjusted_score);
             results.push(cloned);
-            selected.insert(*idx);
+            selected.insert(source_idx);
         }
     }
 
-    if results.len() < limit {
-        if let Some(recent_idx) = session
-            .memory_embeddings
+    results.sort_by(|a, b| {
+        b.match_score
+            .unwrap_or_default()
+            .partial_cmp(&a.match_score.unwrap_or_default())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    if !temporal_query_active && results.len() < limit {
+        if let Some(recent_idx) = candidate_memories
             .iter()
             .enumerate()
-            .filter(|(i, m)| !m.is_cold && !selected.contains(i))
+            .filter(|(i, m)| {
+                !m.is_cold
+                    && candidate_index_map
+                        .get(*i)
+                        .map(|source_idx| !selected.contains(source_idx))
+                        .unwrap_or(false)
+            })
             .max_by_key(|(_, m)| m.created_at)
-            .map(|(i, _)| i)
+            .and_then(|(i, _)| candidate_index_map.get(i).copied())
         {
             if let Some(mem) = session.memory_embeddings.get(recent_idx) {
                 results.push(mem.clone());
@@ -883,14 +1353,20 @@ pub(crate) async fn select_relevant_memories(
         }
     }
 
-    if results.len() < limit {
-        if let Some(freq_idx) = session
-            .memory_embeddings
+    if !temporal_query_active && results.len() < limit {
+        if let Some(freq_idx) = candidate_memories
             .iter()
             .enumerate()
-            .filter(|(i, m)| !m.is_cold && !selected.contains(i) && m.access_count > 0)
+            .filter(|(i, m)| {
+                m.access_count > 0
+                    && !m.is_cold
+                    && candidate_index_map
+                        .get(*i)
+                        .map(|source_idx| !selected.contains(source_idx))
+                        .unwrap_or(false)
+            })
             .max_by_key(|(_, m)| m.access_count)
-            .map(|(i, _)| i)
+            .and_then(|(i, _)| candidate_index_map.get(i).copied())
         {
             if let Some(mem) = session.memory_embeddings.get(freq_idx) {
                 results.push(mem.clone());
@@ -899,35 +1375,48 @@ pub(crate) async fn select_relevant_memories(
         }
     }
 
-    if results.len() < limit {
+    if !temporal_query_active && results.len() < limit {
         let extra_indices = select_relevant_memory_indices(
             &query_embedding,
-            &session.memory_embeddings,
+            &candidate_memories,
             limit,
-            min_similarity,
+            effective_min_similarity,
         );
         for (idx, score) in extra_indices {
             if results.len() >= limit {
                 break;
             }
-            if !selected.contains(&idx) {
-                if let Some(mem) = session.memory_embeddings.get(idx) {
+            let Some(source_idx) = candidate_index_map.get(idx).copied() else {
+                continue;
+            };
+            if !selected.contains(&source_idx) {
+                if let Some(mem) = session.memory_embeddings.get(source_idx) {
                     let mut cloned = mem.clone();
-                    cloned.match_score = Some(score);
+                    cloned.match_score = Some(
+                        score
+                            + if temporal_query_features_enabled {
+                                lexical_anchor_boost(query, &mem.text)
+                            } else {
+                                0.0
+                            },
+                    );
                     results.push(cloned);
-                    selected.insert(idx);
+                    selected.insert(source_idx);
                 }
             }
         }
+        results.sort_by(|a, b| {
+            b.match_score
+                .unwrap_or_default()
+                .partial_cmp(&a.match_score.unwrap_or_default())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     if results.is_empty() {
         let normalized_query = normalize_query_text(query);
-        let cold_indices = search_cold_memory_indices_by_keyword(
-            &session.memory_embeddings,
-            &normalized_query,
-            limit,
-        );
+        let cold_indices =
+            search_cold_memory_indices_by_keyword(&candidate_memories, &normalized_query, limit);
         if !cold_indices.is_empty() {
             crate::utils::log_info(
                 app,
@@ -938,7 +1427,10 @@ pub(crate) async fn select_relevant_memories(
 
         return cold_indices
             .into_iter()
-            .filter_map(|idx| session.memory_embeddings.get(idx).cloned())
+            .filter_map(|idx| {
+                let source_idx = *candidate_index_map.get(idx)?;
+                session.memory_embeddings.get(source_idx).cloned()
+            })
             .collect();
     }
 
@@ -1010,6 +1502,412 @@ pub fn abort_dynamic_memory(app: AppHandle, session_id: String) -> Result<(), St
     let run_manager = app.state::<DynamicMemoryRunManager>().inner().clone();
     let abort_registry = app.state::<crate::abort_manager::AbortRegistry>();
     run_manager.cancel_run(&abort_registry, &run_key)
+}
+
+pub fn enqueue_post_turn_dynamic_memory(
+    app: AppHandle,
+    session_id: String,
+    user_message_id: Option<String>,
+    assistant_message_id: String,
+    seed: Option<CompanionTurnEffectSeed>,
+) {
+    let scheduler = app.state::<PostTurnMemoryScheduler>().inner().clone();
+    let seed_for_job = seed.clone().unwrap_or_default();
+    let job = PostTurnMemoryJob {
+        session_id: session_id.clone(),
+        user_message_id,
+        assistant_message_id: assistant_message_id.clone(),
+        enqueued_at: now_millis().unwrap_or_default(),
+        track_effect: seed.is_some(),
+        relationship_delta: seed_for_job.relationship_delta.clone(),
+        emotion_delta: seed_for_job.emotion_delta.clone(),
+        signal_changes: seed_for_job.signal_changes.clone(),
+    };
+
+    if let Some(seed) = seed {
+        if let Err(err) = create_processing_effect(
+            &app,
+            &session_id,
+            job.user_message_id.as_deref(),
+            &assistant_message_id,
+            seed,
+        ) {
+            log_warn(
+                &app,
+                "dynamic_memory",
+                format!(
+                    "failed to create companion turn effect placeholder for session {} message {}: {}",
+                    session_id, assistant_message_id, err
+                ),
+            );
+        }
+    }
+
+    if !scheduler.enqueue(job) {
+        log_info(
+            &app,
+            "dynamic_memory",
+            format!("coalesced post-turn memory run for session {}", session_id),
+        );
+        return;
+    }
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            sleep(Duration::from_millis(POST_TURN_MEMORY_DEBOUNCE_MS)).await;
+            let jobs = scheduler.begin_iteration(&session_id);
+
+            let context = match ChatContext::initialize(app.clone()) {
+                Ok(context) => context,
+                Err(err) => {
+                    log_error(
+                        &app,
+                        "dynamic_memory",
+                        format!(
+                            "failed to initialize post-turn memory context for session {}: {}",
+                            session_id, err
+                        ),
+                    );
+                    mark_jobs_failed(&app, &jobs, &err);
+                    if !scheduler.finish_iteration(&session_id) {
+                        break;
+                    }
+                    continue;
+                }
+            };
+
+            let mut session = match context.load_session(&session_id) {
+                Ok(Some(session)) => session,
+                Ok(None) => {
+                    log_warn(
+                        &app,
+                        "dynamic_memory",
+                        format!(
+                            "skipping post-turn memory; session {} no longer exists",
+                            session_id
+                        ),
+                    );
+                    let _ = scheduler.finish_iteration(&session_id);
+                    break;
+                }
+                Err(err) => {
+                    log_error(
+                        &app,
+                        "dynamic_memory",
+                        format!(
+                            "failed to load latest session {} for post-turn memory: {}",
+                            session_id, err
+                        ),
+                    );
+                    mark_jobs_failed(&app, &jobs, &err);
+                    if !scheduler.finish_iteration(&session_id) {
+                        break;
+                    }
+                    continue;
+                }
+            };
+            let before_memories = session.memory_embeddings.clone();
+
+            let character = match context.find_character(&session.character_id) {
+                Ok(character) => character,
+                Err(err) => {
+                    log_error(
+                        &app,
+                        "dynamic_memory",
+                        format!(
+                            "failed to load character {} for post-turn memory session {}: {}",
+                            session.character_id, session_id, err
+                        ),
+                    );
+                    mark_jobs_failed(&app, &jobs, &err);
+                    if !scheduler.finish_iteration(&session_id) {
+                        break;
+                    }
+                    continue;
+                }
+            };
+
+            log_info(
+                &app,
+                "dynamic_memory",
+                format!(
+                    "running post-turn memory in background for session {}",
+                    session_id
+                ),
+            );
+
+            let memory_result =
+                process_dynamic_memory_cycle(&app, &mut session, &context.settings, &character)
+                    .await;
+
+            if let Err(err) = memory_result {
+                log_error(
+                    &app,
+                    "dynamic_memory",
+                    format!(
+                        "post-turn memory cycle failed for session {}: {}",
+                        session_id, err
+                    ),
+                );
+                mark_jobs_failed(&app, &jobs, &err);
+            } else {
+                finalize_companion_turn_effects(&app, &jobs, &before_memories, &session);
+            }
+
+            if !scheduler.finish_iteration(&session_id) {
+                break;
+            }
+        }
+    });
+}
+
+fn mark_jobs_failed(app: &AppHandle, jobs: &[PostTurnMemoryJob], err: &str) {
+    for job in jobs.iter().filter(|job| job.track_effect) {
+        let _ = mark_effect_failed(app, &job.session_id, &job.assistant_message_id, err);
+    }
+}
+
+fn finalize_companion_turn_effects(
+    app: &AppHandle,
+    jobs: &[PostTurnMemoryJob],
+    before_memories: &[MemoryEmbedding],
+    session: &Session,
+) {
+    let jobs = jobs
+        .iter()
+        .filter(|job| job.track_effect)
+        .collect::<Vec<_>>();
+    if jobs.is_empty() {
+        return;
+    }
+
+    let before_by_id = before_memories
+        .iter()
+        .map(|memory| (memory.id.as_str(), memory))
+        .collect::<HashMap<_, _>>();
+
+    for job in jobs {
+        let message_ids = [
+            job.user_message_id.as_deref(),
+            Some(job.assistant_message_id.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<HashSet<_>>();
+        let memory_changes = memory_changes_for_turn(&message_ids, &before_by_id, session);
+        let summary = summarize_turn_effect(
+            &job.relationship_delta,
+            &job.emotion_delta,
+            &job.signal_changes,
+            &memory_changes,
+        );
+        let source_window = json!({
+            "messageIds": message_ids.iter().copied().collect::<Vec<_>>(),
+            "enqueuedAt": job.enqueued_at,
+        });
+
+        if let Err(err) = mark_effect_ready(
+            app,
+            &job.session_id,
+            &job.assistant_message_id,
+            summary,
+            memory_changes,
+            source_window,
+        ) {
+            log_warn(
+                app,
+                "dynamic_memory",
+                format!(
+                    "failed to finalize companion turn effect session={} assistantMessage={}: {}",
+                    job.session_id, job.assistant_message_id, err
+                ),
+            );
+        }
+    }
+}
+
+fn memory_changes_for_turn(
+    message_ids: &HashSet<&str>,
+    before_by_id: &HashMap<&str, &MemoryEmbedding>,
+    session: &Session,
+) -> Value {
+    let mut added = Vec::new();
+    let mut updated = Vec::new();
+    let mut superseded = Vec::new();
+
+    for memory in &session.memory_embeddings {
+        let existed = before_by_id.get(memory.id.as_str()).copied();
+        let source_matches = memory
+            .source_message_id
+            .as_deref()
+            .map(|message_id| message_ids.contains(message_id))
+            .unwrap_or(false);
+
+        if existed.is_none() && source_matches {
+            added.push(memory_change_item(memory));
+        }
+
+        if let Some(previous) = existed {
+            let changed = previous.text != memory.text
+                || previous.category != memory.category
+                || previous.importance_score != memory.importance_score
+                || previous.prompt_importance != memory.prompt_importance
+                || previous.persistence_importance != memory.persistence_importance;
+            if changed && source_matches {
+                updated.push(memory_change_item(memory));
+            }
+
+            if previous.superseded_at.is_none() && memory.superseded_at.is_some() {
+                let replacement_matches = memory
+                    .superseded_by
+                    .as_deref()
+                    .and_then(|id| session.memory_embeddings.iter().find(|item| item.id == id))
+                    .and_then(|replacement| replacement.source_message_id.as_deref())
+                    .map(|message_id| message_ids.contains(message_id))
+                    .unwrap_or(false);
+                if replacement_matches {
+                    let mut item = memory_change_item(memory);
+                    if let Some(map) = item.as_object_mut() {
+                        map.insert(
+                            "supersededBy".to_string(),
+                            memory
+                                .superseded_by
+                                .as_ref()
+                                .map(|id| Value::String(id.clone()))
+                                .unwrap_or(Value::Null),
+                        );
+                    }
+                    superseded.push(item);
+                }
+            }
+        }
+    }
+
+    json!({
+        "added": added,
+        "updated": updated,
+        "superseded": superseded,
+    })
+}
+
+fn memory_change_item(memory: &MemoryEmbedding) -> Value {
+    json!({
+        "memoryId": memory.id,
+        "text": memory.text,
+        "category": memory.category,
+        "sourceRole": memory.source_role,
+        "sourceMessageId": memory.source_message_id,
+    })
+}
+
+fn summarize_turn_effect(
+    relationship_delta: &Value,
+    emotion_delta: &Value,
+    signal_changes: &Value,
+    memory_changes: &Value,
+) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some((key, value)) = largest_numeric_delta(relationship_delta) {
+        parts.push(format!("{} {}", humanize_key(&key), format_delta(value)));
+    }
+    if let Some((key, value)) = largest_nested_numeric_delta(emotion_delta) {
+        parts.push(format!("{} {}", humanize_key(&key), format_delta(value)));
+    }
+    let added_signals = signal_changes
+        .get("added")
+        .and_then(|value| value.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    if added_signals > 0 {
+        parts.push(format!(
+            "{} signal{}",
+            added_signals,
+            plural_suffix(added_signals)
+        ));
+    }
+    let added_memories = memory_changes
+        .get("added")
+        .and_then(|value| value.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let superseded_memories = memory_changes
+        .get("superseded")
+        .and_then(|value| value.as_array())
+        .map(|items| items.len())
+        .unwrap_or(0);
+    if added_memories > 0 {
+        parts.push(format!(
+            "{} memory{} added",
+            added_memories,
+            plural_suffix(added_memories)
+        ));
+    }
+    if superseded_memories > 0 {
+        parts.push(format!(
+            "{} memory{} superseded",
+            superseded_memories,
+            plural_suffix(superseded_memories)
+        ));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.into_iter().take(3).collect::<Vec<_>>().join(", "))
+    }
+}
+
+fn largest_numeric_delta(value: &Value) -> Option<(String, f64)> {
+    value
+        .as_object()?
+        .iter()
+        .filter_map(|(key, value)| value.as_f64().map(|number| (key.clone(), number)))
+        .max_by(|(_, left), (_, right)| {
+            left.abs()
+                .partial_cmp(&right.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+fn largest_nested_numeric_delta(value: &Value) -> Option<(String, f64)> {
+    value
+        .as_object()?
+        .iter()
+        .flat_map(|(group, nested)| {
+            nested.as_object().into_iter().flat_map(move |items| {
+                items.iter().filter_map(move |(key, value)| {
+                    value
+                        .as_f64()
+                        .map(|number| (format!("{}.{}", group, key), number))
+                })
+            })
+        })
+        .max_by(|(_, left), (_, right)| {
+            left.abs()
+                .partial_cmp(&right.abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+fn format_delta(value: f64) -> String {
+    let percent = (value * 100.0).round() as i64;
+    if percent >= 0 {
+        format!("+{}%", percent)
+    } else {
+        format!("{}%", percent)
+    }
+}
+
+fn humanize_key(key: &str) -> String {
+    key.replace(['_', '.'], " ")
+}
+
+fn plural_suffix(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 pub(crate) async fn process_dynamic_memory_cycle(
@@ -1229,25 +2127,15 @@ async fn process_dynamic_memory_cycle_with_model(
         );
     }
 
-    let summarisation_model_id: String = match model_id_override {
-        Some(id) => {
-            log_info(
-                app,
-                "dynamic_memory",
-                format!("using override model: {}", id),
-            );
-            id.to_string()
-        }
-        None => match advanced.summarisation_model_id.as_ref() {
-            Some(id) => id.clone(),
-            None => {
-                let err = "Summarisation model not configured";
-                log_warn(app, "dynamic_memory", err);
-                record_dynamic_memory_error(app, session, err, "summary_model");
-                return Err(err.to_string());
+    let summarisation_model_id =
+        match resolve_dynamic_memory_summarisation_model_id(app, settings, model_id_override) {
+            Ok(id) => id,
+            Err(err) => {
+                log_warn(app, "dynamic_memory", &err);
+                record_dynamic_memory_error(app, session, &err, "summary_model");
+                return Err(err);
             }
-        },
-    };
+        };
 
     let (summary_model, summary_provider) =
         match find_model_with_credential(settings, &summarisation_model_id) {
@@ -1856,7 +2744,9 @@ fn requested_parallel_tool_calls(
     extra_body_fields: Option<&HashMap<String, Value>>,
 ) -> Option<bool> {
     if provider_cred.provider_id != "llamacpp"
-        || !tool_config.map(|cfg| !cfg.tools.is_empty()).unwrap_or(false)
+        || !tool_config
+            .map(|cfg| !cfg.tools.is_empty())
+            .unwrap_or(false)
     {
         return None;
     }
@@ -1914,6 +2804,7 @@ async fn send_dynamic_memory_request(
         return Err("Request was cancelled by user".to_string());
     }
     let extra_body_fields = sanitize_dynamic_memory_extra_body_fields(
+        &provider_cred.provider_id,
         extra_body_fields,
         overwrite_llama_sampler_config,
     );
@@ -2166,10 +3057,11 @@ async fn send_dynamic_memory_request(
 }
 
 fn sanitize_dynamic_memory_extra_body_fields(
+    provider_id: &str,
     extra_body_fields: Option<HashMap<String, Value>>,
     overwrite_llama_sampler_config: bool,
 ) -> Option<HashMap<String, Value>> {
-    if !overwrite_llama_sampler_config {
+    if !overwrite_llama_sampler_config || provider_id != "llamacpp" {
         return extra_body_fields;
     }
     let mut extra = extra_body_fields.unwrap_or_default();
@@ -2178,6 +3070,11 @@ fn sanitize_dynamic_memory_extra_body_fields(
         "llamaSamplerOrder",
         "llamaMinP",
         "llamaTypicalP",
+        "llamaDryMultiplier",
+        "llamaDryBase",
+        "llamaDryAllowedLength",
+        "llamaDryPenaltyLastN",
+        "llamaDrySequenceBreakers",
         "llamaDisableSamplerProfileDefaults",
         "top_k",
         "frequency_penalty",
@@ -2199,6 +3096,7 @@ fn sanitize_dynamic_memory_extra_body_fields(
             "top_k",
             "top_p",
             "temp",
+            "dry",
             "min_p",
             "typical"
         ]),
@@ -2208,6 +3106,10 @@ fn sanitize_dynamic_memory_extra_body_fields(
     extra.insert("presence_penalty".to_string(), json!(0.0));
     extra.insert("min_p".to_string(), json!(0.0));
     extra.insert("typical_p".to_string(), json!(0.0));
+    extra.insert("llamaDryMultiplier".to_string(), json!(0.8));
+    extra.insert("llamaDryBase".to_string(), json!(1.75));
+    extra.insert("llamaDryAllowedLength".to_string(), json!(2));
+    extra.insert("llamaDryPenaltyLastN".to_string(), json!(-1));
 
     if extra.is_empty() {
         None
@@ -2239,19 +3141,9 @@ async fn run_memory_tool_update(
     let mut messages_for_api = Vec::new();
     let system_role = request_builder::system_role_for(provider_cred);
 
-    let template_id = if uses_local_dynamic_memory_model(provider_cred, model) {
-        APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID
-    } else {
-        APP_DYNAMIC_MEMORY_TEMPLATE_ID
-    };
+    let template_id = dynamic_memory_manager_template_id(settings, provider_cred, model);
 
-    let base_template = prompts::get_template(app, template_id)
-        .ok()
-        .flatten()
-        .map(|t| t.content)
-        .unwrap_or_else(|| {
-            "You maintain a long-term memory index for a conversation transcript. Use tools to add or delete concise factual memories. Every create_memory call must include a category tag. Keep the list tidy and capped at {{max_entries}} entries. Prefer deleting by ID when removing items. When finished, call the done tool.".to_string()
-        });
+    let base_template = prompts::get_template(app, &template_id).ok().flatten();
 
     let pinned_fixed = ensure_pinned_hot(&mut session.memory_embeddings);
     if pinned_fixed > 0 {
@@ -2265,11 +3157,52 @@ async fn run_memory_tool_update(
     let current_tokens = calculate_hot_memory_tokens(&session.memory_embeddings);
     let token_budget = dynamic_hot_memory_token_budget(settings);
 
-    let rendered =
-        prompt_engine::render_with_context(app, &base_template, character, None, session, settings)
-            .replace("{{max_entries}}", &max_entries.to_string())
-            .replace("{{current_memory_tokens}}", &current_tokens.to_string())
-            .replace("{{hot_token_budget}}", &token_budget.to_string());
+    let recent_text = convo_window
+        .iter()
+        .map(|m| format!("{}: {}", m.role, m.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let condition_context = dynamic_memory_prompt_condition_context(
+        session,
+        character,
+        model,
+        &recent_text,
+        !summary.trim().is_empty(),
+        !session.memory_embeddings.is_empty(),
+    );
+    let base_prompt = base_template
+        .as_ref()
+        .map(|template| {
+            if template.entries.is_empty() {
+                prompt_engine::render_with_context(
+                    app,
+                    &template.content,
+                    character,
+                    None,
+                    session,
+                    settings,
+                    None,
+                )
+            } else {
+                render_active_prompt_entries(
+                    app,
+                    &template.entries,
+                    &condition_context,
+                    character,
+                    None,
+                    session,
+                    settings,
+                )
+            }
+        })
+        .unwrap_or_else(|| {
+            "You maintain a long-term memory index for a conversation transcript. Use tools to add or delete concise factual memories. Every create_memory call must include a category tag. Keep the list tidy and capped at {{max_entries}} entries. Prefer deleting by ID when removing items. When finished, call the done tool.".to_string()
+        });
+
+    let rendered = base_prompt
+        .replace("{{max_entries}}", &max_entries.to_string())
+        .replace("{{current_memory_tokens}}", &current_tokens.to_string())
+        .replace("{{hot_token_budget}}", &token_budget.to_string());
 
     crate::chat_manager::messages::push_system_message(
         &mut messages_for_api,
@@ -2287,9 +3220,10 @@ async fn run_memory_tool_update(
         )
     }));
 
+    let request_session = dynamic_memory_request_session(session);
     let (request_settings, extra_body_fields) = prepare_default_sampling_request(
         &provider_cred.provider_id,
-        session,
+        &request_session,
         model,
         settings,
         0.2,
@@ -2419,231 +3353,261 @@ async fn run_memory_tool_update(
         let mut saw_done = false;
 
         for call in calls {
-        match call.name.as_str() {
-            "create_memory" => {
-                if let Some(raw_text) = extract_text_argument(&call) {
-                    let text = match validate_memory_text(&raw_text) {
-                        Ok(text) => text,
-                        Err(reason) => {
-                            log_warn(
-                                app,
-                                "dynamic_memory",
-                                format!("Skipping invalid memory text: {}", reason),
-                            );
-                            actions_log.push(json!({
-                                "name": "create_memory",
-                                "arguments": call.arguments,
-                                "skipped": true,
-                                "reason": reason,
-                                "timestamp": now_millis().unwrap_or_default(),
-                            }));
-                            tool_results.push(json!({
-                                "status": "skipped",
-                                "name": "create_memory",
-                                "reason": reason,
-                                "arguments": call.arguments,
-                            }));
-                            continue;
-                        }
-                    };
-                    let mem_id = generate_memory_id();
-                    let embedding =
-                        match embedding::compute_embedding(app.clone(), text.clone()).await {
-                            Ok(vec) => Some(vec),
-                            Err(err) => {
-                                log_error(
+            match call.name.as_str() {
+                "create_memory" => {
+                    if let Some(raw_text) = extract_text_argument(&call) {
+                        let text = match validate_memory_text(&raw_text) {
+                            Ok(text) => text,
+                            Err(reason) => {
+                                log_warn(
                                     app,
                                     "dynamic_memory",
-                                    format!("failed to embed memory: {}", err),
+                                    format!("Skipping invalid memory text: {}", reason),
                                 );
-                                None
+                                actions_log.push(json!({
+                                    "name": "create_memory",
+                                    "arguments": call.arguments,
+                                    "skipped": true,
+                                    "reason": reason,
+                                    "timestamp": now_millis().unwrap_or_default(),
+                                }));
+                                tool_results.push(json!({
+                                    "status": "skipped",
+                                    "name": "create_memory",
+                                    "reason": reason,
+                                    "arguments": call.arguments,
+                                }));
+                                continue;
                             }
                         };
-                    if let Some(reason) = find_duplicate_memory_reason(
-                        &text,
-                        embedding.as_deref(),
-                        &session.memory_embeddings,
-                    ) {
-                        log_info(
-                            app,
-                            "dynamic_memory",
-                            format!("Skipping duplicate memory ({}): {}", reason, &text),
-                        );
-                        actions_log.push(json!({
-                            "name": "create_memory",
-                            "arguments": call.arguments,
-                            "skipped": true,
-                            "reason": reason,
-                            "timestamp": now_millis().unwrap_or_default(),
-                        }));
-                        tool_results.push(json!({
-                            "status": "skipped",
-                            "name": "create_memory",
-                            "reason": reason,
-                            "arguments": call.arguments,
-                        }));
-                        continue;
-                    }
-                    let token_count =
-                        crate::embedding::tokenizer::count_tokens(app, &text).unwrap_or(0);
-                    // Check if memory should be pinned
-                    let is_pinned = call
-                        .arguments
-                        .get("important")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let category = match extract_required_memory_category(&call) {
-                        Ok(category) => category,
-                        Err(reason) => {
-                            log_warn(
-                                app,
-                                "dynamic_memory",
-                                format!("Skipping memory without required category: {}", reason),
-                            );
-                            actions_log.push(json!({
-                                "name": "create_memory",
-                                "arguments": call.arguments,
-                                "skipped": true,
-                                "reason": reason,
-                                "timestamp": now_millis().unwrap_or_default(),
-                            }));
+                        let mem_id = generate_memory_id();
+                        let embedding =
+                            match embedding::compute_embedding(app.clone(), text.clone()).await {
+                                Ok(vec) => Some(vec),
+                                Err(err) => {
+                                    log_error(
+                                        app,
+                                        "dynamic_memory",
+                                        format!("failed to embed memory: {}", err),
+                                    );
+                                    None
+                                }
+                            };
+                        if let Some(reason) = find_duplicate_memory_reason(
+                            &text,
+                            embedding.as_deref(),
+                            &session.memory_embeddings,
+                        ) {
                             log_info(
                                 app,
                                 "dynamic_memory",
-                                format!(
-                                    "Queued memory for category repair: text=\"{}\" pinned={}",
-                                    text, is_pinned
-                                ),
+                                format!("Skipping duplicate memory ({}): {}", reason, &text),
                             );
-                            untagged_candidates.push((text, is_pinned));
+                            actions_log.push(json!({
+                                "name": "create_memory",
+                                "arguments": call.arguments,
+                                "skipped": true,
+                                "reason": reason,
+                                "timestamp": now_millis().unwrap_or_default(),
+                            }));
                             tool_results.push(json!({
                                 "status": "skipped",
                                 "name": "create_memory",
                                 "reason": reason,
-                                "repairQueued": true,
                                 "arguments": call.arguments,
                             }));
                             continue;
                         }
-                    };
-                    session.memory_embeddings.push(MemoryEmbedding {
-                        id: mem_id.clone(),
-                        text,
-                        embedding: embedding.unwrap_or_default(),
-                        created_at: now_millis().unwrap_or_default(),
-                        token_count,
-                        is_cold: false,
-                        last_accessed_at: now_millis().unwrap_or_default(),
-                        importance_score: 1.0,
-                        is_pinned,
-                        access_count: 0,
-                        match_score: None,
-                        category: Some(category),
-                    });
-                    let action = json!({
-                        "name": "create_memory",
-                        "arguments": call.arguments,
-                        "memoryId": mem_id,
-                        "timestamp": now_millis().unwrap_or_default(),
-                        "updatedMemories": format_memories_with_ids(session),
-                    });
-                    tool_results.push(json!({
+                        let token_count =
+                            crate::embedding::tokenizer::count_tokens(app, &text).unwrap_or(0);
+                        // Check if memory should be pinned
+                        let is_pinned = call
+                            .arguments
+                            .get("important")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let category = match extract_required_memory_category(&call) {
+                            Ok(category) => category,
+                            Err(reason) => {
+                                log_warn(
+                                    app,
+                                    "dynamic_memory",
+                                    format!(
+                                        "Skipping memory without required category: {}",
+                                        reason
+                                    ),
+                                );
+                                actions_log.push(json!({
+                                    "name": "create_memory",
+                                    "arguments": call.arguments,
+                                    "skipped": true,
+                                    "reason": reason,
+                                    "timestamp": now_millis().unwrap_or_default(),
+                                }));
+                                log_info(
+                                    app,
+                                    "dynamic_memory",
+                                    format!(
+                                        "Queued memory for category repair: text=\"{}\" pinned={}",
+                                        text, is_pinned
+                                    ),
+                                );
+                                untagged_candidates.push((text, is_pinned));
+                                tool_results.push(json!({
+                                    "status": "skipped",
+                                    "name": "create_memory",
+                                    "reason": reason,
+                                    "repairQueued": true,
+                                    "arguments": call.arguments,
+                                }));
+                                continue;
+                            }
+                        };
+                        let (observed_at, source_role, source_message_id) =
+                            if companion_time_awareness_enabled(session) {
+                                latest_observed_memory_context(session)
+                            } else {
+                                (None, None, None)
+                            };
+                        let (embedding_source_version, embedding_dimensions) =
+                            embedding::resolve_active_embedding_signature(app)
+                                .unwrap_or_else(|_| ("v3".to_string(), 512));
+                        session.memory_embeddings.push(MemoryEmbedding {
+                            id: mem_id.clone(),
+                            text,
+                            embedding: embedding.unwrap_or_default(),
+                            created_at: now_millis().unwrap_or_default(),
+                            token_count,
+                            is_cold: false,
+                            last_accessed_at: now_millis().unwrap_or_default(),
+                            importance_score: 1.0,
+                            persistence_importance: 1.0,
+                            prompt_importance: 1.0,
+                            volatility: 0.4,
+                            is_pinned,
+                            access_count: 0,
+                            embedding_source_version: Some(embedding_source_version),
+                            embedding_dimensions: Some(embedding_dimensions),
+                            match_score: None,
+                            category: Some(category),
+                            observed_at,
+                            observed_time_precision: observed_at.map(|_| "turn".to_string()),
+                            canonical_entities: Vec::new(),
+                            fact_signature: None,
+                            fact_polarity: None,
+                            source_role,
+                            source_message_id,
+                            superseded_by: None,
+                            superseded_at: None,
+                            supersedes: Vec::new(),
+                        });
+                        let action = json!({
+                            "name": "create_memory",
+                            "arguments": call.arguments,
+                            "memoryId": mem_id,
+                            "observedAt": observed_at,
+                            "observedTimePrecision": observed_at.as_ref().map(|_| "turn"),
+                            "timestamp": now_millis().unwrap_or_default(),
+                            "updatedMemories": format_memories_with_ids(session),
+                        });
+                        tool_results.push(json!({
                         "status": "created",
                         "name": "create_memory",
                         "memoryId": action.get("memoryId").cloned().unwrap_or(Value::Null),
                         "updatedMemories": action.get("updatedMemories").cloned().unwrap_or(Value::Null),
                     }));
-                    actions_log.push(action);
+                        actions_log.push(action);
+                    }
                 }
-            }
-            "delete_memory" => {
-                if let Some(text) = call.arguments.get("text").and_then(|v| v.as_str()) {
-                    let sanitized = sanitize_memory_id(text);
-                    let target_idx =
-                        if sanitized.len() == 6 && sanitized.chars().all(char::is_numeric) {
-                            session
-                                .memory_embeddings
-                                .iter()
-                                .position(|m| m.id == sanitized)
-                        } else {
-                            session
-                                .memory_embeddings
-                                .iter()
-                                .position(|m| m.text == text)
-                        };
-                    if let Some(idx) = target_idx {
-                        let target_memory = session.memory_embeddings.get(idx).cloned();
-                        let confidence = call
-                            .arguments
-                            .get("confidence")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(delete_confidence_default as f64)
-                            as f32;
-                        let confidence_defaulted = call
-                            .arguments
-                            .get("confidence")
-                            .and_then(|v| v.as_f64())
-                            .is_none();
-                        let force_soft_delete = confidence >= HARD_DELETE_CONFIDENCE_THRESHOLD
-                            && hard_delete_count >= max_hard_deletes;
-                        if confidence < HARD_DELETE_CONFIDENCE_THRESHOLD || force_soft_delete {
-                            // Soft-delete: move to cold storage instead of removing
-                            if idx < session.memory_embeddings.len() {
-                                let cold_threshold = dynamic_cold_threshold(settings);
-                                session.memory_embeddings[idx].is_cold = true;
-                                session.memory_embeddings[idx].importance_score = cold_threshold;
-                                log_info(
-                                    app,
-                                    "dynamic_memory",
-                                    if force_soft_delete {
-                                        format!(
+                "delete_memory" => {
+                    if let Some(text) = call.arguments.get("text").and_then(|v| v.as_str()) {
+                        let sanitized = sanitize_memory_id(text);
+                        let target_idx =
+                            if sanitized.len() == 6 && sanitized.chars().all(char::is_numeric) {
+                                session
+                                    .memory_embeddings
+                                    .iter()
+                                    .position(|m| m.id == sanitized)
+                            } else {
+                                session
+                                    .memory_embeddings
+                                    .iter()
+                                    .position(|m| m.text == text)
+                            };
+                        if let Some(idx) = target_idx {
+                            let target_memory = session.memory_embeddings.get(idx).cloned();
+                            let confidence = call
+                                .arguments
+                                .get("confidence")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(delete_confidence_default as f64)
+                                as f32;
+                            let confidence_defaulted = call
+                                .arguments
+                                .get("confidence")
+                                .and_then(|v| v.as_f64())
+                                .is_none();
+                            let force_soft_delete = confidence >= HARD_DELETE_CONFIDENCE_THRESHOLD
+                                && hard_delete_count >= max_hard_deletes;
+                            if confidence < HARD_DELETE_CONFIDENCE_THRESHOLD || force_soft_delete {
+                                // Soft-delete: move to cold storage instead of removing
+                                if idx < session.memory_embeddings.len() {
+                                    let cold_threshold = dynamic_cold_threshold(settings);
+                                    session.memory_embeddings[idx].is_cold = true;
+                                    session.memory_embeddings[idx].importance_score =
+                                        cold_threshold;
+                                    log_info(
+                                        app,
+                                        "dynamic_memory",
+                                        if force_soft_delete {
+                                            format!(
                                             "Soft-deleted memory due to hard-delete safeguard (hard_deletes={}/{}, confidence={:.2})",
                                             hard_delete_count,
                                             max_hard_deletes,
                                             confidence
                                         )
-                                    } else {
-                                        format!(
+                                        } else {
+                                            format!(
                                             "Soft-deleted memory (confidence={:.2}, defaulted={})",
                                             confidence, confidence_defaulted
                                         )
+                                        },
+                                    );
+                                }
+                                actions_log.push(json!({
+                                    "name": "delete_memory",
+                                    "arguments": call.arguments,
+                                    "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
+                                    "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
+                                    "memorySnapshot": target_memory,
+                                    "softDelete": true,
+                                    "reason": if force_soft_delete {
+                                        "hard_delete_limit_reached"
+                                    } else {
+                                        "low_confidence"
                                     },
-                                );
-                            }
-                            actions_log.push(json!({
-                                "name": "delete_memory",
-                                "arguments": call.arguments,
-                                "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
-                                "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
-                                "memorySnapshot": target_memory,
-                                "softDelete": true,
-                                "reason": if force_soft_delete {
-                                    "hard_delete_limit_reached"
-                                } else {
-                                    "low_confidence"
-                                },
-                                "confidence": confidence,
-                                "confidenceDefaulted": confidence_defaulted,
-                                "hardDeleteCount": hard_delete_count,
-                                "hardDeleteLimit": max_hard_deletes,
-                                "timestamp": now_millis().unwrap_or_default(),
-                                "updatedMemories": format_memories_with_ids(session),
-                            }));
-                            tool_results.push(json!({
-                                "status": "soft_deleted",
-                                "name": "delete_memory",
-                                "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
-                                "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
-                                "updatedMemories": format_memories_with_ids(session),
-                            }));
-                        } else {
-                            let removed_memory = if idx < session.memory_embeddings.len() {
-                                Some(session.memory_embeddings.remove(idx))
+                                    "confidence": confidence,
+                                    "confidenceDefaulted": confidence_defaulted,
+                                    "hardDeleteCount": hard_delete_count,
+                                    "hardDeleteLimit": max_hard_deletes,
+                                    "timestamp": now_millis().unwrap_or_default(),
+                                    "updatedMemories": format_memories_with_ids(session),
+                                }));
+                                tool_results.push(json!({
+                                    "status": "soft_deleted",
+                                    "name": "delete_memory",
+                                    "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
+                                    "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
+                                    "updatedMemories": format_memories_with_ids(session),
+                                }));
                             } else {
-                                None
-                            };
-                            hard_delete_count += 1;
-                            actions_log.push(json!({
+                                let removed_memory = if idx < session.memory_embeddings.len() {
+                                    Some(session.memory_embeddings.remove(idx))
+                                } else {
+                                    None
+                                };
+                                hard_delete_count += 1;
+                                actions_log.push(json!({
                                 "name": "delete_memory",
                                 "arguments": call.arguments,
                                 "deletedText": removed_memory.as_ref().map(|m| m.text.clone()),
@@ -2656,111 +3620,113 @@ async fn run_memory_tool_update(
                                 "timestamp": now_millis().unwrap_or_default(),
                                 "updatedMemories": format_memories_with_ids(session),
                             }));
-                            tool_results.push(json!({
+                                tool_results.push(json!({
                                 "status": "deleted",
                                 "name": "delete_memory",
                                 "deletedMemoryId": removed_memory.as_ref().map(|m| m.id.clone()),
                                 "deletedText": removed_memory.as_ref().map(|m| m.text.clone()),
                                 "updatedMemories": format_memories_with_ids(session),
                             }));
+                            }
+                        } else {
+                            log_warn(
+                                app,
+                                "dynamic_memory",
+                                format!("delete_memory could not find target: {}", text),
+                            );
+                            tool_results.push(json!({
+                                "status": "skipped",
+                                "name": "delete_memory",
+                                "reason": "target_not_found",
+                                "arguments": call.arguments,
+                            }));
                         }
-                    } else {
-                        log_warn(
-                            app,
-                            "dynamic_memory",
-                            format!("delete_memory could not find target: {}", text),
-                        );
-                        tool_results.push(json!({
-                            "status": "skipped",
-                            "name": "delete_memory",
-                            "reason": "target_not_found",
-                            "arguments": call.arguments,
-                        }));
                     }
                 }
-            }
-            "pin_memory" => {
-                if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
-                    let id = sanitize_memory_id(raw_id);
-                    if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id) {
-                        mem.is_pinned = true;
-                        mem.importance_score = 1.0; // Reset score when pinned
-                        actions_log.push(json!({
-                            "name": "pin_memory",
-                            "arguments": call.arguments,
-                            "timestamp": now_millis().unwrap_or_default(),
-                        }));
-                        tool_results.push(json!({
-                            "status": "pinned",
-                            "name": "pin_memory",
-                            "memoryId": id,
-                        }));
-                        log_info(app, "dynamic_memory", format!("Pinned memory {}", id));
-                    } else {
-                        log_warn(
-                            app,
-                            "dynamic_memory",
-                            format!("pin_memory could not find: {}", id),
-                        );
-                        tool_results.push(json!({
-                            "status": "skipped",
-                            "name": "pin_memory",
-                            "reason": "target_not_found",
-                            "arguments": call.arguments,
-                        }));
+                "pin_memory" => {
+                    if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
+                        let id = sanitize_memory_id(raw_id);
+                        if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id)
+                        {
+                            mem.is_pinned = true;
+                            mem.importance_score = 1.0; // Reset score when pinned
+                            actions_log.push(json!({
+                                "name": "pin_memory",
+                                "arguments": call.arguments,
+                                "timestamp": now_millis().unwrap_or_default(),
+                            }));
+                            tool_results.push(json!({
+                                "status": "pinned",
+                                "name": "pin_memory",
+                                "memoryId": id,
+                            }));
+                            log_info(app, "dynamic_memory", format!("Pinned memory {}", id));
+                        } else {
+                            log_warn(
+                                app,
+                                "dynamic_memory",
+                                format!("pin_memory could not find: {}", id),
+                            );
+                            tool_results.push(json!({
+                                "status": "skipped",
+                                "name": "pin_memory",
+                                "reason": "target_not_found",
+                                "arguments": call.arguments,
+                            }));
+                        }
                     }
                 }
-            }
-            "unpin_memory" => {
-                if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
-                    let id = sanitize_memory_id(raw_id);
-                    if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id) {
-                        mem.is_pinned = false;
-                        actions_log.push(json!({
-                            "name": "unpin_memory",
-                            "arguments": call.arguments,
-                            "timestamp": now_millis().unwrap_or_default(),
-                        }));
-                        tool_results.push(json!({
-                            "status": "unpinned",
-                            "name": "unpin_memory",
-                            "memoryId": id,
-                        }));
-                        log_info(app, "dynamic_memory", format!("Unpinned memory {}", id));
-                    } else {
-                        log_warn(
-                            app,
-                            "dynamic_memory",
-                            format!("unpin_memory could not find: {}", id),
-                        );
-                        tool_results.push(json!({
-                            "status": "skipped",
-                            "name": "unpin_memory",
-                            "reason": "target_not_found",
-                            "arguments": call.arguments,
-                        }));
+                "unpin_memory" => {
+                    if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
+                        let id = sanitize_memory_id(raw_id);
+                        if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id)
+                        {
+                            mem.is_pinned = false;
+                            actions_log.push(json!({
+                                "name": "unpin_memory",
+                                "arguments": call.arguments,
+                                "timestamp": now_millis().unwrap_or_default(),
+                            }));
+                            tool_results.push(json!({
+                                "status": "unpinned",
+                                "name": "unpin_memory",
+                                "memoryId": id,
+                            }));
+                            log_info(app, "dynamic_memory", format!("Unpinned memory {}", id));
+                        } else {
+                            log_warn(
+                                app,
+                                "dynamic_memory",
+                                format!("unpin_memory could not find: {}", id),
+                            );
+                            tool_results.push(json!({
+                                "status": "skipped",
+                                "name": "unpin_memory",
+                                "reason": "target_not_found",
+                                "arguments": call.arguments,
+                            }));
+                        }
                     }
                 }
-            }
-            "done" => {
-                actions_log.push(json!({
-                    "name": "done",
-                    "arguments": call.arguments,
-                    "timestamp": now_millis().unwrap_or_default(),
-                }));
-                saw_done = true;
-                break;
-            }
-            _ => {
-                tool_results.push(json!({
-                    "status": "skipped",
-                    "name": call.name,
-                    "reason": "unsupported_tool",
-                    "arguments": call.arguments,
-                }));
+                "done" => {
+                    actions_log.push(json!({
+                        "name": "done",
+                        "arguments": call.arguments,
+                        "timestamp": now_millis().unwrap_or_default(),
+                    }));
+                    saw_done = true;
+                    break;
+                }
+                _ => {
+                    tool_results.push(json!({
+                        "status": "skipped",
+                        "name": call.name,
+                        "reason": "unsupported_tool",
+                        "arguments": call.arguments,
+                    }));
+                }
             }
         }
-    }
 
         let skipped_results = tool_results
             .iter()
@@ -2962,6 +3928,15 @@ async fn run_memory_tool_update(
                     }
                     let token_count =
                         crate::embedding::tokenizer::count_tokens(app, &text).unwrap_or(0);
+                    let (observed_at, source_role, source_message_id) =
+                        if companion_time_awareness_enabled(session) {
+                            latest_observed_memory_context(session)
+                        } else {
+                            (None, None, None)
+                        };
+                    let (embedding_source_version, embedding_dimensions) =
+                        embedding::resolve_active_embedding_signature(app)
+                            .unwrap_or_else(|_| ("v3".to_string(), 512));
                     session.memory_embeddings.push(MemoryEmbedding {
                         id: mem_id.clone(),
                         text: text.clone(),
@@ -2971,10 +3946,25 @@ async fn run_memory_tool_update(
                         is_cold: false,
                         last_accessed_at: now_millis().unwrap_or_default(),
                         importance_score: 1.0,
+                        persistence_importance: 1.0,
+                        prompt_importance: 1.0,
+                        volatility: 0.4,
                         is_pinned,
                         access_count: 0,
+                        embedding_source_version: Some(embedding_source_version),
+                        embedding_dimensions: Some(embedding_dimensions),
                         match_score: None,
                         category: Some(category.clone()),
+                        observed_at,
+                        observed_time_precision: observed_at.map(|_| "turn".to_string()),
+                        canonical_entities: Vec::new(),
+                        fact_signature: None,
+                        fact_polarity: None,
+                        source_role,
+                        source_message_id,
+                        superseded_by: None,
+                        superseded_at: None,
+                        supersedes: Vec::new(),
                     });
                     actions_log.push(json!({
                         "name": "create_memory",
@@ -2984,6 +3974,8 @@ async fn run_memory_tool_update(
                             "category": category,
                             "important": is_pinned,
                         },
+                        "observedAt": observed_at,
+                        "observedTimePrecision": observed_at.as_ref().map(|_| "turn"),
                         "memoryId": mem_id,
                         "timestamp": now_millis().unwrap_or_default(),
                         "updatedMemories": format_memories_with_ids(session),
@@ -3009,13 +4001,26 @@ async fn run_memory_tool_update(
     }
 
     let trimmed = trim_memories_to_max(&mut session.memory_embeddings, max_entries);
-    if trimmed > 0 {
+    if !trimmed.is_empty() {
+        // Cascade the eviction directly to the normalised table; the
+        // session-level `save_session` later in this cycle will re-sync the
+        // remaining rows but the narrow DELETE here keeps them gone if the
+        // save fails partway.
+        if let Ok(owner) = crate::storage_manager::companion_shared_memory::resolve_effective_memory_owner_for_session_app(app, &session.id) {
+            let _ = crate::storage_manager::memory_embeddings::delete_many_app(
+                app,
+                &owner.owner_id,
+                owner.kind,
+                &trimmed,
+            );
+        }
         log_info(
             app,
             "dynamic_memory",
             format!(
                 "Trimmed {} memories to enforce max_entries={}",
-                trimmed, max_entries
+                trimmed.len(),
+                max_entries
             ),
         );
     }
@@ -3395,22 +4400,55 @@ async fn summarize_messages(
     let mut messages_for_api = Vec::new();
     let system_role = request_builder::system_role_for(provider_cred);
 
-    let summary_template = prompts::get_template(app, APP_DYNAMIC_SUMMARY_TEMPLATE_ID)
-        .ok()
-        .flatten()
-        .map(|t| t.content)
+    let summary_template =
+        prompts::get_template(app, &dynamic_memory_summary_template_id(settings))
+            .ok()
+            .flatten();
+    let recent_text = convo_window
+        .iter()
+        .map(|m| format!("{}: {}", m.role, m.content))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let condition_context = dynamic_memory_prompt_condition_context(
+        session,
+        character,
+        model,
+        &recent_text,
+        prior_summary
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+        !session.memory_embeddings.is_empty(),
+    );
+    let base_prompt = summary_template
+        .as_ref()
+        .map(|template| {
+            if template.entries.is_empty() {
+                prompt_engine::render_with_context(
+                    app,
+                    &template.content,
+                    character,
+                    persona,
+                    session,
+                    settings,
+                    None,
+                )
+            } else {
+                render_active_prompt_entries(
+                    app,
+                    &template.entries,
+                    &condition_context,
+                    character,
+                    persona,
+                    session,
+                    settings,
+                )
+            }
+        })
         .unwrap_or_else(|| {
             "Summarize the recent conversation transcript into a concise paragraph capturing durable facts and decisions. Avoid adding new information.".to_string()
         });
 
-    let mut rendered = prompt_engine::render_with_context(
-        app,
-        &summary_template,
-        character,
-        persona,
-        session,
-        settings,
-    );
+    let mut rendered = base_prompt;
     let prev_text = prior_summary
         .filter(|s| !s.trim().is_empty())
         .unwrap_or("No previous summary provided.");
@@ -3432,9 +4470,10 @@ async fn summarize_messages(
         "content": "Return only the concise summary for the above conversation window. Use the write_summary tool."
     }));
 
+    let request_session = dynamic_memory_request_session(session);
     let (request_settings, extra_body_fields) = prepare_default_sampling_request(
         &provider_cred.provider_id,
-        session,
+        &request_session,
         model,
         settings,
         0.2,

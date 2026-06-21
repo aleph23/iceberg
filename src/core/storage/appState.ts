@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { readSettings, setAppState } from "./repo";
+import { readSettings, readSettingsCached, setAppState } from "./repo";
 import {
   createDefaultAppState,
   type AppState,
@@ -7,6 +7,7 @@ import {
   type CustomColorPreset,
   type CustomColors,
   type PureModeLevel,
+  type TrustedCertificate,
 } from "./schemas";
 
 type Theme = AppState["theme"];
@@ -33,6 +34,10 @@ function cloneAppState(state?: AppState): AppState {
       settingsCardOpacity: preset.settingsCardOpacity,
     })),
     chatsViewMode: source.chatsViewMode ?? "hero",
+    trustedCertificates: (source.trustedCertificates ?? []).map((certificate) => ({
+      ...certificate,
+    })),
+    lastSeenAppVersion: source.lastSeenAppVersion,
   };
 }
 
@@ -65,10 +70,21 @@ export async function isOnboardingCompleted(): Promise<boolean> {
 }
 
 export async function setOnboardingCompleted(completed: boolean = true): Promise<void> {
+  let stampVersion: string | undefined;
+  if (completed) {
+    try {
+      stampVersion = await invoke<string>("get_app_version");
+    } catch {
+      // ignore; the what's-new splash will record the version on next launch
+    }
+  }
   await withAppState((state) => {
     state.onboarding.completed = completed;
     if (completed) {
       state.onboarding.skipped = false;
+      if (stampVersion) {
+        state.lastSeenAppVersion = stampVersion;
+      }
     }
   });
 }
@@ -154,6 +170,17 @@ export async function setAutoDownloadCharacterCardAvatars(enabled: boolean): Pro
   });
 }
 
+export async function getTrustedCertificates(): Promise<TrustedCertificate[]> {
+  const state = await getAppState();
+  return [...(state.trustedCertificates ?? [])];
+}
+
+export async function setTrustedCertificates(certificates: TrustedCertificate[]): Promise<void> {
+  await withAppState((state) => {
+    state.trustedCertificates = certificates.map((certificate) => ({ ...certificate }));
+  });
+}
+
 export async function hasSeenTooltip(id: string): Promise<boolean> {
   const state = await getAppState();
   return Boolean(state.tooltips[id]);
@@ -230,8 +257,25 @@ export async function getChatsViewMode(): Promise<ChatsViewMode> {
   return state.chatsViewMode ?? "hero";
 }
 
+export function getChatsViewModeCached(): ChatsViewMode | null {
+  const settings = readSettingsCached();
+  if (!settings) return null;
+  return settings.appState.chatsViewMode ?? "hero";
+}
+
 export async function setChatsViewMode(mode: ChatsViewMode): Promise<void> {
   await withAppState((state) => {
     state.chatsViewMode = mode;
+  });
+}
+
+export async function getLastSeenAppVersion(): Promise<string | undefined> {
+  const state = await getAppState();
+  return state.lastSeenAppVersion;
+}
+
+export async function setLastSeenAppVersion(version: string): Promise<void> {
+  await withAppState((state) => {
+    state.lastSeenAppVersion = version;
   });
 }

@@ -89,12 +89,12 @@ export default function ChatTemplateListPage() {
         setExportTarget(null);
       } catch (error) {
         console.error("Failed to export chat template:", error);
-        toast.error("Export failed", String(error));
+        toast.error(t("characters.templates.exportFailed"), String(error));
       } finally {
         setExporting(false);
       }
     },
-    [exportTarget, exporting],
+    [exportTarget, exporting, t],
   );
 
   const handleImportFile = useCallback(
@@ -110,10 +110,13 @@ export default function ChatTemplateListPage() {
         };
         await saveCharacter(updated);
         setCharacter(updated);
-        toast.success("Imported", `Added "${imported.name}".`);
+        toast.success(
+          t("characters.templates.importedToast.title"),
+          t("characters.templates.importedToast.message", { name: imported.name }),
+        );
       } catch (error) {
         console.error("Failed to import chat template:", error);
-        toast.error("Import failed", String(error));
+        toast.error(t("characters.templates.importFailed"), String(error));
       } finally {
         setImporting(false);
         if (importInputRef.current) {
@@ -121,7 +124,7 @@ export default function ChatTemplateListPage() {
         }
       }
     },
-    [character, importing, templates, importInputRef],
+    [character, importing, templates, importInputRef, t],
   );
 
   const menuTemplate = templates.find((t) => t.id === menuTemplateId);
@@ -200,39 +203,41 @@ export default function ChatTemplateListPage() {
                 }}
                 className="rounded-xl border border-fg/10 bg-surface-el/30 transition active:bg-surface-el/50"
               >
-                <button
-                  type="button"
-                  className="flex w-full items-start gap-3 p-3.5 text-left"
-                  onClick={() =>
-                    navigate(`/settings/characters/${characterId}/templates/${template.id}`)
-                  }
-                >
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-fg/10 bg-fg/5">
-                    <MessageSquare className="h-4 w-4 text-fg/50" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <span className="truncate text-sm font-medium text-fg">{template.name}</span>
-                    <p className="mt-0.5 text-xs text-fg/50">
-                      {t("characters.templates.messageCount", { count: template.messages.length })}
-                    </p>
-                    {template.messages.length > 0 && (
-                      <p className="mt-1 line-clamp-2 text-xs text-fg/40">
-                        {template.messages[0].content.slice(0, 120)}
-                        {template.messages[0].content.length > 120 ? "..." : ""}
-                      </p>
-                    )}
-                  </div>
+                <div className="flex items-start gap-2 p-3.5">
                   <button
                     type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuTemplateId(template.id);
-                    }}
+                    className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                    onClick={() =>
+                      navigate(`/settings/characters/${characterId}/templates/${template.id}`)
+                    }
+                  >
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-fg/10 bg-fg/5">
+                      <MessageSquare className="h-4 w-4 text-fg/50" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <span className="truncate text-sm font-medium text-fg">{template.name}</span>
+                      <p className="mt-0.5 text-xs text-fg/50">
+                        {t("characters.templates.messageCount", {
+                          count: template.messages.length,
+                        })}
+                      </p>
+                      {template.messages.length > 0 && (
+                        <p className="mt-1 line-clamp-2 text-xs text-fg/40">
+                          {template.messages[0].content.slice(0, 120)}
+                          {template.messages[0].content.length > 120 ? "..." : ""}
+                        </p>
+                      )}
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMenuTemplateId(template.id)}
                     className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-fg/40 transition active:bg-fg/10"
+                    aria-label={t("chats.footer.moreOptions")}
                   >
                     <MoreVertical className="h-4 w-4" />
                   </button>
-                </button>
+                </div>
               </motion.div>
             ))}
           </AnimatePresence>
@@ -243,7 +248,7 @@ export default function ChatTemplateListPage() {
       <BottomMenu
         isOpen={!!menuTemplateId}
         onClose={() => setMenuTemplateId(null)}
-        title={menuTemplate?.name ?? "Template"}
+        title={menuTemplate?.name ?? t("characters.templates.contextMenuFallbackTitle")}
       >
         <div className="space-y-3">
           <MenuButton

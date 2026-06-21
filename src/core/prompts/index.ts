@@ -73,6 +73,10 @@ export async function resetLocalRoleplayTemplate(): Promise<SystemPromptTemplate
   return await invoke<SystemPromptTemplate>("reset_local_roleplay_template");
 }
 
+export async function resetCompanionTemplate(): Promise<SystemPromptTemplate> {
+  return await invoke<SystemPromptTemplate>("reset_companion_template");
+}
+
 export async function resetDynamicSummaryTemplate(): Promise<SystemPromptTemplate> {
   return await invoke<SystemPromptTemplate>("reset_dynamic_summary_template");
 }
@@ -101,6 +105,14 @@ export async function resetHelpMeReplyConversationalTemplate(): Promise<SystemPr
   return await invoke<SystemPromptTemplate>("reset_help_me_reply_conversational_template");
 }
 
+export async function resetLorebookEntryWriterTemplate(): Promise<SystemPromptTemplate> {
+  return await invoke<SystemPromptTemplate>("reset_lorebook_entry_writer_template");
+}
+
+export async function resetLorebookKeywordGeneratorTemplate(): Promise<SystemPromptTemplate> {
+  return await invoke<SystemPromptTemplate>("reset_lorebook_keyword_generator_template");
+}
+
 export async function resetAvatarGenerationTemplate(): Promise<SystemPromptTemplate> {
   return await invoke<SystemPromptTemplate>("reset_avatar_generation_template");
 }
@@ -113,8 +125,16 @@ export async function resetSceneGenerationTemplate(): Promise<SystemPromptTempla
   return await invoke<SystemPromptTemplate>("reset_scene_generation_template");
 }
 
+export async function resetScenePromptWriterTemplate(): Promise<SystemPromptTemplate> {
+  return await invoke<SystemPromptTemplate>("reset_scene_prompt_writer_template");
+}
+
 export async function resetDesignReferenceTemplate(): Promise<SystemPromptTemplate> {
   return await invoke<SystemPromptTemplate>("reset_design_reference_template");
+}
+
+export async function resetCompanionSoulWriterTemplate(): Promise<SystemPromptTemplate> {
+  return await invoke<SystemPromptTemplate>("reset_companion_soul_writer_template");
 }
 
 export async function getPromptParameterEngine(): Promise<PromptParameterEngine> {

@@ -1,4 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import type { AvatarGradientSource } from "./schemas";
 import { isRenderableImageUrl } from "../utils/image";
 
 /**
@@ -11,6 +12,10 @@ export type EntityType = "character" | "persona";
 
 export const AVATAR_BASE_FILENAME = "avatar_base.webp";
 export const AVATAR_ROUND_FILENAME = "avatar_round.webp";
+export const AVATAR_BANNER_FILENAME = "avatar_banner.webp";
+export const AVATAR_UPDATED_EVENT = "lettuce:avatar-updated";
+
+const avatarUrlCache = new Map<string, string>();
 
 export interface GradientColor {
   r: number;
@@ -35,6 +40,19 @@ export interface AvatarGradient {
  */
 function getPrefixedEntityId(type: EntityType, id: string): string {
   return `${type}-${id}`;
+}
+
+function emitAvatarUpdated(type: EntityType, entityId: string): void {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent(AVATAR_UPDATED_EVENT, {
+      detail: {
+        type,
+        entityId,
+        at: Date.now(),
+      },
+    }),
+  );
 }
 
 async function toDataUrlIfNeeded(imageData: string): Promise<string> {
@@ -74,6 +92,8 @@ export async function saveAvatar(
   entityId: string,
   imageData: string,
   roundImageData?: string | null,
+  bannerImageData?: string | null,
+  gradientSource: AvatarGradientSource = "round",
 ): Promise<string> {
   if (!imageData || !entityId) {
     console.log("[saveAvatar] No image data or entity ID provided");
@@ -87,16 +107,40 @@ export async function saveAvatar(
     const normalizedRoundImageData = roundImageData
       ? await toDataUrlIfNeeded(roundImageData)
       : null;
+    const normalizedBannerImageData = bannerImageData
+      ? await toDataUrlIfNeeded(bannerImageData)
+      : null;
 
     const result = await invoke<string>("storage_save_avatar", {
       entityId: prefixedId,
       base64Data: normalizedImageData,
       roundBase64Data: normalizedRoundImageData,
+      bannerBase64Data: normalizedBannerImageData,
     });
 
     // Clear the gradient cache for this entity since avatar changed
     clearEntityGradientCache(type, entityId);
+    clearEntityAvatarUrlCache(type, entityId);
     console.log("[saveAvatar] Cleared gradient cache for entity:", prefixedId);
+
+    try {
+      const regeneratedGradient = await generateGradientFromAvatar(
+        type,
+        entityId,
+        AVATAR_BASE_FILENAME,
+        true,
+        gradientSource,
+      );
+      if (regeneratedGradient) {
+        const cacheKey = `${type}-${entityId}-${gradientSource}`;
+        gradientCache.set(cacheKey, regeneratedGradient);
+        console.log("[saveAvatar] Regenerated gradient and updated cache for entity:", prefixedId);
+      }
+    } catch (gradientError) {
+      console.error("[saveAvatar] Failed to regenerate gradient after avatar save:", gradientError);
+    }
+
+    emitAvatarUpdated(type, entityId);
 
     console.log("[saveAvatar] Successfully saved avatar:", result);
     return result;
@@ -128,6 +172,12 @@ export async function loadAvatar(
   }
 
   try {
+    const cacheKey = `${type}:${entityId}:${avatarFilename}`;
+    const cached = avatarUrlCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const prefixedId = getPrefixedEntityId(type, entityId);
     const filePath = await invoke<string>("storage_get_avatar_path", {
       entityId: prefixedId,
@@ -135,7 +185,10 @@ export async function loadAvatar(
     });
 
     console.log("[loadAvatar] Loaded avatar for entity:", prefixedId);
-    return convertFileSrc(filePath);
+    const assetUrl = convertFileSrc(filePath);
+    const versionedUrl = `${assetUrl}${assetUrl.includes("?") ? "&" : "?"}avatar=${encodeURIComponent(avatarFilename)}`;
+    avatarUrlCache.set(cacheKey, versionedUrl);
+    return versionedUrl;
   } catch (error) {
     console.error("[loadAvatar] Failed to load avatar:", error);
     return undefined;
@@ -165,6 +218,7 @@ export async function deleteAvatar(
       avatarFilename,
       AVATAR_BASE_FILENAME,
       AVATAR_ROUND_FILENAME,
+      AVATAR_BANNER_FILENAME,
       "avatar.webp",
     ]);
     await Promise.all(
@@ -175,6 +229,9 @@ export async function deleteAvatar(
         }).catch(() => undefined),
       ),
     );
+    clearEntityAvatarUrlCache(type, entityId);
+    clearEntityGradientCache(type, entityId);
+    emitAvatarUpdated(type, entityId);
     console.log("[deleteAvatar] Deleted avatar for entity:", prefixedId);
   } catch (error) {
     console.error("[deleteAvatar] Failed to delete avatar:", error);
@@ -215,6 +272,8 @@ export async function generateGradientFromAvatar(
   type: EntityType,
   entityId: string,
   avatarFilename: string | undefined,
+  force = false,
+  source: AvatarGradientSource = "round",
 ): Promise<AvatarGradient | undefined> {
   if (!entityId || !avatarFilename) {
     return undefined;
@@ -225,6 +284,8 @@ export async function generateGradientFromAvatar(
     const gradient = await invoke<AvatarGradient>("generate_avatar_gradient", {
       entityId: prefixedId,
       filename: avatarFilename,
+      force,
+      source,
     });
 
     console.log(`[generateGradientFromAvatar] Generated gradient for ${prefixedId}:`, gradient);
@@ -240,6 +301,14 @@ export async function generateGradientFromAvatar(
  */
 const gradientCache = new Map<string, AvatarGradient>();
 
+export function peekCachedGradient(
+  type: EntityType,
+  entityId: string,
+  source: AvatarGradientSource = "round",
+): AvatarGradient | undefined {
+  return gradientCache.get(`${type}-${entityId}-${source}`);
+}
+
 /**
  * Gets cached or generates a gradient for an avatar
  *
@@ -252,32 +321,49 @@ export async function getCachedGradient(
   type: EntityType,
   entityId: string,
   avatarFilename: string | undefined,
+  force = false,
+  source: AvatarGradientSource = "round",
 ): Promise<AvatarGradient | undefined> {
   if (!entityId) {
     return undefined;
   }
 
-  // Use just the entityId as cache key since filename is stable
-  const cacheKey = `${type}-${entityId}`;
+  const cacheKey = `${type}-${entityId}-${source}`;
 
-  // Check cache first
-  if (gradientCache.has(cacheKey)) {
+  if (!force && gradientCache.has(cacheKey)) {
     console.log(`[getCachedGradient] Using cached gradient for ${cacheKey}`);
     return gradientCache.get(cacheKey);
   }
 
-  // Generate new gradient using the base avatar
-  const gradient = await generateGradientFromAvatar(type, entityId, AVATAR_BASE_FILENAME);
+  const gradient = await generateGradientFromAvatar(
+    type,
+    entityId,
+    AVATAR_BASE_FILENAME,
+    force,
+    source,
+  );
 
-  // Cache the result
   if (gradient) {
     console.log(`[getCachedGradient] Cached new gradient for ${cacheKey}`);
     gradientCache.set(cacheKey, gradient);
   }
 
-  // Keep avatarFilename parameter for interface compatibility, even though it's not used
   void avatarFilename;
 
+  return gradient;
+}
+
+/**
+ * Forces a fresh gradient calculation and updates the in-memory cache.
+ */
+export async function recalculateGradient(
+  type: EntityType,
+  entityId: string,
+  source: AvatarGradientSource = "round",
+): Promise<AvatarGradient | undefined> {
+  clearEntityGradientCache(type, entityId);
+  const gradient = await getCachedGradient(type, entityId, AVATAR_BASE_FILENAME, true, source);
+  emitAvatarUpdated(type, entityId);
   return gradient;
 }
 
@@ -294,6 +380,19 @@ export function clearGradientCache(): void {
  * Useful when updating a single avatar
  */
 export function clearEntityGradientCache(type: EntityType, entityId: string): void {
-  const cacheKey = `${type}-${entityId}`;
-  gradientCache.delete(cacheKey);
+  const prefix = `${type}-${entityId}-`;
+  for (const key of Array.from(gradientCache.keys())) {
+    if (key.startsWith(prefix)) {
+      gradientCache.delete(key);
+    }
+  }
+}
+
+function clearEntityAvatarUrlCache(type: EntityType, entityId: string): void {
+  const prefix = `${type}:${entityId}:`;
+  for (const key of Array.from(avatarUrlCache.keys())) {
+    if (key.startsWith(prefix)) {
+      avatarUrlCache.delete(key);
+    }
+  }
 }

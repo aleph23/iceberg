@@ -1,10 +1,16 @@
 import { useEffect, useState } from "react";
-import { AVATAR_ROUND_FILENAME, loadAvatar, type EntityType } from "../../core/storage/avatars";
+import {
+  AVATAR_BANNER_FILENAME,
+  AVATAR_ROUND_FILENAME,
+  AVATAR_UPDATED_EVENT,
+  loadAvatar,
+  type EntityType,
+} from "../../core/storage/avatars";
 import { isRenderableImageUrl } from "../../core/utils/image";
 
 const avatarCache = new Map<string, string | Promise<string>>();
 
-export type AvatarVariant = "base" | "round";
+export type AvatarVariant = "base" | "round" | "banner";
 
 /**
  * Invalidate cached avatar for a specific entity
@@ -37,6 +43,7 @@ export function useAvatar(
   avatarFilename: string | undefined,
   variant: AvatarVariant = "base",
 ): string | undefined {
+  const [refreshTick, setRefreshTick] = useState(0);
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(() => {
     if (entityId && avatarFilename) {
       const resolvedFilename =
@@ -68,7 +75,12 @@ export function useAvatar(
         return;
       }
 
-      const primaryFilename = variant === "round" ? AVATAR_ROUND_FILENAME : avatarFilename;
+      const primaryFilename =
+        variant === "round"
+          ? AVATAR_ROUND_FILENAME
+          : variant === "banner"
+            ? AVATAR_BANNER_FILENAME
+            : avatarFilename;
       const cacheKey = `${type}:${entityId}:${variant}:${primaryFilename}`;
       const cached = avatarCache.get(cacheKey);
 
@@ -99,7 +111,7 @@ export function useAvatar(
           avatarCache.set(cacheKey, primary);
           return primary;
         }
-        if (variant === "round" && primaryFilename !== avatarFilename) {
+        if ((variant === "round" || variant === "banner") && primaryFilename !== avatarFilename) {
           const fallback = await loadAvatar(type, entityId, avatarFilename);
           if (fallback) {
             avatarCache.set(cacheKey, fallback);
@@ -139,7 +151,23 @@ export function useAvatar(
     return () => {
       cancelled = true;
     };
-  }, [type, entityId, avatarFilename, variant]);
+  }, [type, entityId, avatarFilename, variant, refreshTick]);
+
+  useEffect(() => {
+    const handleAvatarUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ type?: EntityType; entityId?: string }>).detail;
+      if (!entityId || !detail || detail.type !== type || detail.entityId !== entityId) {
+        return;
+      }
+      invalidateAvatarCache(type, entityId);
+      setRefreshTick((value) => value + 1);
+    };
+
+    window.addEventListener(AVATAR_UPDATED_EVENT, handleAvatarUpdated as EventListener);
+    return () => {
+      window.removeEventListener(AVATAR_UPDATED_EVENT, handleAvatarUpdated as EventListener);
+    };
+  }, [entityId, type]);
 
   return avatarUrl;
 }

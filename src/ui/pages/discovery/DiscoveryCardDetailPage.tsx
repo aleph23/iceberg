@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { cn, typography, interactive } from "../../design-tokens";
 import { useI18n } from "../../../core/i18n/context";
+import { useShowNsfwImages } from "./hooks/useDiscoveryNsfw";
 import { DiscoveryDetailSkeleton } from "./components";
 import {
   fetchCardDetail,
@@ -62,6 +63,7 @@ function TokenStatCard({ label, value, icon: Icon }: TokenStat) {
 
 export function DiscoveryCardDetailPage() {
   const navigate = useNavigate();
+  const showNsfw = useShowNsfwImages();
   const location = useLocation();
   const { go, backOrReplace } = useNavigationManager();
   const { t } = useI18n();
@@ -82,7 +84,7 @@ export function DiscoveryCardDetailPage() {
 
   useEffect(() => {
     if (!path) {
-      setError("No card path provided");
+      setError(t("discovery.errors.noCardPath"));
       setLoading(false);
       return;
     }
@@ -131,14 +133,14 @@ export function DiscoveryCardDetailPage() {
         }
       } catch (err) {
         console.error("Failed to load card detail:", err);
-        setError(err instanceof Error ? err.message : "Failed to load character");
+        setError(err instanceof Error ? err.message : t("discovery.errors.loadCharacter"));
       } finally {
         setLoading(false);
       }
     };
 
     loadCard();
-  }, [path]);
+  }, [path, t]);
 
   const handleBack = useCallback(() => {
     const stateFrom = (location.state as { from?: string } | null | undefined)?.from || undefined;
@@ -172,7 +174,7 @@ export function DiscoveryCardDetailPage() {
       setShowDownloadMenu(true);
     } catch (err) {
       console.error("Download failed:", err);
-      setError(err instanceof Error ? err.message : "Failed to download character");
+      setError(err instanceof Error ? err.message : t("discovery.errors.downloadCharacter"));
     } finally {
       setDownloading(false);
     }
@@ -182,7 +184,7 @@ export function DiscoveryCardDetailPage() {
     if (!importedCharacterId) return;
 
     try {
-      const session = await createSession(importedCharacterId, cardData?.card.name || "New Chat");
+      const session = await createSession(importedCharacterId, cardData?.card.name || t("discovery.detail.defaultChatTitle"));
 
       navigate(`/chat/${importedCharacterId}?sessionId=${session.id}`);
     } catch (err) {
@@ -262,14 +264,14 @@ export function DiscoveryCardDetailPage() {
               className={cn(
                 "h-full w-full object-cover transition-opacity duration-500",
                 imageLoaded ? "opacity-100" : "opacity-0",
-                card.isNsfw && "blur-xl scale-110",
+                card.isNsfw && !showNsfw && "blur-xl scale-110",
               )}
               onLoad={() => setImageLoaded(true)}
             />
           )}
 
           {/* NSFW Overlay */}
-          {card.isNsfw && (
+          {card.isNsfw && !showNsfw && (
             <div className="absolute inset-0 z-5 flex items-center justify-center bg-surface-el/50">
               <div className="flex flex-col items-center gap-2">
                 <Shield className="h-12 w-12 text-danger" />
@@ -619,7 +621,7 @@ export function DiscoveryCardDetailPage() {
                     <img
                       src={imageUrl}
                       alt={card.name}
-                      className={cn("h-full w-full object-cover", card.isNsfw && "blur-md")}
+                      className={cn("h-full w-full object-cover", card.isNsfw && !showNsfw && "blur-md")}
                     />
                   ) : (
                     <div className="flex h-full w-full items-center justify-center text-base font-semibold text-fg/70">

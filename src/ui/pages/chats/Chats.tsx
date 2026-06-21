@@ -18,7 +18,11 @@ import { BottomMenu, CharacterExportMenu } from "../../components";
 import { AvatarImage } from "../../components/AvatarImage";
 import { useAvatar } from "../../hooks/useAvatar";
 import { useAvatarGradient } from "../../hooks/useAvatarGradient";
-import { getChatsViewMode, setChatsViewMode } from "../../../core/storage/appState";
+import {
+  getChatsViewMode,
+  getChatsViewModeCached,
+  setChatsViewMode,
+} from "../../../core/storage/appState";
 import {
   exportCharacterWithFormat,
   downloadJson,
@@ -27,30 +31,29 @@ import {
 } from "../../../core/storage/characterTransfer";
 import { storageBridge } from "../../../core/storage/files";
 import { ChatTemplateSelector } from "./components/ChatTemplateSelector";
+import { BannerCharacterCard } from "./components/BannerCharacterCard";
+import { CircleCharacterCard } from "./components/CircleCharacterCard";
 import { useI18n } from "../../../core/i18n/context";
 import { isRenderableImageUrl } from "../../../core/utils/image";
 import { cleanupOldDrafts } from "./utils/draftCleanup";
 
 export function ChatPage() {
-  const [characters, setCharacters] = useState<Character[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [characters, setCharacters] = useState<Character[]>(() => chatsPageCache?.characters ?? []);
+  const [loading, setLoading] = useState(() => !chatsPageCache);
   const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [exportTarget, setExportTarget] = useState<Character | null>(null);
-  const [chatpkgImportTarget, setChatpkgImportTarget] = useState<Character | null>(null);
-  const [pendingChatpkgImport, setPendingChatpkgImport] = useState<{
-    path: string;
-    info: any;
-  } | null>(null);
-  const [importingChatpkg, setImportingChatpkg] = useState(false);
+  const [, setImportingChatpkg] = useState(false);
   const [latestSessionByCharacter, setLatestSessionByCharacter] = useState<
     Record<string, { id: string; updatedAt: number; archived: boolean }>
-  >({});
+  >(() => chatsPageCache?.latestSessionByCharacter ?? {});
   const [hiding, setHiding] = useState(false);
-  const [viewMode, setViewMode] = useState<ChatsViewMode>("hero");
+  const [viewMode, setViewMode] = useState<ChatsViewMode>(
+    () => getChatsViewModeCached() ?? "hero",
+  );
   const [templateSelectorCharacter, setTemplateSelectorCharacter] = useState<Character | null>(
     null,
   );
@@ -126,6 +129,10 @@ export function ChatPage() {
         return bTime - aTime;
       });
 
+      chatsPageCache = {
+        characters: sorted,
+        latestSessionByCharacter: latestByCharacter,
+      };
       setLatestSessionByCharacter(latestByCharacter);
       setCharacters(sorted);
     } catch (err) {
@@ -164,13 +171,10 @@ export function ChatPage() {
 
   const createNewChat = async (character: Character, templateId?: string | null) => {
     try {
-      const sceneId = templateId
-        ? undefined
-        : (character.defaultSceneId ?? character.scenes?.[0]?.id);
       const session = await createSession(
         character.id,
         "New Chat",
-        sceneId,
+        undefined,
         templateId ?? undefined,
       );
       navigate(`/chat/${character.id}?sessionId=${session.id}`);
@@ -182,7 +186,8 @@ export function ChatPage() {
 
   const startChat = async (character: Character) => {
     try {
-      const latestSessionId = latestSessionByCharacter[character.id]?.id;
+      const previews = await listSessionPreviews(character.id, 1).catch(() => []);
+      const latestSessionId = previews[0]?.id ?? latestSessionByCharacter[character.id]?.id;
       if (latestSessionId) {
         navigate(`/chat/${character.id}?sessionId=${latestSessionId}`);
         return;
@@ -230,40 +235,20 @@ export function ChatPage() {
 
   const openImportChatpkg = async (character: Character) => {
     try {
-      const picked = await storageBridge.chatpkgPickFile();
+      const picked = await storageBridge.jsonlPickFile();
       if (!picked) return;
-      const info = await storageBridge.chatpkgInspect(picked.path);
-      if (info?.type !== "single_chat") {
-        alert("This package is not a single chat package.");
-        return;
-      }
-      setChatpkgImportTarget(character);
-      setPendingChatpkgImport({ path: picked.path, info });
       setSelectedCharacter(null);
-    } catch (err) {
-      console.error("Failed to inspect chat package:", err);
-      alert(typeof err === "string" ? err : "Failed to inspect chat package");
-    }
-  };
-
-  const handleImportChatpkg = async () => {
-    if (!chatpkgImportTarget || !pendingChatpkgImport) return;
-    try {
       setImportingChatpkg(true);
-      const result = await storageBridge.chatpkgImport(pendingChatpkgImport.path, {
-        targetCharacterId: chatpkgImportTarget.id,
+      const result = await storageBridge.jsonlImport(picked.path, {
+        targetCharacterId: character.id,
       });
-      setChatpkgImportTarget(null);
-      setPendingChatpkgImport(null);
       const importedSessionId = result?.sessionId;
       if (typeof importedSessionId === "string" && importedSessionId.length > 0) {
-        navigate(
-          `/chat/${chatpkgImportTarget.id}?sessionId=${encodeURIComponent(importedSessionId)}`,
-        );
+        navigate(`/chat/${character.id}?sessionId=${encodeURIComponent(importedSessionId)}`);
       }
     } catch (err) {
-      console.error("Failed to import chat package:", err);
-      alert(typeof err === "string" ? err : "Failed to import chat package");
+      console.error("Failed to import chat:", err);
+      alert(typeof err === "string" ? err : "Failed to import chat");
     } finally {
       setImportingChatpkg(false);
     }
@@ -308,7 +293,7 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full flex-col pb-6 text-gray-200">
-      <main className="flex-1 overflow-y-auto px-1 lg:px-8 pt-4 mx-auto w-full max-w-md lg:max-w-5xl">
+      <main className="flex-1 overflow-y-auto px-1 lg:px-8 pt-4 mx-auto w-full max-w-md lg:max-w-6xl">
         {loading ? (
           <CharacterSkeleton />
         ) : characters.length ? (
@@ -359,7 +344,7 @@ export function ChatPage() {
               onClick={() => {
                 const charId = selectedCharacter.id;
                 setSelectedCharacter(null);
-                navigate(`/settings/accessibility/chat?characterId=${charId}`);
+                navigate(`/settings/customization/chat?characterId=${charId}`);
               }}
               className="flex w-full items-center gap-3 rounded-xl border border-purple-400/30 bg-purple-400/10 px-4 py-3 text-left transition hover:border-purple-400/50 hover:bg-purple-400/20"
             >
@@ -423,50 +408,7 @@ export function ChatPage() {
         exporting={exporting}
       />
 
-      <BottomMenu
-        isOpen={chatpkgImportTarget != null && pendingChatpkgImport != null}
-        onClose={() => {
-          if (importingChatpkg) return;
-          setChatpkgImportTarget(null);
-          setPendingChatpkgImport(null);
-        }}
-        title={t("chats.importChatPackage")}
-      >
-        <div className="space-y-4">
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-xs text-white/70">
-            Format:{" "}
-            {pendingChatpkgImport?.info?.source?.format === "sillytavern"
-              ? "SillyTavern format (.jsonl)"
-              : "Chat package / JSONL"}
-          </div>
-          <div className="rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/80">
-            {pendingChatpkgImport?.info?.characterId ? (
-              pendingChatpkgImport.info.characterId === chatpkgImportTarget?.id ? (
-                <p>{t("chats.characterSpecificMatches")}</p>
-              ) : (
-                <p>
-                  {t("chats.characterSpecificMismatch", { name: chatpkgImportTarget?.name ?? "" })}
-                </p>
-              )
-            ) : (
-              <p>
-                {t("chats.nonCharacterSpecificImport", { name: chatpkgImportTarget?.name ?? "" })}
-              </p>
-            )}
-          </div>
-          <button
-            onClick={() => {
-              void handleImportChatpkg();
-            }}
-            disabled={importingChatpkg}
-            className="w-full rounded-xl border border-emerald-500/30 bg-emerald-500/20 py-3 text-sm font-medium text-emerald-200 transition hover:bg-emerald-500/30 disabled:opacity-50"
-          >
-            {importingChatpkg ? t("common.buttons.importing") : t("common.buttons.import")}
-          </button>
-        </div>
-      </BottomMenu>
-
-      {/* Delete Confirmation */}
+{/* Delete Confirmation */}
       <BottomMenu
         isOpen={showDeleteConfirm}
         onClose={() => setShowDeleteConfirm(false)}
@@ -546,19 +488,28 @@ function CharacterList({
   }, [characters]);
 
   const visible = characters.slice(0, visibleCount);
+  const renderListCard = (character: Character) =>
+    character.cardType === "banner" ? (
+      <BannerCharacterCard
+        key={character.id}
+        character={character}
+        onSelect={onSelect}
+        onLongPress={onLongPress}
+      />
+    ) : (
+      <CircleCharacterCard
+        key={character.id}
+        character={character}
+        onSelect={onSelect}
+        onLongPress={onLongPress}
+      />
+    );
 
   return (
     <AnimatePresence mode="wait" initial={false}>
       {viewMode === "list" && (
         <motion.div key="list" {...viewModeTransition} className="space-y-2 pb-24">
-          {visible.map((character) => (
-            <CharacterCard
-              key={character.id}
-              character={character}
-              onSelect={onSelect}
-              onLongPress={onLongPress}
-            />
-          ))}
+          {visible.map((character) => renderListCard(character))}
         </motion.div>
       )}
 
@@ -571,11 +522,7 @@ function CharacterList({
           {visible.map((character) => (
             <div key={character.id}>
               <div className="lg:hidden">
-                <CharacterCard
-                  character={character}
-                  onSelect={onSelect}
-                  onLongPress={onLongPress}
-                />
+                {renderListCard(character)}
               </div>
               <div className="hidden lg:block">
                 <GalleryCard character={character} onSelect={onSelect} onLongPress={onLongPress} />
@@ -590,11 +537,7 @@ function CharacterList({
           {visible[0] && (
             <>
               <div className="lg:hidden">
-                <CharacterCard
-                  character={visible[0]}
-                  onSelect={onSelect}
-                  onLongPress={onLongPress}
-                />
+                {renderListCard(visible[0])}
               </div>
               <div className="hidden lg:block">
                 <HeroCard character={visible[0]} onSelect={onSelect} onLongPress={onLongPress} />
@@ -603,14 +546,7 @@ function CharacterList({
           )}
           {visible.length > 1 && (
             <div className="space-y-2 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-3">
-              {visible.slice(1).map((character) => (
-                <CharacterCard
-                  key={character.id}
-                  character={character}
-                  onSelect={onSelect}
-                  onLongPress={onLongPress}
-                />
-              ))}
+              {visible.slice(1).map((character) => renderListCard(character))}
             </div>
           )}
         </motion.div>
@@ -644,6 +580,13 @@ function CharacterSkeleton() {
   );
 }
 
+type ChatsPageCache = {
+  characters: Character[];
+  latestSessionByCharacter: Record<string, { id: string; updatedAt: number; archived: boolean }>;
+};
+
+let chatsPageCache: ChatsPageCache | null = null;
+
 function EmptyState() {
   const { t } = useI18n();
   return (
@@ -671,16 +614,24 @@ function isImageLike(s?: string) {
 }
 
 const CharacterAvatar = memo(
-  ({ character, className }: { character: Character; className?: string }) => {
-    const avatarUrl = useAvatar("character", character.id, character.avatarPath, "round");
+  ({
+    character,
+    className,
+    variant = "round",
+  }: {
+    character: Character;
+    className?: string;
+    variant?: "round" | "banner";
+  }) => {
+    const avatarUrl = useAvatar("character", character.id, character.avatarPath, variant);
 
     if (avatarUrl && isImageLike(avatarUrl)) {
       return (
         <AvatarImage
           src={avatarUrl}
           alt={`${character.name} avatar`}
-          crop={character.avatarCrop}
-          applyCrop
+          crop={variant === "banner" ? character.bannerCrop : character.avatarCrop}
+          applyCrop={variant !== "banner"}
           className={className}
         />
       );
@@ -731,6 +682,7 @@ const CharacterCard = memo(
             textSecondary: character.customTextSecondary,
           }
         : undefined,
+      character.avatarGradientSource ?? "base",
     );
     // Long-press support for desktop
     const longPressTimer = useRef<number | null>(null);
@@ -773,7 +725,7 @@ const CharacterCard = memo(
     };
 
     return (
-      <motion.button
+      <button
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         onPointerDown={handlePointerDown}
@@ -846,7 +798,7 @@ const CharacterCard = memo(
         >
           <path d="m9 18 6-6-6-6" />
         </svg>
-      </motion.button>
+      </button>
     );
   },
 );
@@ -925,6 +877,7 @@ const HeroCard = memo(
             textSecondary: character.customTextSecondary,
           }
         : undefined,
+      character.avatarGradientSource ?? "base",
     );
     const {
       handlePointerDown,
@@ -934,8 +887,116 @@ const HeroCard = memo(
       handleContextMenu,
     } = useLongPress(character, onSelect, onLongPress);
 
+    const isBannerStyle = (character.cardType ?? "circle") === "banner";
+
+    if (isBannerStyle) {
+      return (
+        <button
+          onClick={handleClick}
+          onContextMenu={handleContextMenu}
+          onPointerDown={handlePointerDown}
+          onPointerUp={handlePointerUp}
+          onPointerLeave={handlePointerLeave}
+          className={cn(
+            "group relative flex w-full text-left overflow-hidden",
+            "h-44 lg:h-52",
+            "rounded-3xl",
+            interactive.transition.default,
+            interactive.active.scale,
+            hasGradient ? "" : "border border-white/10 bg-[#1a1b23] hover:bg-[#22232d]",
+          )}
+          style={
+            hasGradient
+              ? {
+                  background: gradientCss,
+                  boxShadow: "inset 0 0 0 1px rgba(255, 255, 255, 0.12)",
+                }
+              : {}
+          }
+        >
+          {/* Cover Avatar — fills left, fades on right.
+              max-w prevents the slot from getting too wide on large viewports. */}
+          <div
+            aria-hidden
+            className="absolute inset-y-0 left-0 w-3/5 lg:w-1/2 max-w-[560px] overflow-hidden"
+            style={{
+              WebkitMaskImage:
+                "linear-gradient(to right, black 0%, black 55%, transparent 100%)",
+              maskImage:
+                "linear-gradient(to right, black 0%, black 55%, transparent 100%)",
+            }}
+          >
+            <div className="h-full w-full origin-center scale-[1.14] transition-transform duration-500 ease-out group-hover:-translate-x-3 group-hover:scale-[1.14]">
+              <CharacterAvatar character={character} variant="banner" />
+            </div>
+          </div>
+
+          {/* Darkening scrim */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 transition-opacity duration-300 group-hover:opacity-90"
+            style={{
+              background:
+                "linear-gradient(to right, rgba(0,0,0,0) 28%, rgba(0,0,0,0.45) 60%, rgba(0,0,0,0.55) 100%)",
+            }}
+          />
+
+          {/* Hover highlight */}
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            style={{
+              background:
+                "radial-gradient(120% 80% at 30% 50%, rgba(255,255,255,0.06) 0%, transparent 60%)",
+            }}
+          />
+
+          {/* Content */}
+          <div className="relative z-10 flex w-full items-center gap-4 pl-[42%] lg:pl-[36%] pr-6 lg:pr-8 py-6 lg:py-8">
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <h3
+                className={cn(
+                  "truncate font-bold text-2xl leading-tight drop-shadow-sm",
+                  hasGradient ? "" : "text-white",
+                )}
+                style={hasGradient ? { color: textColor } : {}}
+              >
+                {character.name}
+              </h3>
+              <p
+                className={cn(
+                  "line-clamp-3 text-base leading-relaxed",
+                  hasGradient ? "" : "text-white/50",
+                )}
+                style={hasGradient ? { color: textSecondary } : {}}
+              >
+                {descriptionPreview}
+              </p>
+            </div>
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={cn(
+                "shrink-0 transition-all duration-300 group-hover:translate-x-1",
+                hasGradient ? "" : "text-white/30 group-hover:text-white/60",
+              )}
+              style={hasGradient ? { color: textSecondary } : {}}
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </div>
+        </button>
+      );
+    }
+
     return (
-      <motion.button
+      <button
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         onPointerDown={handlePointerDown}
@@ -1008,7 +1069,7 @@ const HeroCard = memo(
         >
           <path d="m9 18 6-6-6-6" />
         </svg>
-      </motion.button>
+      </button>
     );
   },
 );
@@ -1043,6 +1104,7 @@ const GalleryCard = memo(
             textSecondary: character.customTextSecondary,
           }
         : undefined,
+      character.avatarGradientSource ?? "base",
     );
     const {
       handlePointerDown,
@@ -1053,7 +1115,7 @@ const GalleryCard = memo(
     } = useLongPress(character, onSelect, onLongPress);
 
     return (
-      <motion.button
+      <button
         onClick={handleClick}
         onContextMenu={handleContextMenu}
         onPointerDown={handlePointerDown}
@@ -1099,7 +1161,7 @@ const GalleryCard = memo(
             </span>
           </div>
         )}
-      </motion.button>
+      </button>
     );
   },
 );

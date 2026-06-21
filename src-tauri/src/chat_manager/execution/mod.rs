@@ -30,6 +30,17 @@ fn normalize_llama_sampler_profile(value: &str) -> Option<String> {
     }
 }
 
+fn decode_llama_sequence_breaker(value: &str) -> String {
+    match value.trim() {
+        "\\n" => "\n".to_string(),
+        "\\r" => "\r".to_string(),
+        "\\t" => "\t".to_string(),
+        "\\\"" => "\"".to_string(),
+        "\\\\" => "\\".to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub(super) fn llama_sampler_profile_defaults(profile: Option<&str>) -> LlamaSamplerProfileDefaults {
     match profile.unwrap_or(DEFAULT_LLAMA_SAMPLER_PROFILE) {
         "creative" => LlamaSamplerProfileDefaults {
@@ -410,6 +421,24 @@ pub(super) fn resolve_llama_offload_kqv(
         .or(settings.advanced_model_settings.llama_offload_kqv)
 }
 
+pub(super) fn resolve_llama_swa_full(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<bool> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_swa_full)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_swa_full)
+        })
+        .or(settings.advanced_model_settings.llama_swa_full)
+}
+
 pub(super) fn resolve_llama_batch_size(
     session: &Session,
     model: &Model,
@@ -446,6 +475,63 @@ pub(super) fn resolve_llama_kv_type(
         })
         .or_else(|| settings.advanced_model_settings.llama_kv_type.clone())
         .map(|v| v.trim().to_ascii_lowercase())
+        .filter(|v| !v.is_empty())
+}
+
+pub(super) fn resolve_llama_mtp_enabled(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<bool> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_mtp_enabled)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_mtp_enabled)
+        })
+        .or(settings.advanced_model_settings.llama_mtp_enabled)
+}
+
+pub(super) fn resolve_llama_mtp_draft_tokens(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<u32> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_mtp_draft_tokens)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_mtp_draft_tokens)
+        })
+        .or(settings.advanced_model_settings.llama_mtp_draft_tokens)
+        .filter(|v| *v > 0)
+}
+
+pub(super) fn resolve_llama_mtp_model_path(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<String> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_mtp_model_path.clone())
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_mtp_model_path.clone())
+        })
+        .or_else(|| settings.advanced_model_settings.llama_mtp_model_path.clone())
+        .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
 }
 
@@ -564,6 +650,24 @@ pub(super) fn resolve_llama_raw_completion_fallback(
             .llama_raw_completion_fallback)
 }
 
+pub(super) fn resolve_llama_streaming_enabled(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<bool> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_streaming_enabled)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_streaming_enabled)
+        })
+        .or(settings.advanced_model_settings.llama_streaming_enabled)
+}
+
 pub(super) fn resolve_llama_strict_mode(
     session: &Session,
     model: &Model,
@@ -636,6 +740,109 @@ pub(super) fn resolve_llama_profile_typical_p(
         resolve_llama_sampler_profile(session, model, settings).as_deref(),
     )
     .typical_p
+}
+
+pub(super) fn resolve_llama_dry_multiplier(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<f64> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_dry_multiplier)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_dry_multiplier)
+        })
+        .or(settings.advanced_model_settings.llama_dry_multiplier)
+}
+
+pub(super) fn resolve_llama_dry_base(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<f64> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_dry_base)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_dry_base)
+        })
+        .or(settings.advanced_model_settings.llama_dry_base)
+}
+
+pub(super) fn resolve_llama_dry_allowed_length(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<u32> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_dry_allowed_length)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_dry_allowed_length)
+        })
+        .or(settings.advanced_model_settings.llama_dry_allowed_length)
+}
+
+pub(super) fn resolve_llama_dry_penalty_last_n(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<i32> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_dry_penalty_last_n)
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_dry_penalty_last_n)
+        })
+        .or(settings.advanced_model_settings.llama_dry_penalty_last_n)
+}
+
+pub(super) fn resolve_llama_dry_sequence_breakers(
+    session: &Session,
+    model: &Model,
+    settings: &Settings,
+) -> Option<Vec<String>> {
+    session
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|cfg| cfg.llama_dry_sequence_breakers.clone())
+        .or_else(|| {
+            model
+                .advanced_model_settings
+                .as_ref()
+                .and_then(|cfg| cfg.llama_dry_sequence_breakers.clone())
+        })
+        .or_else(|| {
+            settings
+                .advanced_model_settings
+                .llama_dry_sequence_breakers
+                .clone()
+        })
+        .map(|values| {
+            values
+                .into_iter()
+                .map(|value| decode_llama_sequence_breaker(&value))
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
 }
 
 pub(crate) fn prepare_sampling_request(

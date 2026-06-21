@@ -10,24 +10,26 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Toaster } from "sonner";
 
-import { WelcomePage, OnboardingPage } from "./ui/pages/onboarding";
+import { OnboardingPage } from "./ui/pages/onboarding";
 import { WhereToFindPage } from "./ui/pages/onboarding/WhereToFind";
 import { SettingsPage } from "./ui/pages/settings/Settings";
+import { SettingsLayout } from "./ui/pages/settings/SettingsLayout";
 import { ProvidersPage } from "./ui/pages/settings/ProvidersPage";
 import { ModelsPage } from "./ui/pages/settings/ModelsPage";
 import { EditModelPage } from "./ui/pages/settings/EditModelPage";
 import { HuggingFaceBrowserPage } from "./ui/pages/settings/HuggingFaceBrowserPage";
 import { InstalledModelsPage } from "./ui/pages/settings/InstalledModelsPage";
+import { LocalRuntimeDefaultsPage } from "./ui/pages/settings/LocalRuntimeDefaultsPage";
 import { ImageGenerationPage } from "./ui/pages/settings/ImageGenerationPage";
 import { SystemPromptsPage } from "./ui/pages/settings/SystemPromptsPage";
 import { EditPromptTemplate } from "./ui/pages/settings/EditPromptTemplate";
 import { SecurityPage } from "./ui/pages/settings/SecurityPage";
 import { ResetPage } from "./ui/pages/settings/ResetPage";
 import { BackupRestorePage } from "./ui/pages/settings/BackupRestorePage";
-import { ConvertPage } from "./ui/pages/settings/ConvertPage";
 import { UsagePage } from "./ui/pages/settings/UsagePage";
 import { UsageActivityPage } from "./ui/pages/settings/UsageActivityPage";
-import { AccessibilityPage } from "./ui/pages/settings/AccessibilityPage";
+import { CustomizationPage } from "./ui/pages/settings/CustomizationPage";
+import { SpeechRecognitionPage } from "./ui/pages/settings/SpeechRecognitionPage";
 import { ColorCustomizationPage } from "./ui/pages/settings/ColorCustomizationPage";
 import { ChatAppearancePage } from "./ui/pages/settings/ChatAppearancePage";
 import { LogsPage } from "./ui/pages/settings/LogsPage";
@@ -35,20 +37,32 @@ import { AboutPage } from "./ui/pages/settings/AboutPage";
 import { CharactersPage } from "./ui/pages/settings/CharactersPage";
 import { DeveloperPage } from "./ui/pages/settings/DeveloperPage";
 import { ChangelogPage } from "./ui/pages/settings/ChangelogPage";
+import { HelpPage } from "./ui/pages/settings/HelpPage";
 import { AdvancedPage } from "./ui/pages/settings/AdvancedPage";
 import { CreationHelperPage as AICreationHelperPage } from "./ui/pages/settings/CreationHelperPage";
 import { HelpMeReplyPage } from "./ui/pages/settings/HelpMeReplyPage";
+import { LorebooksPage } from "./ui/pages/settings/LorebooksPage";
+import { LorebookGeneratorFlowPage } from "./ui/pages/library/LorebookGeneratorFlowPage";
+import { CompanionsHubPage } from "./ui/pages/settings/CompanionsHubPage";
+import { CompanionDownloadQueuePage } from "./ui/pages/settings/CompanionDownloadQueuePage";
 import { HostApiPage } from "./ui/pages/settings/HostApiPage";
 import { VoicesPage } from "./ui/pages/settings/VoicesPage";
 import { DynamicMemoryPage } from "./ui/pages/settings/DynamicMemoryPage";
 import { EmbeddingDownloadPage } from "./ui/pages/settings/EmbeddingDownloadPage";
+import { CompanionDownloadPage } from "./ui/pages/settings/CompanionDownloadPage";
 import { EmbeddingTestPage } from "./ui/pages/settings/EmbeddingTestPage";
+import { KokoroTestPage } from "./ui/pages/settings/KokoroTestPage";
+import { KokoroStudioPage } from "./ui/pages/settings/KokoroStudioPage";
+import { KokoroBlendEditorPage } from "./ui/pages/settings/KokoroBlendEditorPage";
 import {
   ChatPage,
   ChatConversationPage,
   ChatSettingsPage,
   ChatHistoryPage,
   ChatMemoriesPage,
+  CompanionMemoryPage,
+  CompanionRelationshipPage,
+  CompanionSoulPage,
   MessageDebugPage,
   SearchMessagesPage,
   ChatLayout,
@@ -69,6 +83,8 @@ import { SearchPage } from "./ui/pages/search";
 import { LibraryPage } from "./ui/pages/library/LibraryPage";
 import { AvatarLibraryPickerPage } from "./ui/pages/library/ImageLibraryPage";
 import { StandaloneLorebookEditor } from "./ui/pages/library/StandaloneLorebookEditor";
+import { LorebookEntryGeneratorFlowPage } from "./ui/pages/LorebookEntryGeneratorFlowPage";
+import { LorebookTriggerPreviewPage } from "./ui/pages/LorebookTriggerPreviewPage";
 import { SyncPage } from "./ui/pages/sync/SyncPage";
 import {
   DiscoveryPage,
@@ -85,6 +101,8 @@ import {
   GroupChatSettingsPage,
   GroupChatHistoryPage,
   GroupChatMemoriesPage,
+  GroupChatAppearancePage,
+  GroupChatSearchPage,
 } from "./ui/pages/group-chats";
 import {
   EngineHomePage,
@@ -98,9 +116,17 @@ import {
 import { CreateMenu, GuidedTour, useGuidedTour } from "./ui/components";
 import { V1UpgradeToast } from "./ui/components/V1UpgradeToast";
 import { V2UpgradeToast } from "./ui/components/V2UpgradeToast";
+import { V3UpgradeToast } from "./ui/components/V3UpgradeToast";
 import { ConfirmBottomMenuHost } from "./ui/components/ConfirmBottomMenu";
-import { isOnboardingCompleted } from "./core/storage/appState";
-import { TopNav, BottomNav, WindowControls } from "./ui/components/App";
+import {
+  getLastSeenAppVersion,
+  isOnboardingCompleted,
+} from "./core/storage/appState";
+import {
+  WhatsNewDrawer,
+  WHATS_NEW_OPEN_EVENT,
+} from "./ui/pages/whats-new/WhatsNewPage";
+import { TopNav, BottomNav, TitleBar, WindowResizeHandles } from "./ui/components/App";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, UnlistenFn } from "@tauri-apps/api/event";
 import { useAndroidBackHandler } from "./ui/hooks/useAndroidBackHandler";
@@ -109,8 +135,13 @@ import { getPlatform } from "./core/utils/platform";
 import { I18nProvider, useI18n } from "./core/i18n/context";
 import { hasSeenTooltip, setTooltipSeen } from "./core/storage/appState";
 import { checkForAppUpdate } from "./core/app-updates/checkForAppUpdate";
+import { detectUpdateChannel } from "./core/app-updates/checkForAppUpdate";
 import { presentAppUpdateToast } from "./core/app-updates/presentAppUpdateToast";
-import { readSettings, SETTINGS_UPDATED_EVENT } from "./core/storage/repo";
+import {
+  readSettings,
+  refreshSettingsFromStorage,
+  SETTINGS_UPDATED_EVENT,
+} from "./core/storage/repo";
 import { recordChatDebugEvent } from "./core/debug/chatDebugStore";
 
 const chatLog = logManager({ component: "Chat" });
@@ -317,6 +348,13 @@ function LegacyPersonaEditRedirect() {
 
 function App() {
   const platform = useMemo(() => getPlatform(), []);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+
+  useEffect(() => {
+    const onOpen = () => setWhatsNewOpen(true);
+    window.addEventListener(WHATS_NEW_OPEN_EVENT, onOpen);
+    return () => window.removeEventListener(WHATS_NEW_OPEN_EVENT, onOpen);
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined" || platform.os !== "linux") return;
@@ -423,6 +461,32 @@ function App() {
           const title = payload.title;
           const description = payload.description;
           const id = payload.id;
+          const dismiss = payload.dismiss;
+          const kind = payload.kind;
+          const subtitle = payload.subtitle;
+          const modelName = payload.modelName;
+          const progress = payload.progress;
+          if (dismiss === true && (typeof id === "string" || typeof id === "number")) {
+            toast.dismiss(id);
+            return;
+          }
+          if (
+            kind === "modelLoad"
+            && typeof title === "string"
+            && typeof subtitle === "string"
+            && typeof modelName === "string"
+            && typeof progress === "number"
+          ) {
+            toast.modelLoad({
+              id: typeof id === "string" || typeof id === "number" ? id : undefined,
+              title,
+              subtitle,
+              modelName,
+              progress,
+              duration: Infinity,
+            });
+            return;
+          }
           if (typeof title !== "string") {
             return;
           }
@@ -472,7 +536,9 @@ function App() {
               typeof payload.modelPath === "string" && payload.modelPath.trim()
                 ? payload.modelPath
                 : null;
-            const toastId = requestId ?? (modelPath ? `llama-model-load:${modelPath}` : null);
+            const requestToastId = requestId;
+            const pathToastId = modelPath ? `llama-model-load:${modelPath}` : null;
+            const toastId = pathToastId ?? requestToastId;
             if (!toastId) {
               return;
             }
@@ -486,6 +552,12 @@ function App() {
               status === LLAMA_MODEL_LOAD_STATUS_FAILED
             ) {
               toast.dismiss(toastId);
+              if (requestToastId && requestToastId !== toastId) {
+                toast.dismiss(requestToastId);
+              }
+              if (pathToastId && pathToastId !== toastId) {
+                toast.dismiss(pathToastId);
+              }
               return;
             }
 
@@ -532,7 +604,7 @@ function App() {
             <Toaster
               position={"top-center"}
               expand={true}
-              offset={{ top: 16 }}
+              offset={{ top: "calc(var(--titlebar-h, 0px) + 16px)" }}
               mobileOffset={{
                 top: "calc(env(safe-area-inset-top) + 80px)",
                 left: 8,
@@ -545,6 +617,10 @@ function App() {
               }}
             />
             <ConfirmBottomMenuHost />
+            <WhatsNewDrawer
+              isOpen={whatsNewOpen}
+              onClose={() => setWhatsNewOpen(false)}
+            />
             <DownloadQueueProvider>
               <AppUpdateNotifier />
               <AppContent />
@@ -616,6 +692,39 @@ function AppUpdateNotifier() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let unlisten: UnlistenFn | null = null;
+
+    const reloadSettings = async () => {
+      try {
+        await refreshSettingsFromStorage();
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Failed to refresh settings after database reload:", error);
+        }
+      }
+    };
+
+    void listen("database-reloaded", () => {
+      if (cancelled) return;
+      void reloadSettings();
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error("Failed to attach database reload listener:", error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  useEffect(() => {
     const handleForceUpdateNotification = async (event: Event) => {
       const detail = (
         event as CustomEvent<
@@ -633,7 +742,7 @@ function AppUpdateNotifier() {
 
       const currentVersion =
         detail?.currentVersion ?? (await invoke<string>("get_app_version").catch(() => "1.0.0"));
-      const channel = detail?.channel ?? (currentVersion.includes("-dev.") ? "dev" : "release");
+      const channel = detail?.channel ?? detectUpdateChannel(currentVersion);
       const latestVersion = detail?.latestVersion ?? "999.0.0";
       const releaseUrl = detail?.releaseUrl ?? "https://github.com/LettuceAI/app/releases";
       const downloadUrl =
@@ -691,6 +800,7 @@ function AppUpdateNotifier() {
 function AppContent() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { t } = useI18n();
   console.log("AppContent render:", location.pathname, location.key);
   const mainRef = useRef<HTMLDivElement | null>(null);
   const previousLlamaKeepAliveRouteRef = useRef(shouldKeepLlamaLoaded(location.pathname));
@@ -726,22 +836,44 @@ function AppContent() {
     () => /^\/personas\/[^/]+\/edit$/.test(location.pathname),
     [location.pathname],
   );
+  const isCharacterEditRoute = useMemo(
+    () => /^\/settings\/characters\/[^/]+\/edit$/.test(location.pathname),
+    [location.pathname],
+  );
 
   const isSettingRoute = useMemo(
     () => location.pathname.startsWith("/settings"),
     [location.pathname],
   );
 
+  const preSettingsPathRef = useRef<string>("/");
+  useEffect(() => {
+    if (!isSettingRoute) {
+      preSettingsPathRef.current = location.pathname + location.search;
+    }
+  }, [isSettingRoute, location.pathname, location.search]);
+
+  const [isLgViewport, setIsLgViewport] = useState(() =>
+    typeof window === "undefined" ? false : window.matchMedia("(min-width: 1024px)").matches,
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const handler = (e: MediaQueryListEvent) => setIsLgViewport(e.matches);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
   const isLogsRoute = location.pathname === "/settings/logs";
 
   const isLorebookEditorRoute = useMemo(
     () =>
       location.pathname.startsWith("/library/lorebooks/") ||
-      /^\/settings\/characters\/[^/]+\/lorebook$/.test(location.pathname) ||
-      /^\/group-chats\/groups\/[^/]+\/lorebook$/.test(location.pathname) ||
-      /^\/group-chats\/[^/]+\/lorebook$/.test(location.pathname),
+      /^\/settings\/characters\/[^/]+\/lorebook(\/preview|\/generate)?$/.test(location.pathname) ||
+      /^\/group-chats\/groups\/[^/]+\/lorebook(\/preview|\/generate)?$/.test(location.pathname) ||
+      /^\/group-chats\/[^/]+\/lorebook(\/preview|\/generate)?$/.test(location.pathname),
     [location.pathname],
   );
+  const isLorebookGeneratorRoute = location.pathname === "/library/lorebook/generate";
   const isTemplateEditorRoute = useMemo(
     () => /^\/settings\/characters\/[^/]+\/templates\/[^/]+$/.test(location.pathname),
     [location.pathname],
@@ -762,6 +894,7 @@ function AppContent() {
     !isSearchRoute &&
     !isAvatarLibraryPickerRoute &&
     !isLorebookEditorRoute &&
+    !isLorebookGeneratorRoute &&
     !isDiscoverySubRoute;
 
   const [showCreateMenu, setShowCreateMenu] = useState(false);
@@ -806,6 +939,12 @@ function AppContent() {
           window.dispatchEvent(new CustomEvent("unsaved:discard"));
         },
         "unsaved-changes",
+        {
+          label: "Save",
+          onAction: () => {
+            window.dispatchEvent(new CustomEvent("unsaved:save"));
+          },
+        },
       );
       return false;
     }
@@ -877,198 +1016,61 @@ function AppContent() {
     return platform.type === "desktop";
   }, []);
 
-  const [glitchStage, setGlitchStage] = useState<0 | 1 | 2 | 3>(0);
-  const glitchStageRef = useRef<0 | 1 | 2 | 3>(0);
-  const shakeCooldownRef = useRef(0);
-  const lastShakeRef = useRef(0);
-  const glitchTimeoutRef = useRef<number | null>(null);
-  const [glitchEnabled, setGlitchEnabled] = useState(true);
-  const [voidActive, setVoidActive] = useState(false);
-  const [voidTextIndex, setVoidTextIndex] = useState(0);
-  const [showRestore, setShowRestore] = useState(false);
-  const [voidStartAt, setVoidStartAt] = useState(0);
-  const [voidReady, setVoidReady] = useState(false);
-  const voidMessage = "congrats, you destablised the app. enjoy emptiness";
-
-  useEffect(() => {
-    glitchStageRef.current = glitchStage;
-  }, [glitchStage]);
-
-  useEffect(() => {
-    const key = "lettuce.easterEggs.glitch";
-    const applyStored = (value: string | null | undefined) => {
-      if (value === null || value === undefined) return;
-      setGlitchEnabled(value === "true");
-    };
-    const syncFromStorage = () => {
-      try {
-        applyStored(localStorage.getItem(key));
-      } catch {
-        setGlitchEnabled(true);
-      }
-    };
-    syncFromStorage();
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === key) {
-        applyStored(event.newValue);
-      }
-    };
-    const handleToggleEvent = (event: Event) => {
-      const detail = (event as CustomEvent<boolean>).detail;
-      if (typeof detail === "boolean") {
-        setGlitchEnabled(detail);
-      } else {
-        syncFromStorage();
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    window.addEventListener("lettuce:easterEggs:glitch", handleToggleEvent);
-    return () => {
-      window.removeEventListener("storage", handleStorage);
-      window.removeEventListener("lettuce:easterEggs:glitch", handleToggleEvent);
-    };
-  }, []);
-
-  useEffect(() => {
-    const platform = getPlatform();
-    if (platform.type !== "mobile" || !glitchEnabled) return;
-
-    let mounted = true;
-    const threshold = 18;
-    const cooldownMs = 4000;
-    const stageCooldownMs = 1000;
-
-    const handleMotion = (event: DeviceMotionEvent) => {
-      if (!mounted) return;
-      const accel = event.accelerationIncludingGravity;
-      if (!accel) return;
-      const x = accel.x ?? 0;
-      const y = accel.y ?? 0;
-      const z = accel.z ?? 0;
-      const magnitude = Math.sqrt(x * x + y * y + z * z);
-      const now = Date.now();
-
-      if (magnitude > threshold) {
-        const canTrigger = now - shakeCooldownRef.current > cooldownMs;
-        if (!canTrigger && glitchStageRef.current === 3) return;
-
-        if (now - lastShakeRef.current < stageCooldownMs) {
-          return;
-        }
-        lastShakeRef.current = now;
-
-        const currentStage = glitchStageRef.current;
-        const nextStage = currentStage === 0 ? 2 : ((currentStage + 1) as 1 | 2 | 3);
-
-        setGlitchStage(nextStage);
-        glitchStageRef.current = nextStage;
-
-        if (glitchTimeoutRef.current) {
-          window.clearTimeout(glitchTimeoutRef.current);
-          glitchTimeoutRef.current = null;
-        }
-
-        const durationMs = nextStage === 1 ? 1200 : nextStage === 2 ? 1500 : 1800;
-        if (nextStage !== 3) {
-          glitchTimeoutRef.current = window.setTimeout(() => {
-            setGlitchStage(0);
-          }, durationMs);
-        }
-
-        if (nextStage === 2) {
-          toast.warning("Reality fracture detected.");
-        } else if (nextStage === 3) {
-          shakeCooldownRef.current = now;
-          toast.info("Reality resynced.");
-          setVoidActive(true);
-          setVoidTextIndex(0);
-          setShowRestore(false);
-          setVoidStartAt(Date.now());
-          setVoidReady(false);
-        }
-      }
-    };
-
-    window.addEventListener("devicemotion", handleMotion);
-    return () => {
-      mounted = false;
-      window.removeEventListener("devicemotion", handleMotion);
-      if (glitchTimeoutRef.current) {
-        window.clearTimeout(glitchTimeoutRef.current);
-        glitchTimeoutRef.current = null;
-      }
-    };
-  }, [glitchEnabled]);
-
-  useEffect(() => {
-    if (glitchEnabled) return;
-    setGlitchStage(0);
-    glitchStageRef.current = 0;
-    setVoidActive(false);
-    setShowRestore(false);
-  }, [glitchEnabled]);
-
-  useEffect(() => {
-    if (!voidActive) return;
-    const now = Date.now();
-    const delayMs = 3000;
-    if (now - voidStartAt < delayMs) {
-      const timer = window.setTimeout(
-        () => {
-          setVoidReady(true);
-        },
-        delayMs - (now - voidStartAt),
-      );
-      return () => window.clearTimeout(timer);
-    }
-    if (!voidReady) {
-      setVoidReady(true);
-      return;
-    }
-    if (voidTextIndex >= voidMessage.length) {
-      const timer = window.setTimeout(() => setShowRestore(true), 1200);
-      return () => window.clearTimeout(timer);
-    }
-    const timer = window.setTimeout(() => {
-      setVoidTextIndex((prev) => Math.min(voidMessage.length, prev + 1));
-    }, 45);
-    return () => window.clearTimeout(timer);
-  }, [voidActive, voidStartAt, voidReady, voidTextIndex, voidMessage.length]);
-
   return (
-    <div
-      className={`relative min-h-screen overflow-hidden ${
-        glitchStage ? `app-glitch app-glitch-${glitchStage}` : ""
-      }`}
-    >
+    <div className="relative min-h-screen overflow-hidden pt-[var(--titlebar-h,0px)]">
+      <TitleBar />
+      <WindowResizeHandles />
       <div
         className={`relative z-10 mx-auto flex w-full ${
-          isChatDetailRoute ? "max-w-full h-screen" : "max-w-md lg:max-w-none min-h-screen"
+          isChatDetailRoute
+            ? "max-w-full h-[calc(100dvh-var(--titlebar-h,0px))]"
+            : isSettingRoute
+              ? "max-w-md min-h-[calc(100dvh-var(--titlebar-h,0px))] lg:max-w-none lg:h-[calc(100dvh-var(--titlebar-h,0px))] lg:min-h-0"
+              : "max-w-md lg:max-w-none min-h-[calc(100dvh-var(--titlebar-h,0px))]"
         } flex-col ${showBottomNav ? "pb-[calc(72px+env(safe-area-inset-bottom))]" : "pb-0"}`}
       >
-        {!showTopNav && !isChatDetailRoute && !isSearchRoute && <WindowControls />}
         {showTopNav && (
           <TopNav
             currentPath={location.pathname + location.search}
             onBackOverride={
               isPersonaEditRoute
                 ? () => navigate(PERSONA_LIBRARY_ROUTE, { replace: true })
-                : undefined
+                : isCharacterEditRoute
+                  ? () => navigate("/", { replace: true })
+                  : isSettingRoute &&
+                      isLgViewport &&
+                      (location.pathname === "/settings" ||
+                        location.pathname === "/settings/about")
+                    ? () => {
+                        const target = preSettingsPathRef.current || "/";
+                        navigate(target.startsWith("/settings") ? "/" : target);
+                      }
+                    : undefined
             }
             titleOverride={
               isAvatarLibraryPickerRoute
-                ? "Select from library"
-                : location.pathname === "/settings/models/installed"
-                  ? "Installed Models"
-                  : undefined
+                ? t("common.nav.library")
+                : isLorebookGeneratorRoute
+                  ? "Generate Lorebook"
+                  : location.pathname === "/settings/models/installed"
+                    ? t("installedModels.title")
+                    : /^\/settings\/voices\/kokoro\/[^/]+\/blend$/.test(location.pathname)
+                      ? t("voices.extra.kokoro.newBlend")
+                      : /^\/settings\/voices\/kokoro\/[^/]+\/blend\/.+$/.test(location.pathname)
+                        ? t("voices.extra.kokoro.editBlend")
+                        : /^\/settings\/voices\/kokoro\/[^/]+$/.test(location.pathname)
+                          ? t("voices.extra.kokoro.title")
+                          : undefined
             }
           />
         )}
 
         <main
           ref={mainRef}
-          className={`app-fall-target flex-1 ${showTopNav ? "pt-[calc(72px+env(safe-area-inset-top))]" : ""} ${
-            isOnboardingRoute
+          className={`flex-1 ${showTopNav ? "pt-[var(--topnav-h,72px)]" : ""} ${
+            location.pathname === "/welcome"
+              ? "overflow-hidden px-0 pt-0 pb-0"
+              : isOnboardingRoute
               ? `overflow-y-auto ${isDesktop ? "" : "px-0 pt-5 pb-5"}`
               : isChatDetailRoute
                 ? "overflow-hidden px-0 pt-0 pb-0"
@@ -1086,40 +1088,16 @@ function AppContent() {
                           ? "overflow-hidden px-0 pt-0 pb-0"
                           : isDiscoveryRoute
                             ? "overflow-hidden px-0 pt-0 pb-0"
-                            : `overflow-y-auto px-4 pt-4 ${showBottomNav ? "pb-[calc(96px+env(safe-area-inset-bottom))]" : "pb-6"}`
+                            : isSettingRoute
+                              ? "overflow-y-auto px-4 pt-4 pb-6 lg:overflow-hidden lg:p-0 lg:mt-(--topnav-h,72px)"
+                              : `overflow-y-auto px-4 pt-4 ${showBottomNav ? "pb-[calc(96px+env(safe-area-inset-bottom))]" : "pb-6"}`
           }`}
         >
-          {voidActive && (
-            <div className="void-overlay pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
-              <div className="pointer-events-auto max-w-xs px-6 py-5 text-center">
-                <p className="text-sm text-fg/70">
-                  {voidMessage.slice(0, voidTextIndex)}
-                  <span className="ml-0.5 inline-block h-4 w-2 animate-pulse bg-fg/40 align-middle" />
-                </p>
-                {showRestore && (
-                  <button
-                    onClick={() => {
-                      setVoidActive(false);
-                      setShowRestore(false);
-                      setGlitchStage(0);
-                      glitchStageRef.current = 0;
-                      if (glitchTimeoutRef.current) {
-                        window.clearTimeout(glitchTimeoutRef.current);
-                        glitchTimeoutRef.current = null;
-                      }
-                    }}
-                    className="mt-4 rounded-full border border-fg/20 bg-fg/10 px-4 py-2 text-xs font-semibold text-fg hover:border-fg/40 hover:bg-fg/15"
-                  >
-                    Restore
-                  </button>
-                )}
-              </div>
-            </div>
-          )}
           <div
             key={(() => {
-              if (location.pathname.startsWith("/settings")) return location.pathname;
+              if (location.pathname.startsWith("/settings")) return "/settings";
               if (location.pathname.startsWith("/library")) return location.pathname;
+              if (location.pathname === "/chat") return "/chat";
               const chatMatch = location.pathname.match(/^\/chat\/([^/]+)/);
               if (chatMatch) return `/chat/${chatMatch[1]}`;
               const groupMatch = location.pathname.match(/^\/group-chats\/([^/]+)/);
@@ -1134,10 +1112,17 @@ function AppContent() {
           >
             <Routes>
               <Route path="/" element={<OnboardingCheck />} />
-              <Route path="/welcome" element={<WelcomePage />} />
+              <Route path="/welcome" element={<OnboardingPage />} />
+              <Route path="/onboarding/start" element={<OnboardingPage />} />
+              <Route path="/onboarding/learn" element={<OnboardingPage />} />
+              <Route path="/onboarding/path" element={<OnboardingPage />} />
+              <Route path="/onboarding/gemini" element={<OnboardingPage />} />
+              <Route path="/onboarding/openrouter" element={<OnboardingPage />} />
+              <Route path="/onboarding/finish" element={<OnboardingPage />} />
               <Route path="/onboarding/provider" element={<OnboardingPage />} />
               <Route path="/onboarding/models" element={<OnboardingPage />} />
               <Route path="/onboarding/memory" element={<OnboardingPage />} />
+              <Route path="/onboarding/sync" element={<OnboardingPage />} />
               <Route path="/wheretofind" element={<WhereToFindPage />} />
               <Route path="/search" element={<SearchPage />} />
               <Route path="/discover" element={<DiscoveryPage />} />
@@ -1151,14 +1136,43 @@ function AppContent() {
                 element={<Navigate to="/library?view=images" replace />}
               />
               <Route path="/library/lorebooks/:lorebookId" element={<StandaloneLorebookEditor />} />
+              <Route
+                path="/library/lorebooks/:lorebookId/generate"
+                element={<LorebookEntryGeneratorFlowPage />}
+              />
+              <Route
+                path="/library/lorebooks/:lorebookId/preview"
+                element={<LorebookTriggerPreviewPage />}
+              />
+              <Route
+                path="/library/lorebook/generate"
+                element={<LorebookGeneratorFlowPage />}
+              />
+              <Route element={<SettingsLayout />}>
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/settings/providers" element={<ProvidersPage />} />
               <Route path="/settings/models" element={<ModelsPage />} />
               <Route path="/settings/models/new" element={<EditModelPage />} />
               <Route path="/settings/models/browse" element={<HuggingFaceBrowserPage />} />
               <Route path="/settings/models/installed" element={<InstalledModelsPage />} />
+              <Route
+                path="/settings/models/runtime-defaults"
+                element={<LocalRuntimeDefaultsPage />}
+              />
               <Route path="/settings/models/:modelId" element={<EditModelPage />} />
               <Route path="/settings/voices" element={<VoicesPage />} />
+              <Route
+                path="/settings/voices/kokoro/:providerId"
+                element={<KokoroStudioPage />}
+              />
+              <Route
+                path="/settings/voices/kokoro/:providerId/blend"
+                element={<KokoroBlendEditorPage />}
+              />
+              <Route
+                path="/settings/voices/kokoro/:providerId/blend/:blendId"
+                element={<KokoroBlendEditorPage />}
+              />
               <Route path="/settings/image-generation" element={<ImageGenerationPage />} />
               <Route path="/settings/prompts" element={<SystemPromptsPage />} />
               <Route path="/settings/prompts/new" element={<EditPromptTemplate />} />
@@ -1166,23 +1180,36 @@ function AppContent() {
               <Route path="/settings/security" element={<SecurityPage />} />
               <Route path="/settings/usage" element={<UsagePage />} />
               <Route path="/settings/usage/activity" element={<UsageActivityPage />} />
-              <Route path="/settings/accessibility" element={<AccessibilityPage />} />
-              <Route path="/settings/accessibility/colors" element={<ColorCustomizationPage />} />
-              <Route path="/settings/accessibility/chat" element={<ChatAppearancePage />} />
+              <Route path="/settings/customization" element={<CustomizationPage />} />
+              <Route path="/settings/speech-recognition" element={<SpeechRecognitionPage />} />
+              <Route path="/settings/customization/colors" element={<ColorCustomizationPage />} />
+              <Route path="/settings/customization/chat" element={<ChatAppearancePage />} />
               <Route path="/settings/logs" element={<LogsPage />} />
               <Route path="/settings/about" element={<AboutPage />} />
               <Route path="/settings/advanced" element={<AdvancedPage />} />
               <Route path="/settings/advanced/memory" element={<DynamicMemoryPage />} />
+              <Route path="/settings/advanced/companions" element={<CompanionsHubPage />} />
               <Route path="/settings/advanced/creation-helper" element={<AICreationHelperPage />} />
               <Route path="/settings/advanced/help-me-reply" element={<HelpMeReplyPage />} />
+              <Route path="/settings/advanced/lorebooks" element={<LorebooksPage />} />
+              <Route
+                path="/settings/advanced/companion-soul-writer"
+                element={<CompanionsHubPage />}
+              />
               <Route path="/settings/advanced/host-api" element={<HostApiPage />} />
               <Route path="/settings/embedding-download" element={<EmbeddingDownloadPage />} />
+              <Route path="/settings/companion-download" element={<CompanionDownloadPage />} />
+              <Route
+                path="/settings/companion-download-queue"
+                element={<CompanionDownloadQueuePage />}
+              />
               <Route path="/settings/embedding-test" element={<EmbeddingTestPage />} />
+              <Route path="/settings/developer/kokoro-test" element={<KokoroTestPage />} />
               <Route path="/settings/changelog" element={<ChangelogPage />} />
+              <Route path="/settings/help" element={<HelpPage />} />
               <Route path="/settings/developer" element={<DeveloperPage />} />
               <Route path="/settings/reset" element={<ResetPage />} />
               <Route path="/settings/backup" element={<BackupRestorePage />} />
-              <Route path="/settings/convert" element={<ConvertPage />} />
               <Route path="/settings/sync" element={<SyncPage />} />
               <Route path="/settings/engine/:credentialId" element={<EngineHomePage />} />
               <Route path="/settings/engine/:credentialId/setup" element={<EngineSetupWizard />} />
@@ -1198,15 +1225,25 @@ function AppContent() {
                 path="/settings/engine/:credentialId/character/new"
                 element={<EngineCharacterCreate />}
               />
+              </Route>
               <Route path="/engine-chat/:credentialId/:slug" element={<EngineChatPage />} />
               <Route path="/chat" element={<ChatPage />} />
               <Route path="/chat/:characterId" element={<ChatLayout />}>
                 <Route index element={<ChatConversationPage />} />
                 <Route path="settings" element={<ChatSettingsPage />} />
+                <Route path="companion/soul" element={<CompanionSoulPage />} />
+                <Route path="memories" element={<ChatMemoriesPage />} />
               </Route>
               <Route path="/chat/:characterId/search" element={<SearchMessagesPage />} />
               <Route path="/chat/:characterId/history" element={<ChatHistoryPage />} />
-              <Route path="/chat/:characterId/memories" element={<ChatMemoriesPage />} />
+              <Route
+                path="/chat/:characterId/companion/memories"
+                element={<CompanionMemoryPage />}
+              />
+              <Route
+                path="/chat/:characterId/companion/relationship"
+                element={<CompanionRelationshipPage />}
+              />
               <Route
                 path="/chat/:characterId/debug/:sessionId/:messageId"
                 element={<MessageDebugPage />}
@@ -1222,7 +1259,19 @@ function AppContent() {
                 path="/settings/characters/:characterId/lorebook"
                 element={<LorebookEditor />}
               />
+              <Route
+                path="/settings/characters/:characterId/lorebook/generate"
+                element={<LorebookEntryGeneratorFlowPage />}
+              />
+              <Route
+                path="/settings/characters/:characterId/lorebook/preview"
+                element={<LorebookTriggerPreviewPage />}
+              />
               <Route path="/group-chats/groups/:groupId/lorebook" element={<LorebookEditor />} />
+              <Route
+                path="/group-chats/groups/:groupId/lorebook/preview"
+                element={<LorebookTriggerPreviewPage />}
+              />
               <Route
                 path="/settings/characters/:characterId/templates"
                 element={<ChatTemplateListPage />}
@@ -1250,7 +1299,10 @@ function AppContent() {
                 <Route index element={<GroupChatPage />} />
                 <Route path="settings" element={<GroupChatSettingsPage />} />
                 <Route path="lorebook" element={<LorebookEditor />} />
+                <Route path="lorebook/preview" element={<LorebookTriggerPreviewPage />} />
                 <Route path="memories" element={<GroupChatMemoriesPage />} />
+                <Route path="appearance" element={<GroupChatAppearancePage />} />
+                <Route path="search" element={<GroupChatSearchPage />} />
               </Route>
             </Routes>
           </div>
@@ -1271,6 +1323,8 @@ function AppContent() {
       <V1UpgradeToast />
       {/* V2 Embedding Model Upgrade Toast */}
       <V2UpgradeToast />
+      {/* V3 -> V4 Embedding Model Upgrade Toast (persistent dismissal) */}
+      <V3UpgradeToast />
     </div>
   );
 }
@@ -1282,16 +1336,28 @@ function OnboardingCheck() {
   useEffect(() => {
     let cancelled = false;
 
-    const checkOnboarding = async () => {
+    const check = async () => {
       const onboardingCompleted = await isOnboardingCompleted();
       if (cancelled) return;
       if (!onboardingCompleted) {
         setShouldShowOnboarding(true);
+        setIsChecking(false);
+        return;
       }
-      setIsChecking(false);
+
+      try {
+        const currentVersion = await invoke<string>("get_app_version");
+        const lastSeen = await getLastSeenAppVersion();
+        if (cancelled) return;
+        if (lastSeen !== currentVersion) {
+          window.dispatchEvent(new Event(WHATS_NEW_OPEN_EVENT));
+        }
+      } catch { }
+
+      if (!cancelled) setIsChecking(false);
     };
 
-    checkOnboarding();
+    void check();
 
     return () => {
       cancelled = true;

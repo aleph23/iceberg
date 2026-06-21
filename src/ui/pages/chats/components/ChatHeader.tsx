@@ -1,5 +1,14 @@
 import { useMemo, useState, useEffect } from "react";
-import { ArrowLeft, Brain, Loader2, AlertTriangle, Search, BookOpen } from "lucide-react";
+import {
+  ArrowLeft,
+  Brain,
+  Loader2,
+  AlertTriangle,
+  Search,
+  BookOpen,
+  Palette,
+  LayoutGrid,
+} from "lucide-react";
 import { useNavigate, useParams } from "react-router-dom";
 import type { Character, Persona, Session } from "../../../../core/storage/schemas";
 import { AvatarImage } from "../../../components/AvatarImage";
@@ -7,11 +16,6 @@ import { useAvatar } from "../../../hooks/useAvatar";
 import { listen } from "@tauri-apps/api/event";
 import { Routes } from "../../../navigation";
 import { cn } from "../../../design-tokens";
-import {
-  WindowControlButtons,
-  useDragRegionProps,
-  hasCustomWindowControls,
-} from "../../../components/App/TopNav";
 import { useI18n } from "../../../../core/i18n/context";
 import { isRenderableImageUrl } from "../../../../core/utils/image";
 
@@ -23,9 +27,12 @@ interface ChatHeaderProps {
   session?: Session | null;
   hasBackgroundImage?: boolean;
   headerOverlayClassName?: string;
+  transparentHeader?: boolean;
   onSessionUpdate?: () => void;
   onBeforeSettingsOpen?: () => void;
   onSettingsOpen?: () => void;
+  onAppearanceOpen?: () => void;
+  onEditWidgets?: () => void;
 }
 
 function isImageLike(value?: string) {
@@ -40,9 +47,12 @@ export function ChatHeader({
   session,
   hasBackgroundImage,
   headerOverlayClassName,
+  transparentHeader = false,
   onSessionUpdate,
   onBeforeSettingsOpen,
   onSettingsOpen,
+  onAppearanceOpen,
+  onEditWidgets,
 }: ChatHeaderProps) {
   const navigate = useNavigate();
   const { characterId } = useParams<{ characterId: string }>();
@@ -53,7 +63,6 @@ export function ChatHeader({
     swapPlaces ? persona?.avatarPath : character?.avatarPath,
     "round",
   );
-  const dragRegionProps = useDragRegionProps();
   const [memoryBusy, setMemoryBusy] = useState(false);
   const [memoryError, setMemoryError] = useState<string | null>(null);
   const isDynamic = useMemo(() => character?.memoryType === "dynamic", [character?.memoryType]);
@@ -153,27 +162,30 @@ export function ChatHeader({
 
   const headerTitle = useMemo(() => {
     if (swapPlaces) {
-      if (!persona) return "Unknown";
+      if (!persona) return t("chats.header.unknownTitle");
       return persona.nickname ? `${persona.title} (${persona.nickname})` : persona.title;
     }
-    return character?.name ?? "Unknown";
-  }, [character?.name, persona, swapPlaces]);
+    return character?.name ?? t("chats.header.unknownTitle");
+  }, [character?.name, persona, swapPlaces, t]);
 
   return (
     <>
       <header
         className={cn(
           "z-20 shrink-0 border-b border-fg/10 pl-3 lg:pl-8",
-          hasCustomWindowControls ? "pr-0" : "pr-3 lg:pr-8",
-          hasBackgroundImage ? headerOverlayClassName || "bg-surface/40" : "bg-surface",
+          "pr-3 lg:pr-8",
+          hasBackgroundImage
+            ? transparentHeader
+              ? "bg-transparent"
+              : headerOverlayClassName || "bg-surface/40"
+            : "bg-surface",
         )}
         style={{
           paddingTop: "calc(env(safe-area-inset-top) + 12px)",
           paddingBottom: "12px",
         }}
-        {...dragRegionProps}
       >
-        <div className="flex items-center justify-between h-10" {...dragRegionProps}>
+        <div className="flex items-center justify-between h-10">
           <div className="flex items-center min-w-0">
             <button
               onClick={() => navigate("/chat")}
@@ -214,12 +226,20 @@ export function ChatHeader({
                     data-tour-id="chat-memory"
                     onClick={() => {
                       if (!characterId || !sessionId) return;
+                      const route =
+                        character?.mode === "companion"
+                          ? Routes.chatCompanionMemories(
+                              characterId,
+                              sessionId,
+                              effectiveError ? { error: effectiveError } : undefined,
+                            )
+                          : Routes.chatMemories(
+                              characterId,
+                              sessionId,
+                              effectiveError ? { error: effectiveError } : undefined,
+                            );
                       navigate(
-                        Routes.chatMemories(
-                          characterId,
-                          sessionId,
-                          effectiveError ? { error: effectiveError } : undefined,
-                        ),
+                        route,
                       );
                     }}
                     className="relative flex h-10 w-10 items-center justify-center px-[0.6em] py-[0.3em] text-fg/80 transition hover:text-fg"
@@ -265,13 +285,40 @@ export function ChatHeader({
               data-tour-id="chat-lorebook"
               onClick={() => {
                 if (!characterId) return;
-                navigate(Routes.characterLorebook(characterId));
+                navigate(
+                  sessionId
+                    ? `${Routes.characterLorebook(characterId)}?${new URLSearchParams({
+                        sessionId,
+                      }).toString()}`
+                    : Routes.characterLorebook(characterId),
+                );
               }}
               className="flex items-center justify-center px-[0.6em] py-[0.3em] text-fg/80 transition hover:text-fg"
               aria-label={t("chats.header.manageLorebooks")}
             >
               <BookOpen size={18} strokeWidth={2.5} />
             </button>
+
+            {onEditWidgets && (
+              <button
+                onClick={onEditWidgets}
+                className="hidden lg:flex items-center justify-center px-[0.6em] py-[0.3em] text-fg/80 transition hover:text-fg"
+                aria-label={t("chats.header.editWidgets")}
+              >
+                <LayoutGrid size={18} strokeWidth={2.5} />
+              </button>
+            )}
+
+            {/* Appearance Button (desktop) */}
+            {onAppearanceOpen && (
+              <button
+                onClick={onAppearanceOpen}
+                className="hidden lg:flex items-center justify-center px-[0.6em] py-[0.3em] text-fg/80 transition hover:text-fg"
+                aria-label={t("chats.header.customizeAppearance")}
+              >
+                <Palette size={18} strokeWidth={2.5} />
+              </button>
+            )}
 
             {/* Avatar (Settings) Button */}
             <button
@@ -297,7 +344,11 @@ export function ChatHeader({
               {avatarImageUrl ? (
                 <AvatarImage
                   src={avatarImageUrl}
-                  alt={swapPlaces ? persona?.title || "Avatar" : character?.name || "Avatar"}
+                  alt={
+                    swapPlaces
+                      ? persona?.title || t("chats.header.avatarAlt")
+                      : character?.name || t("chats.header.avatarAlt")
+                  }
                   crop={swapPlaces ? persona?.avatarCrop : character?.avatarCrop}
                   applyCrop
                   className="absolute inset-0 z-10"
@@ -306,7 +357,6 @@ export function ChatHeader({
                 avatarFallback
               )}
             </button>
-            <WindowControlButtons />
           </div>
         </div>
       </header>

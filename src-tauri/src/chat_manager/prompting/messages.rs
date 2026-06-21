@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 
+use crate::chat_manager::temporal::message_timestamp_prefix;
 use crate::chat_manager::types::{
     ImageAttachment, PromptEntryRole, StoredMessage, SystemPromptEntry,
 };
@@ -83,15 +84,31 @@ pub fn push_user_or_assistant_message_with_context(
     char_name: &str,
     persona_name: &str,
     allow_image_input: bool,
+    time_frame_delta: i64,
+    time_stamp_enabled: bool,
 ) {
     if message.role == "scene" {
         return;
     }
 
-    let text = super::request::message_text_for_api(message)
+    let persona_name = if persona_name.trim().is_empty() {
+        "user"
+    } else {
+        persona_name
+    };
+    let mut text = super::request::message_text_for_api(message)
         .replace("{{char}}", char_name)
         .replace("{{persona}}", persona_name)
         .replace("{{user}}", persona_name);
+
+    if time_stamp_enabled {
+        let prefix = message_timestamp_prefix(message.created_at, time_frame_delta);
+        text = if text.is_empty() {
+            prefix
+        } else {
+            format!("{} {}", prefix, text)
+        };
+    }
 
     if allow_image_input && !message.attachments.is_empty() && message.role == "user" {
         let content = build_multimodal_content(&text, &message.attachments);
@@ -112,6 +129,11 @@ pub fn sanitize_placeholders_in_api_messages(
     char_name: &str,
     persona_name: &str,
 ) {
+    let persona_name = if persona_name.trim().is_empty() {
+        "user"
+    } else {
+        persona_name
+    };
     for msg in messages.iter_mut() {
         if let Some(obj) = msg.as_object_mut() {
             if let Some(content) = obj.get_mut("content") {

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::{OpenAIChatRequest, ProviderAdapter, ReasoningConfig};
 use crate::chat_manager::tooling::{openai_tool_choice, openai_tools, ToolConfig};
@@ -76,7 +76,7 @@ impl ProviderAdapter for CustomGenericAdapter {
 
     fn system_role(&self) -> Cow<'static, str> {
         self.config_value("systemRole")
-            .map(|s| Cow::Owned(s))
+            .map(Cow::Owned)
             .unwrap_or(Cow::Borrowed("system"))
     }
 
@@ -245,7 +245,25 @@ impl ProviderAdapter for CustomGenericAdapter {
             tool_choice,
         };
 
-        serde_json::to_value(request).unwrap()
+        let mut val = serde_json::to_value(request).unwrap();
+
+        // Inject chat_template_kwargs if explicitly enabled in provider config
+        if self
+            .credential_config
+            .as_ref()
+            .and_then(|v| v.get("sendChatTemplateKwargs"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+        {
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert(
+                    "chat_template_kwargs".to_string(),
+                    json!({ "enable_thinking": reasoning_enabled }),
+                );
+            }
+        }
+
+        val
     }
 }
 

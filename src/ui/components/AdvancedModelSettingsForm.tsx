@@ -1,4 +1,3 @@
-import type { ChangeEvent } from "react";
 import { Brain, Info } from "lucide-react";
 import {
   normalizeLlamaSamplerOrder,
@@ -8,6 +7,7 @@ import {
 import { cn } from "../design-tokens";
 import { useI18n } from "../../core/i18n/context";
 import { Switch } from "./Switch";
+import { NumberInput } from "./NumberInput";
 
 export const ADVANCED_TEMPERATURE_RANGE = { min: 0, max: 2 };
 export const ADVANCED_TOP_P_RANGE = { min: 0, max: 1 };
@@ -28,6 +28,10 @@ export const ADVANCED_LLAMA_SEED_RANGE = { min: 0, max: 2_147_483_647 };
 export const ADVANCED_LLAMA_ROPE_FREQ_BASE_RANGE = { min: 0, max: 1_000_000 };
 export const ADVANCED_LLAMA_ROPE_FREQ_SCALE_RANGE = { min: 0, max: 10 };
 export const ADVANCED_LLAMA_BATCH_SIZE_RANGE = { min: 1, max: 8192 };
+export const ADVANCED_LLAMA_DRY_MULTIPLIER_RANGE = { min: 0, max: 10 };
+export const ADVANCED_LLAMA_DRY_BASE_RANGE = { min: 0, max: 10 };
+export const ADVANCED_LLAMA_DRY_ALLOWED_LENGTH_RANGE = { min: 0, max: 128 };
+export const ADVANCED_LLAMA_DRY_PENALTY_LAST_N_RANGE = { min: -1, max: 262_144 };
 export const ADVANCED_OLLAMA_NUM_CTX_RANGE = { min: 0, max: 262_144 };
 export const ADVANCED_OLLAMA_NUM_PREDICT_RANGE = { min: 0, max: 131_072 };
 export const ADVANCED_OLLAMA_NUM_KEEP_RANGE = { min: 0, max: 32_768 };
@@ -69,6 +73,15 @@ export function sanitizeAdvancedModelSettings(input: AdvancedModelSettings): Adv
     const cleaned = value
       .map((v) => (typeof v === "string" ? v.trim() : ""))
       .filter((v) => v.length > 0);
+    return cleaned.length > 0 ? cleaned : null;
+  };
+
+  const normalizeStringList = (value: unknown): string[] | null => {
+    if (!Array.isArray(value)) return null;
+    const cleaned = value
+      .map((entry) => (typeof entry === "string" ? entry : ""))
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
     return cleaned.length > 0 ? cleaned : null;
   };
 
@@ -116,15 +129,37 @@ export function sanitizeAdvancedModelSettings(input: AdvancedModelSettings): Adv
     llamaBatchSize: sanitize(input.llamaBatchSize, ADVANCED_LLAMA_BATCH_SIZE_RANGE, true),
     llamaKvType: input.llamaKvType ?? null,
     llamaFlashAttention: input.llamaFlashAttention ?? null,
+    llamaSwaFull: input.llamaSwaFull ?? null,
     llamaChatTemplateOverride: input.llamaChatTemplateOverride?.trim() || null,
     llamaMmprojPath: input.llamaMmprojPath?.trim() || null,
+    llamaMtpEnabled: input.llamaMtpEnabled ?? null,
+    llamaMtpDraftTokens: sanitize(input.llamaMtpDraftTokens, { min: 1, max: 8 }, true),
+    llamaMtpModelPath: input.llamaMtpModelPath?.trim() || null,
     llamaChatTemplatePreset: input.llamaChatTemplatePreset?.trim() || null,
     llamaRawCompletionFallback: input.llamaRawCompletionFallback ?? null,
     llamaStrictMode: input.llamaStrictMode ?? null,
+    llamaStreamingEnabled: input.llamaStreamingEnabled ?? null,
     llamaSamplerProfile: input.llamaSamplerProfile ?? null,
     llamaSamplerOrder: normalizeLlamaSamplerOrder(input.llamaSamplerOrder),
     llamaMinP: sanitize(input.llamaMinP, ADVANCED_OLLAMA_MIN_P_RANGE, false),
     llamaTypicalP: sanitize(input.llamaTypicalP, ADVANCED_OLLAMA_TYPICAL_P_RANGE, false),
+    llamaDryMultiplier: sanitize(
+      input.llamaDryMultiplier,
+      ADVANCED_LLAMA_DRY_MULTIPLIER_RANGE,
+      false,
+    ),
+    llamaDryBase: sanitize(input.llamaDryBase, ADVANCED_LLAMA_DRY_BASE_RANGE, false),
+    llamaDryAllowedLength: sanitize(
+      input.llamaDryAllowedLength,
+      ADVANCED_LLAMA_DRY_ALLOWED_LENGTH_RANGE,
+      true,
+    ),
+    llamaDryPenaltyLastN: sanitize(
+      input.llamaDryPenaltyLastN,
+      ADVANCED_LLAMA_DRY_PENALTY_LAST_N_RANGE,
+      true,
+    ),
+    llamaDrySequenceBreakers: normalizeStringList(input.llamaDrySequenceBreakers),
     llamaLastRuntimeReport: input.llamaLastRuntimeReport ?? null,
     ollamaNumCtx: sanitize(input.ollamaNumCtx, ADVANCED_OLLAMA_NUM_CTX_RANGE, true),
     ollamaNumPredict: sanitize(input.ollamaNumPredict, ADVANCED_OLLAMA_NUM_PREDICT_RANGE, true),
@@ -152,6 +187,7 @@ export function sanitizeAdvancedModelSettings(input: AdvancedModelSettings): Adv
       ADVANCED_REASONING_BUDGET_RANGE,
       true,
     ),
+    forceSendThinkingState: input.forceSendThinkingState ?? null,
     promptCachingEnabled: input.promptCachingEnabled ?? null,
     promptCachingTtl: input.promptCachingTtl ?? "5min",
   };
@@ -231,6 +267,10 @@ export function formatAdvancedModelSettingsSummary(
     parts.push("Caching: On");
   }
 
+  if (settings.llamaStreamingEnabled === false) {
+    parts.push("Streaming: Off");
+  }
+
   return parts.length ? parts.join(" • ") : fallbackLabel;
 }
 
@@ -250,12 +290,10 @@ export function AdvancedModelSettingsForm({
 }: AdvancedModelSettingsFormProps) {
   const { t } = useI18n();
   const handleNumberChange =
-    (key: keyof AdvancedModelSettings) => (event: ChangeEvent<HTMLInputElement>) => {
-      const raw = event.target.value;
-      const nextValue = raw === "" ? null : Number(raw);
+    (key: keyof AdvancedModelSettings) => (next: number | null) => {
       onChange({
         ...settings,
-        [key]: nextValue,
+        [key]: next,
       });
     };
   const inputClassName =
@@ -283,13 +321,12 @@ export function AdvancedModelSettingsForm({
             {settings.temperature?.toFixed(2) ?? "0.70"}
           </span>
         </div>
-        <input
-          type="number"
-          inputMode="decimal"
+        <NumberInput
           min={ADVANCED_TEMPERATURE_RANGE.min}
           max={ADVANCED_TEMPERATURE_RANGE.max}
           step={0.01}
-          value={settings.temperature ?? ""}
+          decimals={2}
+          value={settings.temperature ?? null}
           onChange={handleNumberChange("temperature")}
           disabled={disabled}
           placeholder="0.70"
@@ -316,13 +353,12 @@ export function AdvancedModelSettingsForm({
             {settings.topP?.toFixed(2) ?? "1.00"}
           </span>
         </div>
-        <input
-          type="number"
-          inputMode="decimal"
+        <NumberInput
           min={ADVANCED_TOP_P_RANGE.min}
           max={ADVANCED_TOP_P_RANGE.max}
           step={0.01}
-          value={settings.topP ?? ""}
+          decimals={2}
+          value={settings.topP ?? null}
           onChange={handleNumberChange("topP")}
           disabled={disabled}
           placeholder="1.00"
@@ -346,11 +382,10 @@ export function AdvancedModelSettingsForm({
             </p>
           </div>
         </div>
-        <input
-          type="number"
+        <NumberInput
           min={ADVANCED_MAX_TOKENS_RANGE.min}
           max={ADVANCED_MAX_TOKENS_RANGE.max}
-          value={settings.maxOutputTokens ?? ""}
+          value={settings.maxOutputTokens ?? null}
           onChange={handleNumberChange("maxOutputTokens")}
           disabled={disabled}
           placeholder="1024"
@@ -375,22 +410,16 @@ export function AdvancedModelSettingsForm({
               : t("components.advancedModelSettings.contextLengthAuto")}
           </span>
         </div>
-        <input
-          type="number"
+        <NumberInput
           min={ADVANCED_CONTEXT_LENGTH_RANGE.min}
           max={ADVANCED_CONTEXT_LENGTH_RANGE.max}
-          value={settings.contextLength ?? ""}
-          onChange={(event) => {
-            const raw = event.target.value;
-            const nextValue = raw === "" ? null : Number(raw);
+          value={settings.contextLength ?? null}
+          onChange={(next) =>
             onChange({
               ...settings,
-              contextLength:
-                nextValue === null || !Number.isFinite(nextValue) || nextValue === 0
-                  ? null
-                  : Math.trunc(nextValue),
-            });
-          }}
+              contextLength: next === null || next === 0 ? null : Math.trunc(next),
+            })
+          }
           disabled={disabled}
           placeholder={t("components.advancedModelSettings.contextLengthAuto")}
           className="w-full rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white placeholder-white/40 focus:border-white/30 focus:outline-none disabled:opacity-50"
@@ -416,13 +445,12 @@ export function AdvancedModelSettingsForm({
             {settings.frequencyPenalty?.toFixed(2) ?? "0.00"}
           </span>
         </div>
-        <input
-          type="number"
-          inputMode="decimal"
+        <NumberInput
           min={ADVANCED_FREQUENCY_PENALTY_RANGE.min}
           max={ADVANCED_FREQUENCY_PENALTY_RANGE.max}
           step={0.01}
-          value={settings.frequencyPenalty ?? ""}
+          decimals={2}
+          value={settings.frequencyPenalty ?? null}
           onChange={handleNumberChange("frequencyPenalty")}
           disabled={disabled}
           placeholder="0.00"
@@ -449,13 +477,12 @@ export function AdvancedModelSettingsForm({
             {settings.presencePenalty?.toFixed(2) ?? "0.00"}
           </span>
         </div>
-        <input
-          type="number"
-          inputMode="decimal"
+        <NumberInput
           min={ADVANCED_PRESENCE_PENALTY_RANGE.min}
           max={ADVANCED_PRESENCE_PENALTY_RANGE.max}
           step={0.01}
-          value={settings.presencePenalty ?? ""}
+          decimals={2}
+          value={settings.presencePenalty ?? null}
           onChange={handleNumberChange("presencePenalty")}
           disabled={disabled}
           placeholder="0.00"
@@ -479,11 +506,10 @@ export function AdvancedModelSettingsForm({
             </p>
           </div>
         </div>
-        <input
-          type="number"
+        <NumberInput
           min={ADVANCED_TOP_K_RANGE.min}
           max={ADVANCED_TOP_K_RANGE.max}
-          value={settings.topK ?? ""}
+          value={settings.topK ?? null}
           onChange={handleNumberChange("topK")}
           disabled={disabled}
           placeholder="40"
@@ -495,7 +521,7 @@ export function AdvancedModelSettingsForm({
       <div className="space-y-4 rounded-2xl border border-blue-400/20 bg-blue-400/5 p-4 mb-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-white">
-            <h3 className="text-sm font-semibold">Prompt Caching</h3>
+            <h3 className="text-sm font-semibold">{t("components.extra.promptCachingTitle")}</h3>
           </div>
           <Switch
             checked={!!settings.promptCachingEnabled}
@@ -504,8 +530,7 @@ export function AdvancedModelSettingsForm({
           />
         </div>
         <p className="text-[11px] text-white/50 leading-relaxed">
-          Speeds up generation and reduces costs for long, repetitive contexts (like large system
-          prompts or deep chat histories).
+          {t("components.extra.promptCachingDescription")}
         </p>
       </div>
 
@@ -640,11 +665,10 @@ export function AdvancedModelSettingsForm({
                               {t("components.advancedModelSettings.reasoningBudgetDesc")}
                             </p>
                           </div>
-                          <input
-                            type="number"
+                          <NumberInput
                             min={ADVANCED_REASONING_BUDGET_RANGE.min}
                             max={ADVANCED_REASONING_BUDGET_RANGE.max}
-                            value={settings.reasoningBudgetTokens ?? ""}
+                            value={settings.reasoningBudgetTokens ?? null}
                             onChange={handleNumberChange("reasoningBudgetTokens")}
                             disabled={disabled}
                             placeholder="8192"
@@ -734,11 +758,10 @@ export function AdvancedModelSettingsForm({
                       {t("components.advancedModelSettings.reasoningBudgetExtendedDesc")}
                     </p>
                   </div>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={ADVANCED_REASONING_BUDGET_RANGE.min}
                     max={ADVANCED_REASONING_BUDGET_RANGE.max}
-                    value={settings.reasoningBudgetTokens ?? ""}
+                    value={settings.reasoningBudgetTokens ?? null}
                     onChange={handleNumberChange("reasoningBudgetTokens")}
                     disabled={disabled}
                     placeholder="8192"

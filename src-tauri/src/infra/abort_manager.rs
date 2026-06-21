@@ -21,7 +21,7 @@ impl AbortHandle {
 
 #[derive(Default)]
 struct AbortRegistryState {
-    handles: HashMap<String, AbortHandle>,
+    handles: HashMap<String, Vec<AbortHandle>>,
     aborted: HashSet<String>,
 }
 
@@ -43,7 +43,7 @@ impl AbortRegistry {
 
         if let Ok(mut state) = self.inner.lock() {
             state.aborted.remove(&request_id);
-            state.handles.insert(request_id, handle);
+            state.handles.entry(request_id).or_default().push(handle);
         }
 
         rx
@@ -52,8 +52,10 @@ impl AbortRegistry {
     pub fn abort(&self, request_id: &str) -> Result<(), String> {
         if let Ok(mut state) = self.inner.lock() {
             state.aborted.insert(request_id.to_string());
-            if let Some(mut handle) = state.handles.remove(request_id) {
-                handle.abort();
+            if let Some(handles) = state.handles.remove(request_id) {
+                for mut handle in handles {
+                    handle.abort();
+                }
             }
             Ok(())
         } else {
@@ -67,7 +69,15 @@ impl AbortRegistry {
 
     pub fn unregister(&self, request_id: &str) {
         if let Ok(mut state) = self.inner.lock() {
-            state.handles.remove(request_id);
+            let remove_entry = if let Some(handles) = state.handles.get_mut(request_id) {
+                handles.pop();
+                handles.is_empty()
+            } else {
+                false
+            };
+            if remove_entry {
+                state.handles.remove(request_id);
+            }
         }
     }
 
@@ -81,10 +91,12 @@ impl AbortRegistry {
 
     pub fn abort_all(&self) {
         if let Ok(mut state) = self.inner.lock() {
-            let pending: Vec<(String, AbortHandle)> = state.handles.drain().collect();
-            for (request_id, mut handle) in pending {
+            let pending: Vec<(String, Vec<AbortHandle>)> = state.handles.drain().collect();
+            for (request_id, handles) in pending {
                 state.aborted.insert(request_id);
-                handle.abort();
+                for mut handle in handles {
+                    handle.abort();
+                }
             }
         }
     }
@@ -92,7 +104,11 @@ impl AbortRegistry {
     #[allow(dead_code)]
     pub fn is_registered(&self, request_id: &str) -> bool {
         if let Ok(state) = self.inner.lock() {
-            state.handles.contains_key(request_id)
+            state
+                .handles
+                .get(request_id)
+                .map(|handles| !handles.is_empty())
+                .unwrap_or(false)
         } else {
             false
         }

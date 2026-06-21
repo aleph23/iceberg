@@ -2,9 +2,17 @@ import type { ProviderCredential } from "../../../../core/storage/schemas";
 import type { ProviderCapabilitiesCamel } from "../../../../core/providers/capabilities";
 
 export enum OnboardingStep {
+  Welcome = 0,
   Provider = 1,
   Model = 2,
   Memory = 3,
+  Sync = 4,
+  Intro = 5,
+  Learn = 6,
+  Path = 7,
+  GeminiSetup = 8,
+  OpenRouterSetup = 9,
+  MemorySetup = 10,
 }
 
 export type TestResult = { success: boolean; message: string } | null;
@@ -36,6 +44,7 @@ export interface OnboardingState {
   modelLoading: boolean;
   isSavingModel: boolean;
   modelError: string | null;
+  savedModelId: string | null;
 
   // Memory setup
   memoryType: MemoryType | null;
@@ -79,6 +88,7 @@ export type OnboardingAction =
   | { type: "SET_DISPLAY_NAME"; payload: string }
   | { type: "SET_SAVING_MODEL"; payload: boolean }
   | { type: "SET_MODEL_ERROR"; payload: string | null }
+  | { type: "SET_SAVED_MODEL_ID"; payload: string | null }
 
   // Memory
   | { type: "SET_MEMORY_TYPE"; payload: MemoryType | null }
@@ -88,7 +98,7 @@ export type OnboardingAction =
   | { type: "RESET" };
 
 export const initialOnboardingState: OnboardingState = {
-  step: OnboardingStep.Provider,
+  step: OnboardingStep.Welcome,
 
   capabilities: [],
   capabilitiesLoading: true,
@@ -109,6 +119,7 @@ export const initialOnboardingState: OnboardingState = {
   modelLoading: true,
   isSavingModel: false,
   modelError: null,
+  savedModelId: null,
 
   memoryType: null,
   isProcessingMemory: false,
@@ -183,6 +194,8 @@ export function onboardingReducer(
       return { ...state, isSavingModel: action.payload };
     case "SET_MODEL_ERROR":
       return { ...state, modelError: action.payload };
+    case "SET_SAVED_MODEL_ID":
+      return { ...state, savedModelId: action.payload };
 
     // Memory
     case "SET_MEMORY_TYPE":
@@ -223,13 +236,13 @@ export function getDefaultModelName(providerId: string): string {
   switch (providerId) {
     case "intenserp":
       return "deepseek-auto";
-    case "openai":
-      return "gpt-4o";
-    case "anthropic":
-      return "claude-3-sonnet";
     case "openrouter":
-      return "meta-llama/llama-3-70b-instruct";
+      return "deepseek/deepseek-v3.2";
+    case "mistral":
+      return "mistral-large-latest";
+    case "gemini":
+      return "gemini-3-flash-preview";
     default:
-      return "custom-model";
+      return "";
   }
 }

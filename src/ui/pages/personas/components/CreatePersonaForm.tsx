@@ -5,6 +5,7 @@ import { PersonaFormState, PersonaFormAction } from "../hooks/createPersonaReduc
 import { AvatarPicker } from "../../../components/AvatarPicker";
 import { Switch } from "../../../components/Switch";
 import { DesignReferenceEditor } from "../../../components/DesignReferenceEditor";
+import { ActiveLorebooksSelector } from "../../characters/components/ActiveLorebooksSelector";
 import { typography, radius, spacing, interactive, cn } from "../../../design-tokens";
 import type { AvatarCrop } from "../../../../core/storage/schemas";
 import { useI18n } from "../../../../core/i18n/context";
@@ -40,6 +41,7 @@ export function CreatePersonaForm({
     avatarRoundPath,
     designDescription,
     designReferenceImageIds,
+    activeLorebookIds,
     isDefault,
     saving,
     importing,
@@ -130,7 +132,7 @@ export function CreatePersonaForm({
               <input
                 value={title}
                 onChange={(e) => dispatch({ type: "set_title", value: e.target.value })}
-                placeholder="Professional Writer"
+                placeholder={t("personas.create.namePlaceholderExample")}
                 className={cn(
                   "w-full border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
                   radius.md,
@@ -226,6 +228,12 @@ export function CreatePersonaForm({
               />
             </div>
           </div>
+
+          <ActiveLorebooksSelector
+            selectedIds={activeLorebookIds}
+            onChange={(value) => dispatch({ type: "set_active_lorebook_ids", value })}
+            subjectLabel="persona"
+          />
         </div>
 
         <div className="space-y-5">
@@ -245,7 +253,7 @@ export function CreatePersonaForm({
               value={description}
               onChange={(e) => dispatch({ type: "set_description", value: e.target.value })}
               rows={10}
-              placeholder="Write in a professional, clear, and concise style. Use formal language and focus on delivering information effectively..."
+              placeholder={t("personas.create.descriptionPlaceholderExample")}
               className={cn(
                 "min-h-35 max-h-96 w-full resize-y border bg-surface-el/20 px-4 py-3.5 text-sm leading-relaxed text-fg placeholder-fg/40 backdrop-blur-xl xl:min-h-72",
                 radius.md,
@@ -274,8 +282,8 @@ export function CreatePersonaForm({
             subjectName={title}
             subjectDescription={description}
             avatarImage={avatarPath}
-            title="Design references"
-            description="Attach a few stable image references and one concise design note for scene generation."
+            title={t("personas.designReferences.title")}
+            description={t("personas.designReferences.description")}
           />
         </div>
       </div>

@@ -50,6 +50,23 @@ export interface ChatMessageDebugSnapshot {
   notes: string[];
 }
 
+export interface LorebookEntryDraft {
+  title: string;
+  keywords: string[];
+  content: string;
+  alwaysActive: boolean;
+}
+
+export interface LorebookEntryDraftResult {
+  kind: "entry" | "none";
+  draft?: LorebookEntryDraft | null;
+  reason?: string | null;
+}
+
+export interface LorebookKeywordDraftResult {
+  keywords: string[];
+}
+
 export async function sendChatTurn(params: {
   sessionId: string;
   characterId: string;
@@ -131,10 +148,11 @@ export async function regenerateAssistantMessage(params: {
   sessionId: string;
   messageId: string;
   swapPlaces?: boolean;
+  guidance?: string;
   stream?: boolean;
   requestId?: string;
 }): Promise<ChatRegenerateResult> {
-  const { sessionId, messageId, swapPlaces = false, stream = true, requestId } = params;
+  const { sessionId, messageId, swapPlaces = false, guidance, stream = true, requestId } = params;
   if (requestId) beginAsyncAction(requestId, "chat_regenerate");
   try {
     return await invoke<ChatRegenerateResult>("chat_regenerate", {
@@ -142,6 +160,7 @@ export async function regenerateAssistantMessage(params: {
         sessionId,
         messageId,
         swapPlaces,
+        guidance: guidance?.trim() ? guidance.trim() : null,
         stream,
         requestId: requestId ?? null,
       },
@@ -210,6 +229,46 @@ export async function generateScenePromptForMessage(params: {
     args: {
       sessionId: params.sessionId,
       messageId: params.messageId,
+    },
+  });
+}
+
+export async function generateLorebookEntryDraft(params: {
+  lorebookId: string;
+  sessionId: string;
+  messageIds?: string[];
+  memoryIds?: string[];
+  source?: "messages" | "memory" | "mixed";
+  includeMemorySummary?: boolean;
+  directionPrompt?: string | null;
+  force?: boolean;
+}): Promise<LorebookEntryDraftResult> {
+  return invoke<LorebookEntryDraftResult>("chat_generate_lorebook_entry_draft", {
+    args: {
+      lorebookId: params.lorebookId,
+      sessionId: params.sessionId,
+      messageIds: params.messageIds ?? [],
+      memoryIds: params.memoryIds ?? [],
+      source: params.source ?? "messages",
+      includeMemorySummary: params.includeMemorySummary ?? true,
+      directionPrompt: params.directionPrompt ?? null,
+      force: params.force ?? false,
+    },
+  });
+}
+
+export async function generateLorebookKeywordDraft(params: {
+  title?: string | null;
+  content: string;
+  directionPrompt?: string | null;
+  existingKeywords?: string[];
+}): Promise<LorebookKeywordDraftResult> {
+  return invoke<LorebookKeywordDraftResult>("chat_generate_lorebook_keyword_draft", {
+    args: {
+      title: params.title ?? null,
+      content: params.content,
+      directionPrompt: params.directionPrompt ?? null,
+      existingKeywords: params.existingKeywords ?? [],
     },
   });
 }

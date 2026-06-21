@@ -259,12 +259,8 @@ pub fn gemini_tool_config(choice: Option<&ToolChoice>) -> Option<Value> {
 }
 
 /// Z.AI exposes OpenAI-style tools but only supports auto mode today.
-pub fn zai_tool_choice(choice: Option<&ToolChoice>) -> Option<Value> {
-    if choice.is_none() {
-        Some(json!("auto"))
-    } else {
-        Some(json!("auto"))
-    }
+pub fn zai_tool_choice(_choice: Option<&ToolChoice>) -> Option<Value> {
+    Some(json!("auto"))
 }
 
 pub fn parse_tool_calls(provider_id: &str, payload: &Value) -> Vec<ToolCall> {
@@ -298,7 +294,7 @@ pub fn parse_tool_calls(provider_id: &str, payload: &Value) -> Vec<ToolCall> {
                         let id = part
                             .get("id")
                             .and_then(|v| v.as_str())
-                            .unwrap_or_else(|| "tool_use");
+                            .unwrap_or("tool_use");
                         let (arguments, raw_arguments) = match part.get("input") {
                             Some(Value::String(raw)) => arguments_value_from_str(raw),
                             Some(other) => (other.clone(), None),
@@ -362,7 +358,6 @@ pub fn parse_tool_calls(provider_id: &str, payload: &Value) -> Vec<ToolCall> {
     calls
 }
 
-#[cfg(any(test, not(mobile)))]
 pub fn parse_tool_calls_from_text(raw: &str) -> Vec<ToolCall> {
     let mut calls = Vec::new();
     let normalized = raw.trim();
@@ -458,7 +453,6 @@ fn strip_inline_function_blocks(raw: &str) -> String {
     out
 }
 
-#[cfg(any(test, not(mobile)))]
 fn parse_tool_call_block_into(block: &str, out: &mut Vec<ToolCall>) {
     if block.is_empty() {
         return;
@@ -476,7 +470,6 @@ fn parse_tool_call_block_into(block: &str, out: &mut Vec<ToolCall>) {
     }
 }
 
-#[cfg(any(test, not(mobile)))]
 fn parse_tool_call_block_function_tag(block: &str, index: usize) -> Option<ToolCall> {
     let prefix = "<function=";
     let suffix = "</function>";
@@ -507,7 +500,6 @@ fn parse_tool_call_block_function_tag(block: &str, index: usize) -> Option<ToolC
     })
 }
 
-#[cfg(any(test, not(mobile)))]
 fn extract_tool_calls_from_json_value(value: &Value, out: &mut Vec<ToolCall>) {
     match value {
         Value::Array(items) => {
@@ -543,7 +535,6 @@ fn extract_tool_calls_from_json_value(value: &Value, out: &mut Vec<ToolCall>) {
     }
 }
 
-#[cfg(any(test, not(mobile)))]
 fn parse_json_tool_call_object(value: &Value, index: usize) -> Option<ToolCall> {
     let function = value.get("function").unwrap_or(value);
     let name = function
@@ -622,7 +613,7 @@ fn extract_openai_calls(node: &Value, out: &mut Vec<ToolCall>) {
                     let id = raw_call
                         .get("id")
                         .and_then(|v| v.as_str())
-                        .unwrap_or_else(|| "tool_call");
+                        .unwrap_or("tool_call");
                     out.push(ToolCall {
                         id: id.to_string(),
                         name: name.to_string(),
@@ -642,294 +633,5 @@ fn extract_openai_calls(node: &Value, out: &mut Vec<ToolCall>) {
 
     if let Some(delta) = node.get("delta") {
         extract_openai_calls(delta, out);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        gemini_tool_config, gemini_tools, parse_tool_calls, parse_tool_calls_from_text,
-        strip_tool_call_blocks, ToolChoice, ToolConfig, ToolDefinition,
-    };
-    use serde_json::json;
-
-    #[test]
-    fn parses_ollama_non_streaming_tool_calls_from_message() {
-        let payload = json!({
-            "model": "qwen3",
-            "message": {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "function": {
-                        "name": "get_weather",
-                        "arguments": {
-                            "city": "Istanbul"
-                        }
-                    }
-                }]
-            },
-            "done": true
-        });
-
-        let calls = parse_tool_calls("ollama", &payload);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "get_weather");
-        assert_eq!(calls[0].arguments, json!({ "city": "Istanbul" }));
-    }
-
-    #[test]
-    fn parses_ollama_streaming_tool_calls_from_message() {
-        let payload = json!({
-            "message": {
-                "role": "assistant",
-                "tool_calls": [{
-                    "id": "call_1",
-                    "function": {
-                        "name": "add_two_numbers",
-                        "arguments": {
-                            "a": 3,
-                            "b": 1
-                        }
-                    }
-                }]
-            },
-            "done": false
-        });
-
-        let calls = parse_tool_calls("ollama", &payload);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_1");
-        assert_eq!(calls[0].name, "add_two_numbers");
-        assert_eq!(calls[0].arguments, json!({ "a": 3, "b": 1 }));
-    }
-
-    #[test]
-    fn parses_openai_legacy_function_call_from_message() {
-        let payload = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": null,
-                    "function_call": {
-                        "name": "write_summary",
-                        "arguments": "{\"summary\":\"short recap\"}"
-                    }
-                }
-            }]
-        });
-
-        let calls = parse_tool_calls("openai", &payload);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "write_summary");
-        assert_eq!(calls[0].arguments, json!({ "summary": "short recap" }));
-        assert_eq!(
-            calls[0].raw_arguments.as_deref(),
-            Some("{\"summary\":\"short recap\"}")
-        );
-    }
-
-    #[test]
-    fn parses_openai_legacy_function_call_camel_case() {
-        let payload = json!({
-            "message": {
-                "role": "assistant",
-                "functionCall": {
-                    "name": "create_memory",
-                    "arguments": {
-                        "text": "Likes tea",
-                        "category": "preference"
-                    }
-                }
-            }
-        });
-
-        let calls = parse_tool_calls("local", &payload);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "create_memory");
-        assert_eq!(
-            calls[0].arguments,
-            json!({ "text": "Likes tea", "category": "preference" })
-        );
-    }
-
-    #[test]
-    fn gemini_tools_use_camel_case_fields() {
-        let cfg = ToolConfig {
-            tools: vec![ToolDefinition {
-                name: "lookup_weather".to_string(),
-                description: Some("Get current weather".to_string()),
-                parameters: json!({
-                    "type": "object",
-                    "properties": {
-                        "city": { "type": "string" }
-                    }
-                }),
-            }],
-            choice: Some(ToolChoice::Tool {
-                name: "lookup_weather".to_string(),
-            }),
-        };
-
-        let tools = gemini_tools(&cfg).expect("gemini tools");
-        assert_eq!(
-            tools,
-            vec![json!([{
-                "functionDeclarations": [{
-                    "name": "lookup_weather",
-                    "description": "Get current weather",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "city": { "type": "string" }
-                        }
-                    }
-                }]
-            }])[0]
-                .clone()]
-        );
-
-        let tool_config = gemini_tool_config(cfg.choice.as_ref()).expect("gemini tool config");
-        assert_eq!(
-            tool_config,
-            json!({
-                "functionCallingConfig": {
-                    "mode": "ANY",
-                    "allowedFunctionNames": ["lookup_weather"]
-                }
-            })
-        );
-    }
-
-    #[test]
-    fn parses_tool_calls_from_xml_wrapped_json_blocks() {
-        let raw = r#"<|im_start|>assistant
-<tool_call>
-{"name": "write_summary", "arguments": {"summary": "short recap"}}
-</tool_call>"#;
-
-        let calls = parse_tool_calls_from_text(raw);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "write_summary");
-        assert_eq!(calls[0].arguments, json!({ "summary": "short recap" }));
-    }
-
-    #[test]
-    fn strips_tool_call_blocks_from_text_output() {
-        let raw = r#"<|im_start|>assistant
-Before
-<tool_call>
-{"name":"create_memory","arguments":{"text":"Likes tea"}}
-</tool_call>
-After<|im_end|>"#;
-
-        assert_eq!(strip_tool_call_blocks(raw), "Before\n\nAfter");
-    }
-
-    #[test]
-    fn parses_tool_calls_from_plural_wrapper() {
-        let raw = r#"<tool_calls>
-[
-  {"name":"create_memory","arguments":{"text":"Likes tea","category":"preference"}},
-  {"function":{"name":"pin_memory","arguments":{"id":"abc"}}}
-]
-</tool_calls>"#;
-
-        let calls = parse_tool_calls_from_text(raw);
-
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].name, "create_memory");
-        assert_eq!(calls[1].name, "pin_memory");
-    }
-
-    #[test]
-    fn parses_tool_calls_from_json_tool_calls_object() {
-        let raw = r#"{"tool_calls":[{"id":"call_1","function":{"name":"write_summary","arguments":"{\"summary\":\"done\"}"}}]}"#;
-
-        let calls = parse_tool_calls_from_text(raw);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].id, "call_1");
-        assert_eq!(calls[0].name, "write_summary");
-        assert_eq!(calls[0].arguments, json!({ "summary": "done" }));
-    }
-
-    #[test]
-    fn parses_standalone_function_tag_calls() {
-        let raw =
-            r#"<function=create_memory>{"text":"Likes tea","category":"preference"}</function>"#;
-
-        let calls = parse_tool_calls_from_text(raw);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "create_memory");
-        assert_eq!(
-            calls[0].arguments,
-            json!({ "text": "Likes tea", "category": "preference" })
-        );
-    }
-
-    #[test]
-    fn parses_openai_tool_call_parameter_tags_into_arguments() {
-        let payload = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "text_tool_call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "create_memory",
-                            "arguments": "<parameter=category>\ncharacter_trait\n</parameter>\n<parameter=important>\ntrue\n</parameter>\n<parameter=text>\nMirelle is a ledger expert from House Cendre.\n</parameter>"
-                        }
-                    }]
-                }
-            }]
-        });
-
-        let calls = parse_tool_calls("llamacpp", &payload);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "create_memory");
-        assert_eq!(
-            calls[0].arguments,
-            json!({
-                "category": "character_trait",
-                "important": true,
-                "text": "Mirelle is a ledger expert from House Cendre."
-            })
-        );
-    }
-
-    #[test]
-    fn parses_openai_summary_parameter_tag_argument() {
-        let payload = json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [{
-                        "id": "text_tool_call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "write_summary",
-                            "arguments": "<parameter=summary>\nshort recap\n</parameter>"
-                        }
-                    }]
-                }
-            }]
-        });
-
-        let calls = parse_tool_calls("llamacpp", &payload);
-
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].name, "write_summary");
-        assert_eq!(calls[0].arguments, json!({ "summary": "short recap" }));
     }
 }

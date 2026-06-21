@@ -10,7 +10,6 @@ import {
   Search,
   X,
   Download,
-  User,
 } from "lucide-react";
 import { useLocation, useParams } from "react-router-dom";
 
@@ -23,8 +22,7 @@ import {
 } from "../../../core/storage";
 import { storageBridge } from "../../../core/storage/files";
 import { typography, radius, cn, colors, interactive } from "../../design-tokens";
-import { WindowControlButtons, useDragRegionProps, hasCustomWindowControls } from "../../components/App/TopNav";
-import { BottomMenu, MenuButton, MenuButtonGroup, MenuDivider } from "../../components";
+import { BottomMenu } from "../../components";
 import { Routes, useNavigationManager } from "../../navigation";
 import { useI18n } from "../../../core/i18n/context";
 
@@ -42,7 +40,6 @@ export function ChatHistoryPage() {
   const location = useLocation();
   const { go, backOrReplace } = useNavigationManager();
   const { t } = useI18n();
-  const dragRegionProps = useDragRegionProps();
   const formatTimeAgo = useFormatTimeAgo();
   const [character, setCharacter] = useState<Character | null>(null);
   const [sessions, setSessions] = useState<SessionPreview[]>([]);
@@ -52,8 +49,7 @@ export function ChatHistoryPage() {
   const [deleteTarget, setDeleteTarget] = useState<SessionPreview | null>(null);
   const [renameTarget, setRenameTarget] = useState<SessionPreview | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
-  const [exportTarget, setExportTarget] = useState<SessionPreview | null>(null);
-  const [exporting, setExporting] = useState(false);
+  const [, setExporting] = useState(false);
   const [groupPages, setGroupPages] = useState<Record<string, number>>({});
   const [query, setQuery] = useState(() => {
     const storageKey = characterId ? `chatHistoryQuery:${characterId}` : "chatHistoryQuery";
@@ -117,7 +113,7 @@ export function ChatHistoryPage() {
           }),
         );
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load data");
+        setError(err instanceof Error ? err.message : t("chats.history.failedLoad"));
       } finally {
         setIsLoading(false);
       }
@@ -132,7 +128,7 @@ export function ChatHistoryPage() {
       await deleteSession(sessionId);
       setSessions((prev) => prev.filter((s) => s.id !== sessionId));
     } catch (err) {
-      setError(`Failed to delete: ${err}`);
+      setError(t("chats.history.failedDelete", { error: String(err) }));
     } finally {
       setBusyIds((prev) => {
         const next = new Set(prev);
@@ -148,7 +144,7 @@ export function ChatHistoryPage() {
       await updateSessionTitle(sessionId, newTitle);
       setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)));
     } catch (err) {
-      setError(`Failed to rename: ${err}`);
+      setError(t("chats.history.failedRename", { error: String(err) }));
     } finally {
       setBusyIds((prev) => {
         const next = new Set(prev);
@@ -158,41 +154,21 @@ export function ChatHistoryPage() {
     }
   }, []);
 
-  const handleExportChatpkg = useCallback(
-    async (includeCharacterId: boolean) => {
-      if (!exportTarget) return;
+  const handleExportJsonl = useCallback(
+    async (session: SessionPreview) => {
       try {
         setExporting(true);
-        const path = await storageBridge.chatpkgExportSingleChat(
-          exportTarget.id,
-          includeCharacterId,
-        );
-        setExportTarget(null);
-        alert(`Chat package exported to:\n${path}`);
+        const path = await storageBridge.jsonlExportSingleChat(session.id);
+        alert(t("chats.history.chatPackageExportedTo", { path }));
       } catch (err) {
-        console.error("Failed to export chat package:", err);
-        alert(typeof err === "string" ? err : "Failed to export chat package");
+        console.error("Failed to export chat:", err);
+        alert(typeof err === "string" ? err : t("chats.history.failedExportChatPackage"));
       } finally {
         setExporting(false);
       }
     },
-    [exportTarget],
+    [t],
   );
-
-  const handleExportSillyTavern = useCallback(async () => {
-    if (!exportTarget) return;
-    try {
-      setExporting(true);
-      const path = await storageBridge.chatpkgExportSingleChatSillyTavern(exportTarget.id);
-      setExportTarget(null);
-      alert(`SillyTavern chat exported to:\n${path}`);
-    } catch (err) {
-      console.error("Failed to export SillyTavern chat:", err);
-      alert(typeof err === "string" ? err : "Failed to export SillyTavern chat");
-    } finally {
-      setExporting(false);
-    }
-  }, [exportTarget]);
 
   const filteredSessions = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -256,13 +232,12 @@ export function ChatHistoryPage() {
   return (
     <div className={cn("flex h-full flex-col", colors.surface.base, colors.text.primary)}>
       <header
-        className={cn("z-20 shrink-0 border-b border-fg/10 bg-surface pl-4 pb-3", hasCustomWindowControls ? "pr-0" : "pr-4")}
+        className={cn("z-20 shrink-0 border-b border-fg/10 bg-surface pl-4 pb-3", "pr-4")}
         style={{
           paddingTop: "calc(env(safe-area-inset-top) + 12px)",
         }}
-        {...dragRegionProps}
       >
-        <div className="flex items-center justify-between gap-3" {...dragRegionProps}>
+        <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 items-center">
             <button
               onClick={() =>
@@ -289,7 +264,6 @@ export function ChatHistoryPage() {
               </p>
             </div>
           </div>
-          <WindowControlButtons />
         </div>
       </header>
 
@@ -432,7 +406,7 @@ export function ChatHistoryPage() {
                               "rounded-md p-1.5 text-fg/58 transition-colors hover:bg-fg/6 hover:text-fg/82",
                               "disabled:pointer-events-none disabled:opacity-30",
                             )}
-                            aria-label={`Previous ${group.label} page`}
+                            aria-label={t("chats.history.previousGroupPage", { label: group.label })}
                           >
                             <ChevronLeft size={14} />
                           </button>
@@ -452,7 +426,7 @@ export function ChatHistoryPage() {
                               "rounded-md p-1.5 text-fg/58 transition-colors hover:bg-fg/6 hover:text-fg/82",
                               "disabled:pointer-events-none disabled:opacity-30",
                             )}
-                            aria-label={`Next ${group.label} page`}
+                            aria-label={t("chats.history.nextGroupPage", { label: group.label })}
                           >
                             <ChevronRight size={14} />
                           </button>
@@ -466,7 +440,7 @@ export function ChatHistoryPage() {
                           session={session}
                           onSelect={() => go(Routes.chatSession(characterId!, session.id))}
                           onDelete={() => setDeleteTarget(session)}
-                          onExport={() => setExportTarget(session)}
+                          onExport={() => void handleExportJsonl(session)}
                           onRename={() => setRenameTarget(session)}
                           isBusy={busyIds.has(session.id)}
                         />
@@ -486,7 +460,7 @@ export function ChatHistoryPage() {
                               "rounded-md p-2 text-fg/65 transition-colors hover:bg-fg/6 hover:text-fg/82",
                               "disabled:pointer-events-none disabled:opacity-30",
                             )}
-                            aria-label={`Previous ${group.label} page`}
+                            aria-label={t("chats.history.previousGroupPage", { label: group.label })}
                           >
                             <ChevronLeft size={16} />
                           </button>
@@ -506,7 +480,7 @@ export function ChatHistoryPage() {
                               "rounded-md p-2 text-fg/65 transition-colors hover:bg-fg/6 hover:text-fg/82",
                               "disabled:pointer-events-none disabled:opacity-30",
                             )}
-                            aria-label={`Next ${group.label} page`}
+                            aria-label={t("chats.history.nextGroupPage", { label: group.label })}
                           >
                             <ChevronRight size={16} />
                           </button>
@@ -606,61 +580,7 @@ export function ChatHistoryPage() {
         </div>
       </BottomMenu>
 
-      <BottomMenu
-        isOpen={exportTarget != null}
-        onClose={() => setExportTarget(null)}
-        title={t("chats.exportChatPackage")}
-      >
-        <div className="rounded-xl border border-fg/10 bg-fg/4 p-3">
-          <p className={cn(typography.bodySmall.size, "truncate font-semibold text-fg/90")}>
-            {exportTarget?.title || t("chats.untitledChat")}
-          </p>
-          {exportTarget ? (
-            <p className={cn(typography.caption.size, "mt-0.5 text-fg/45")}>
-              {formatTimeAgo(exportTarget.updatedAt)}
-            </p>
-          ) : null}
-        </div>
-
-        <MenuDivider />
-
-        <MenuButtonGroup>
-          <MenuButton
-            icon={User}
-            title={exporting ? t("common.buttons.exporting") : t("chats.characterSpecificExport")}
-            description={t("chats.characterSpecificExportDesc")}
-            color="from-blue-500 to-cyan-600"
-            disabled={!exportTarget || exporting}
-            onClick={() => {
-              void handleExportChatpkg(true);
-            }}
-          />
-          <MenuButton
-            icon={Download}
-            title={
-              exporting ? t("common.buttons.exporting") : t("chats.nonCharacterSpecificExport")
-            }
-            description={t("chats.nonCharacterSpecificExportDesc")}
-            color="from-indigo-500 to-blue-600"
-            disabled={!exportTarget || exporting}
-            onClick={() => {
-              void handleExportChatpkg(false);
-            }}
-          />
-          <MenuButton
-            icon={Download}
-            title={exporting ? t("common.buttons.exporting") : "SillyTavern format"}
-            description="Export as .jsonl compatible with SillyTavern."
-            color="from-emerald-500 to-teal-600"
-            disabled={!exportTarget || exporting}
-            onClick={() => {
-              void handleExportSillyTavern();
-            }}
-          />
-        </MenuButtonGroup>
-      </BottomMenu>
-
-      <BottomMenu
+<BottomMenu
         isOpen={deleteTarget != null}
         onClose={() => setDeleteTarget(null)}
         title={t("chats.deleteChat")}
@@ -778,7 +698,7 @@ function SessionCard({
               </h3>
               {session.archived ? (
                 <span className="inline-flex shrink-0 items-center rounded-md border border-amber-400/25 bg-amber-400/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-200/80">
-                  Archived
+                  {t("chats.history.archivedBadge")}
                 </span>
               ) : null}
             </div>
@@ -802,7 +722,7 @@ function SessionCard({
 
       <div className="flex items-center justify-between gap-3 border-t border-fg/8 px-3 py-2">
         <span className={cn(typography.caption.size, "text-fg/38")}>
-          {session.messageCount.toLocaleString()} messages
+          {t("chats.history.messagesCount", { count: session.messageCount.toLocaleString() })}
         </span>
         <div className="flex items-center gap-1">
           <button

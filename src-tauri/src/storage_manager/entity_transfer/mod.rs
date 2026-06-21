@@ -8,12 +8,16 @@ use unified_entity_card::{
     assert_uec, convert_uec_v1_to_v2, create_character_uec, create_persona_uec, downgrade_uec, Uec,
     UecKind, SCHEMA_VERSION, SCHEMA_VERSION_V2,
 };
+pub use unified_entity_card::{
+    SCHEMA_VERSION as UEC_SCHEMA_VERSION, SCHEMA_VERSION_V2 as UEC_SCHEMA_VERSION_V2,
+};
 
 #[cfg(not(target_os = "android"))]
 use tauri::Manager;
 
 use super::db::{now_ms, open_db};
 use super::legacy::storage_root;
+use super::lorebook::{get_lorebook, get_lorebook_entries, Lorebook, LorebookEntry};
 use super::media::storage_write_image_bytes;
 use crate::storage_manager::internal_read_settings;
 use crate::utils::log_info;
@@ -68,14 +72,24 @@ pub struct CharacterExportData {
     pub scenes: Vec<SceneExport>,
     pub default_scene_id: Option<String>,
     pub default_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion: Option<JsonValue>,
     #[serde(default)]
     pub memory_type: Option<String>,
+    #[serde(default)]
+    pub active_lorebook_ids: Vec<String>,
+    #[serde(default)]
+    pub lorebooks: Vec<LorebookExportData>,
     pub prompt_template_id: Option<String>,
     pub system_prompt: Option<String>,
     pub voice_config: Option<JsonValue>,
     pub voice_autoplay: Option<bool>,
     pub disable_avatar_gradient: bool,
     pub avatar_crop: Option<AvatarCrop>,
+    #[serde(default)]
+    pub banner_crop: Option<AvatarCrop>,
     pub custom_gradient_enabled: Option<bool>,
     pub custom_gradient_colors: Option<Vec<String>>,
     pub custom_text_color: Option<String>,
@@ -86,6 +100,14 @@ pub struct CharacterExportData {
     pub default_chat_template_id: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LorebookExportData {
+    pub lorebook: Lorebook,
+    #[serde(default)]
+    pub entries: Vec<LorebookEntry>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneExport {
@@ -93,6 +115,8 @@ pub struct SceneExport {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_image_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<i64>,
     pub selected_variant_id: Option<String>,
@@ -146,6 +170,8 @@ pub struct PersonaExportData {
     pub nickname: Option<String>,
     pub is_default: Option<bool>,
     pub avatar_crop: Option<AvatarCrop>,
+    #[serde(default)]
+    pub active_lorebook_ids: Vec<String>,
 }
 
 fn number_to_i64(value: &JsonValue) -> Option<i64> {
@@ -377,6 +403,7 @@ fn extract_v2_scene_variants_as_scenes(
         id: base_id.clone(),
         content: base_content,
         direction: base_direction,
+        background_image_path: None,
         created_at: base_created_at,
         selected_variant_id: None,
         variants: Vec::new(),
@@ -401,6 +428,7 @@ fn extract_v2_scene_variants_as_scenes(
                     .get("direction")
                     .and_then(JsonValue::as_str)
                     .map(|value| value.to_string()),
+                background_image_path: None,
                 created_at: variant_map.get("createdAt").and_then(number_to_i64),
                 selected_variant_id: None,
                 variants: Vec::new(),
@@ -416,7 +444,7 @@ fn extract_v2_scene_variants_as_scenes(
     Some((scenes, default_scene_id))
 }
 
-fn normalize_uec_for_read(value: &JsonValue, strict: bool) -> Result<Uec, String> {
+pub fn normalize_uec_for_read(value: &JsonValue, strict: bool) -> Result<Uec, String> {
     let uec = assert_uec(value, strict)?;
     if uec.schema.version == SCHEMA_VERSION_V2 {
         let mut downgraded = downgrade_uec(value, SCHEMA_VERSION, false).map_err(|e| {
@@ -439,7 +467,7 @@ fn normalize_uec_for_read(value: &JsonValue, strict: bool) -> Result<Uec, String
     Ok(uec)
 }
 
-fn stringify_v2_uec(card: &JsonValue) -> Result<String, String> {
+pub fn stringify_v2_uec(card: &JsonValue) -> Result<String, String> {
     let resolved_scene = resolve_v1_scene_for_v2(card);
     let mut upgraded = convert_uec_v1_to_v2(card).map_err(|e| {
         crate::utils::err_msg(
@@ -469,7 +497,7 @@ fn stringify_v2_uec(card: &JsonValue) -> Result<String, String> {
     })
 }
 
-fn parse_uec_character(value: &JsonValue) -> Result<CharacterExportPackage, String> {
+pub fn parse_uec_character(value: &JsonValue) -> Result<CharacterExportPackage, String> {
     let uec = normalize_uec_for_read(value, false)?;
     if uec.kind != UecKind::Character {
         return Err(crate::utils::err_msg(
@@ -602,6 +630,10 @@ fn parse_uec_character(value: &JsonValue) -> Result<CharacterExportPackage, Stri
                         id,
                         content,
                         direction,
+                        background_image_path: map
+                            .get("backgroundImagePath")
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string()),
                         created_at,
                         selected_variant_id,
                         variants,
@@ -633,6 +665,30 @@ fn parse_uec_character(value: &JsonValue) -> Result<CharacterExportPackage, Stri
     let memory_type = app_specific
         .and_then(|map| map.get("memoryType").and_then(|v| v.as_str()))
         .map(|value| value.to_string());
+    let mode = app_specific
+        .and_then(|map| map.get("mode").and_then(|v| v.as_str()))
+        .or_else(|| payload.get("mode").and_then(|v| v.as_str()))
+        .map(|value| value.to_string());
+    let companion = app_specific
+        .and_then(|map| map.get("companion"))
+        .or_else(|| payload.get("companion"))
+        .cloned();
+    let active_lorebook_ids = app_specific
+        .and_then(|map| map.get("activeLorebookIds"))
+        .or_else(|| payload.get("activeLorebookIds"))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(|id| id.to_string()))
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
+    let lorebooks = app_specific
+        .and_then(|map| map.get("lorebooks"))
+        .or_else(|| payload.get("lorebooks"))
+        .and_then(|value| serde_json::from_value::<Vec<LorebookExportData>>(value.clone()).ok())
+        .unwrap_or_default();
     let disable_avatar_gradient = app_specific
         .and_then(|map| map.get("disableAvatarGradient").and_then(|v| v.as_bool()))
         .unwrap_or(false);
@@ -653,6 +709,7 @@ fn parse_uec_character(value: &JsonValue) -> Result<CharacterExportPackage, Stri
         .and_then(|map| map.get("customTextSecondary").and_then(|v| v.as_str()))
         .map(|value| value.to_string());
     let avatar_crop = parse_avatar_crop(app_specific.and_then(|map| map.get("avatarCrop")));
+    let banner_crop = parse_avatar_crop(app_specific.and_then(|map| map.get("bannerCrop")));
     let chat_templates: Vec<ChatTemplateExport> = app_specific
         .and_then(|map| map.get("chatTemplates"))
         .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -688,13 +745,18 @@ fn parse_uec_character(value: &JsonValue) -> Result<CharacterExportPackage, Stri
             scenes,
             default_scene_id,
             default_model_id,
+            mode,
+            companion,
             memory_type,
+            active_lorebook_ids,
+            lorebooks,
             prompt_template_id,
             system_prompt,
             voice_config,
             voice_autoplay,
             disable_avatar_gradient,
             avatar_crop,
+            banner_crop,
             custom_gradient_enabled,
             custom_gradient_colors,
             custom_text_color,
@@ -743,6 +805,19 @@ fn parse_uec_persona(value: &JsonValue) -> Result<PersonaExportPackage, String> 
             .as_ref()
             .and_then(|v| v.get("avatarCrop")),
     );
+    let active_lorebook_ids = uec
+        .app_specific_settings
+        .as_ref()
+        .and_then(|value| value.get("activeLorebookIds"))
+        .or_else(|| payload.get("activeLorebookIds"))
+        .and_then(|value| value.as_array())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(|id| id.to_string()))
+                .collect::<Vec<String>>()
+        })
+        .unwrap_or_default();
 
     Ok(PersonaExportPackage {
         version: 1,
@@ -753,6 +828,7 @@ fn parse_uec_persona(value: &JsonValue) -> Result<PersonaExportPackage, String> 
             nickname,
             is_default,
             avatar_crop,
+            active_lorebook_ids,
         },
         avatar_data,
     })
@@ -1064,11 +1140,14 @@ fn load_character_export_snapshot(
         tags,
         default_scene_id,
         default_model_id,
+        mode,
+        companion_raw,
         prompt_template_id,
         system_prompt,
         voice_config_raw,
         voice_autoplay_raw,
         memory_type,
+        active_lorebook_ids_json,
         disable_avatar_gradient,
         custom_gradient_enabled,
         custom_gradient_colors,
@@ -1077,6 +1156,9 @@ fn load_character_export_snapshot(
         avatar_crop_x,
         avatar_crop_y,
         avatar_crop_scale,
+        banner_crop_x,
+        banner_crop_y,
+        banner_crop_scale,
         default_chat_template_id,
         created_at,
         updated_at,
@@ -1095,11 +1177,14 @@ fn load_character_export_snapshot(
         Option<String>, // tags
         Option<String>, // default_scene_id
         Option<String>, // default_model_id
+        Option<String>, // mode
+        Option<String>, // companion
         Option<String>, // prompt_template_id
         Option<String>, // system_prompt
         Option<String>, // voice_config
         Option<i64>,    // voice_autoplay
         Option<String>, // memory_type
+        Option<String>, // active_lorebook_ids
         i64,            // disable_avatar_gradient
         i64,            // custom_gradient_enabled
         Option<String>, // custom_gradient_colors
@@ -1108,12 +1193,15 @@ fn load_character_export_snapshot(
         Option<f64>,    // avatar_crop_x
         Option<f64>,    // avatar_crop_y
         Option<f64>,    // avatar_crop_scale
+        Option<f64>,    // banner_crop_x
+        Option<f64>,    // banner_crop_y
+        Option<f64>,    // banner_crop_scale
         Option<String>, // default_chat_template_id
         i64,            // created_at
         i64,            // updated_at
     ) = conn
         .query_row(
-            "SELECT name, avatar_path, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, avatar_crop_x, avatar_crop_y, avatar_crop_scale, default_chat_template_id, created_at, updated_at FROM characters WHERE id = ?",
+            "SELECT name, avatar_path, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, COALESCE(mode, 'roleplay'), companion, prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, active_lorebook_ids, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, avatar_crop_x, avatar_crop_y, avatar_crop_scale, banner_crop_x, banner_crop_y, banner_crop_scale, default_chat_template_id, created_at, updated_at FROM characters WHERE id = ?",
             params![character_id],
             |r| {
                 Ok((
@@ -1136,17 +1224,23 @@ fn load_character_export_snapshot(
                     r.get(16)?,
                     r.get(17)?,
                     r.get(18)?,
-                    r.get::<_, i64>(19)?,
-                    r.get::<_, i64>(20)?,
+                    r.get(19)?,
+                    r.get(20)?,
                     r.get(21)?,
-                    r.get(22)?,
-                    r.get(23)?,
+                    r.get::<_, i64>(22)?,
+                    r.get::<_, i64>(23)?,
                     r.get(24)?,
                     r.get(25)?,
                     r.get(26)?,
                     r.get(27)?,
                     r.get(28)?,
                     r.get(29)?,
+                    r.get(30)?,
+                    r.get(31)?,
+                    r.get(32)?,
+                    r.get(33)?,
+                    r.get(34)?,
+                    r.get(35)?,
                 ))
             },
         )
@@ -1157,7 +1251,7 @@ fn load_character_export_snapshot(
         .prepare("SELECT rule FROM character_rules WHERE character_id = ? ORDER BY idx ASC")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let rule_rows = stmt
-        .query_map(params![character_id], |r| Ok(r.get::<_, String>(0)?))
+        .query_map(params![character_id], |r| r.get::<_, String>(0))
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     for rule in rule_rows {
         rules.push(rule.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?);
@@ -1165,7 +1259,7 @@ fn load_character_export_snapshot(
 
     let mut scenes: Vec<SceneExport> = Vec::new();
     let mut scenes_stmt = conn
-        .prepare("SELECT id, content, direction, created_at, selected_variant_id FROM scenes WHERE character_id = ? ORDER BY created_at ASC")
+        .prepare("SELECT id, content, direction, background_image_path, created_at, selected_variant_id FROM scenes WHERE character_id = ? ORDER BY created_at ASC")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let scene_rows = scenes_stmt
         .query_map(params![character_id], |r| {
@@ -1173,15 +1267,22 @@ fn load_character_export_snapshot(
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, Option<String>>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     for row in scene_rows {
-        let (scene_id, content, direction, scene_created_at, selected_variant_id) =
-            row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let (
+            scene_id,
+            content,
+            direction,
+            background_image_path,
+            scene_created_at,
+            selected_variant_id,
+        ) = row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
         let mut variants: Vec<SceneVariantExport> = Vec::new();
         let mut var_stmt = conn
@@ -1213,6 +1314,7 @@ fn load_character_export_snapshot(
             id: scene_id,
             content,
             direction,
+            background_image_path,
             created_at: Some(scene_created_at),
             selected_variant_id,
             variants,
@@ -1284,6 +1386,10 @@ fn load_character_export_snapshot(
         .and_then(|vc| serde_json::from_str::<JsonValue>(&vc).ok())
         .filter(|v| !v.is_null());
     let voice_autoplay = voice_autoplay_raw.map(|v| v != 0);
+    let companion = companion_raw
+        .as_ref()
+        .and_then(|value| serde_json::from_str::<JsonValue>(value).ok())
+        .filter(|value| !value.is_null());
     let creator_notes_multilingual = creator_notes_multilingual
         .as_ref()
         .and_then(|value| serde_json::from_str::<JsonValue>(value).ok())
@@ -1294,11 +1400,26 @@ fn load_character_export_snapshot(
     let tags = tags
         .as_ref()
         .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok());
+    let active_lorebook_ids = active_lorebook_ids_json
+        .as_ref()
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default();
+    let mut lorebooks = Vec::new();
+    for lorebook_id in &active_lorebook_ids {
+        if let Some(lorebook) = get_lorebook(&conn, lorebook_id)? {
+            let entries = get_lorebook_entries(&conn, lorebook_id)?;
+            lorebooks.push(LorebookExportData { lorebook, entries });
+        }
+    }
 
     let custom_gradient_colors = custom_gradient_colors
         .as_ref()
         .and_then(|colors_json| serde_json::from_str::<Vec<String>>(colors_json).ok());
     let avatar_crop = match (avatar_crop_x, avatar_crop_y, avatar_crop_scale) {
+        (Some(x), Some(y), Some(scale)) => Some(AvatarCrop { x, y, scale }),
+        _ => None,
+    };
+    let banner_crop = match (banner_crop_x, banner_crop_y, banner_crop_scale) {
         (Some(x), Some(y), Some(scale)) => Some(AvatarCrop { x, y, scale }),
         _ => None,
     };
@@ -1322,13 +1443,18 @@ fn load_character_export_snapshot(
             scenes,
             default_scene_id,
             default_model_id,
+            mode,
+            companion,
             memory_type: Some(memory_value),
+            active_lorebook_ids,
+            lorebooks,
             prompt_template_id,
             system_prompt,
             voice_config,
             voice_autoplay,
             disable_avatar_gradient: disable_avatar_gradient != 0,
             avatar_crop,
+            banner_crop,
             custom_gradient_enabled: Some(custom_gradient_enabled != 0),
             custom_gradient_colors,
             custom_text_color,
@@ -1458,7 +1584,26 @@ fn build_uec_from_package(
         "disableAvatarGradient".into(),
         JsonValue::Bool(package.character.disable_avatar_gradient),
     );
+    if let Some(mode) = package.character.mode.clone() {
+        app_specific.insert("mode".into(), JsonValue::String(mode));
+    }
+    if let Some(companion) = package.character.companion.clone() {
+        app_specific.insert("companion".into(), companion);
+    }
     app_specific.insert("memoryType".into(), JsonValue::String(memory_value));
+    if !package.character.active_lorebook_ids.is_empty() {
+        app_specific.insert(
+            "activeLorebookIds".into(),
+            serde_json::json!(package.character.active_lorebook_ids),
+        );
+    }
+    if !package.character.lorebooks.is_empty() {
+        app_specific.insert(
+            "lorebooks".into(),
+            serde_json::to_value(&package.character.lorebooks)
+                .unwrap_or(JsonValue::Array(Vec::new())),
+        );
+    }
     app_specific.insert(
         "customGradientEnabled".into(),
         JsonValue::Bool(package.character.custom_gradient_enabled.unwrap_or(false)),
@@ -1475,6 +1620,16 @@ fn build_uec_from_package(
     if let Some(crop) = package.character.avatar_crop.clone() {
         app_specific.insert(
             "avatarCrop".into(),
+            serde_json::json!({
+                "x": crop.x,
+                "y": crop.y,
+                "scale": crop.scale,
+            }),
+        );
+    }
+    if let Some(crop) = package.character.banner_crop.clone() {
+        app_specific.insert(
+            "bannerCrop".into(),
             serde_json::json!({
                 "x": crop.x,
                 "y": crop.y,
@@ -1553,6 +1708,12 @@ fn build_uec_from_persona_package(
                 "y": crop.y,
                 "scale": crop.scale,
             }),
+        );
+    }
+    if !package.persona.active_lorebook_ids.is_empty() {
+        app_specific.insert(
+            "activeLorebookIds".into(),
+            serde_json::json!(package.persona.active_lorebook_ids),
         );
     }
 
@@ -1659,6 +1820,89 @@ pub fn character_detect_format(import_json: String) -> Result<CharacterFormatInf
     let format = detect_character_format(&raw_value)
         .ok_or_else(|| "Unsupported character file format".to_string())?;
     Ok(engine::character_format_info(format))
+}
+
+fn import_lorebooks_for_character_package(
+    tx: &rusqlite::Transaction<'_>,
+    package: &CharacterExportPackage,
+    now: i64,
+) -> Result<Vec<String>, String> {
+    let mut lorebook_id_map = std::collections::HashMap::new();
+
+    for bundled in &package.character.lorebooks {
+        let new_lorebook_id = uuid::Uuid::new_v4().to_string();
+        lorebook_id_map.insert(bundled.lorebook.id.clone(), new_lorebook_id.clone());
+        tx.execute(
+            "INSERT INTO lorebooks (id, name, avatar_path, keyword_detection_mode, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                &new_lorebook_id,
+                &bundled.lorebook.name,
+                &bundled.lorebook.avatar_path,
+                bundled.lorebook.keyword_detection_mode.as_db_value(),
+                now,
+                now,
+            ],
+        )
+        .map_err(|e| {
+            crate::utils::err_msg(
+                module_path!(),
+                line!(),
+                format!("Failed to import bundled lorebook: {}", e),
+            )
+        })?;
+
+        for entry in &bundled.entries {
+            let keywords_json = serde_json::to_string(&entry.keywords).map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to serialize bundled lorebook entry keywords: {}", e),
+                )
+            })?;
+            tx.execute(
+                r#"
+                INSERT INTO lorebook_entries (
+                    id, lorebook_id, title, enabled, always_active, keywords,
+                    case_sensitive, content, priority, display_order, created_at, updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+                "#,
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    &new_lorebook_id,
+                    &entry.title,
+                    entry.enabled as i64,
+                    entry.always_active as i64,
+                    keywords_json,
+                    entry.case_sensitive as i64,
+                    &entry.content,
+                    entry.priority,
+                    entry.display_order,
+                    now,
+                    now,
+                ],
+            )
+            .map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to import bundled lorebook entry: {}", e),
+                )
+            })?;
+        }
+    }
+
+    Ok(package
+        .character
+        .active_lorebook_ids
+        .iter()
+        .map(|id| {
+            lorebook_id_map
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.clone())
+        })
+        .collect())
 }
 
 /// Import a character from a JSON package
@@ -1803,6 +2047,12 @@ pub fn character_import(app: tauri::AppHandle, import_json: String) -> Result<St
         .as_ref()
         .map(|crop| (Some(crop.x), Some(crop.y), Some(crop.scale)))
         .unwrap_or((None, None, None));
+    let (banner_crop_x, banner_crop_y, banner_crop_scale) = package
+        .character
+        .banner_crop
+        .as_ref()
+        .map(|crop| (Some(crop.x), Some(crop.y), Some(crop.scale)))
+        .unwrap_or((None, None, None));
 
     let voice_config = package.character.voice_config.as_ref().and_then(|v| {
         if v.is_null() {
@@ -1812,11 +2062,22 @@ pub fn character_import(app: tauri::AppHandle, import_json: String) -> Result<St
         }
     });
     let voice_autoplay = package.character.voice_autoplay.unwrap_or(false) as i64;
+    let mode = package
+        .character
+        .mode
+        .as_deref()
+        .filter(|value| *value == "companion")
+        .unwrap_or("roleplay");
+    let companion = package
+        .character
+        .companion
+        .as_ref()
+        .and_then(|value| serde_json::to_string(value).ok());
 
     // Insert character
     tx.execute(
-        r#"INSERT INTO characters (id, name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO characters (id, name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, banner_crop_x, banner_crop_y, banner_crop_scale, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, mode, companion, prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         params![
             &new_character_id,
             &package.character.name,
@@ -1824,6 +2085,9 @@ pub fn character_import(app: tauri::AppHandle, import_json: String) -> Result<St
             avatar_crop_x,
             avatar_crop_y,
             avatar_crop_scale,
+            banner_crop_x,
+            banner_crop_y,
+            banner_crop_scale,
             background_image_path,
             package.character.description,
             package
@@ -1839,6 +2103,8 @@ pub fn character_import(app: tauri::AppHandle, import_json: String) -> Result<St
             source,
             tags,
             package.character.default_model_id,
+            mode,
+            companion,
             package.character.prompt_template_id,
             package.character.system_prompt,
             voice_config,
@@ -1854,6 +2120,23 @@ pub fn character_import(app: tauri::AppHandle, import_json: String) -> Result<St
         ],
     )
     .map_err(|e| crate::utils::err_msg(module_path!(), line!(), format!("Failed to insert character: {}", e)))?;
+
+    let active_lorebook_ids = import_lorebooks_for_character_package(&tx, &package, now)?;
+    if !active_lorebook_ids.is_empty() {
+        let active_lorebook_ids_json =
+            serde_json::to_string(&active_lorebook_ids).map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to serialize imported character lorebook ids: {}", e),
+                )
+            })?;
+        tx.execute(
+            "UPDATE characters SET active_lorebook_ids = ?1 WHERE id = ?2",
+            params![active_lorebook_ids_json, &new_character_id],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    }
 
     // Insert rules
     for (idx, rule) in package.character.rules.iter().enumerate() {
@@ -1905,12 +2188,13 @@ pub fn character_import(app: tauri::AppHandle, import_json: String) -> Result<St
 
         let scene_created_at = scene.created_at.unwrap_or(now);
         tx.execute(
-            "INSERT INTO scenes (id, character_id, content, direction, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO scenes (id, character_id, content, direction, background_image_path, created_at, selected_variant_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
                 &new_scene_id,
                 &new_character_id,
                 &scene.content,
                 &scene.direction,
+                &scene.background_image_path,
                 scene_created_at,
                 new_selected_variant_id
             ],
@@ -2048,12 +2332,17 @@ fn build_character_import_preview(
         "chatTemplates": chat_templates,
         "defaultSceneId": package.character.default_scene_id,
         "defaultChatTemplateId": package.character.default_chat_template_id,
+        "mode": package.character.mode,
+        "companion": package.character.companion,
         "promptTemplateId": package.character.prompt_template_id,
+        "activeLorebookIds": package.character.active_lorebook_ids,
+        "lorebooks": package.character.lorebooks,
         "memoryType": memory_type,
         "disableAvatarGradient": package.character.disable_avatar_gradient,
         "fileFormat": format,
         "avatarData": package.avatar_data,
         "avatarCrop": package.character.avatar_crop,
+        "bannerCrop": package.character.banner_crop,
         "backgroundImageData": package.background_image_data
     });
 
@@ -2223,12 +2512,31 @@ pub fn convert_export_to_uec(import_json: String) -> Result<String, String> {
                 "disableAvatarGradient".into(),
                 JsonValue::Bool(package.character.disable_avatar_gradient),
             );
+            if let Some(mode) = package.character.mode.clone() {
+                app_specific.insert("mode".into(), JsonValue::String(mode));
+            }
+            if let Some(companion) = package.character.companion.clone() {
+                app_specific.insert("companion".into(), companion);
+            }
             let memory_type = package
                 .character
                 .memory_type
                 .clone()
                 .unwrap_or_else(|| "manual".to_string());
             app_specific.insert("memoryType".into(), JsonValue::String(memory_type));
+            if !package.character.active_lorebook_ids.is_empty() {
+                app_specific.insert(
+                    "activeLorebookIds".into(),
+                    serde_json::json!(package.character.active_lorebook_ids),
+                );
+            }
+            if !package.character.lorebooks.is_empty() {
+                app_specific.insert(
+                    "lorebooks".into(),
+                    serde_json::to_value(&package.character.lorebooks)
+                        .unwrap_or(JsonValue::Array(Vec::new())),
+                );
+            }
             if let Some(enabled) = package.character.custom_gradient_enabled {
                 app_specific.insert("customGradientEnabled".into(), JsonValue::Bool(enabled));
             }
@@ -2244,6 +2552,16 @@ pub fn convert_export_to_uec(import_json: String) -> Result<String, String> {
             if let Some(crop) = package.character.avatar_crop.clone() {
                 app_specific.insert(
                     "avatarCrop".into(),
+                    serde_json::json!({
+                        "x": crop.x,
+                        "y": crop.y,
+                        "scale": crop.scale,
+                    }),
+                );
+            }
+            if let Some(crop) = package.character.banner_crop.clone() {
+                app_specific.insert(
+                    "bannerCrop".into(),
                     serde_json::json!({
                         "x": crop.x,
                         "y": crop.y,
@@ -2331,10 +2649,28 @@ pub fn convert_export_to_uec(import_json: String) -> Result<String, String> {
             );
             meta.insert("source".into(), JsonValue::String("lettuceai".to_string()));
 
+            let mut app_specific = JsonMap::new();
+            if let Some(crop) = package.persona.avatar_crop.clone() {
+                app_specific.insert(
+                    "avatarCrop".into(),
+                    serde_json::json!({
+                        "x": crop.x,
+                        "y": crop.y,
+                        "scale": crop.scale,
+                    }),
+                );
+            }
+            if !package.persona.active_lorebook_ids.is_empty() {
+                app_specific.insert(
+                    "activeLorebookIds".into(),
+                    serde_json::json!(package.persona.active_lorebook_ids),
+                );
+            }
+
             let uec = create_persona_uec(
                 payload,
                 None,
-                Some(JsonValue::Object(JsonMap::new())),
+                Some(JsonValue::Object(app_specific)),
                 Some(JsonValue::Object(meta)),
                 Some(JsonValue::Object(JsonMap::new())),
             );
@@ -2663,6 +2999,9 @@ fn read_imported_character(
         avatar_crop_x,
         avatar_crop_y,
         avatar_crop_scale,
+        banner_crop_x,
+        banner_crop_y,
+        banner_crop_scale,
         bg_path,
         description,
         definition,
@@ -2675,7 +3014,10 @@ fn read_imported_character(
         tags,
         default_scene_id,
         default_model_id,
+        mode,
+        companion_raw,
         prompt_template_id,
+        active_lorebook_ids,
         system_prompt,
         voice_config,
         voice_autoplay,
@@ -2693,6 +3035,9 @@ fn read_imported_character(
         Option<f64>,    // avatar_crop_x
         Option<f64>,    // avatar_crop_y
         Option<f64>,    // avatar_crop_scale
+        Option<f64>,    // banner_crop_x
+        Option<f64>,    // banner_crop_y
+        Option<f64>,    // banner_crop_scale
         Option<String>, // background_image_path
         Option<String>, // description
         Option<String>, // definition
@@ -2705,7 +3050,10 @@ fn read_imported_character(
         Option<String>, // tags
         Option<String>, // default_scene_id
         Option<String>, // default_model_id
+        Option<String>, // mode
+        Option<String>, // companion
         Option<String>, // prompt_template_id
+        Option<String>, // active_lorebook_ids
         Option<String>, // system_prompt
         Option<String>, // voice_config
         Option<i64>,    // voice_autoplay
@@ -2719,7 +3067,7 @@ fn read_imported_character(
         i64,            // updated_at
     ) = conn
         .query_row(
-            "SELECT name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, prompt_template_id, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, created_at, updated_at FROM characters WHERE id = ?",
+            "SELECT name, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, banner_crop_x, banner_crop_y, banner_crop_scale, background_image_path, description, definition, nickname, scenario, creator_notes, creator, creator_notes_multilingual, source, tags, default_scene_id, default_model_id, COALESCE(mode, 'roleplay'), companion, prompt_template_id, active_lorebook_ids, system_prompt, voice_config, voice_autoplay, memory_type, disable_avatar_gradient, custom_gradient_enabled, custom_gradient_colors, custom_text_color, custom_text_secondary, created_at, updated_at FROM characters WHERE id = ?",
             params![character_id],
             |r| {
                 Ok((
@@ -2745,13 +3093,19 @@ fn read_imported_character(
                     r.get(19)?,
                     r.get(20)?,
                     r.get(21)?,
-                    r.get::<_, i64>(22)?,
-                    r.get::<_, i64>(23)?,
+                    r.get(22)?,
+                    r.get(23)?,
                     r.get(24)?,
                     r.get(25)?,
                     r.get(26)?,
                     r.get(27)?,
-                    r.get(28)?,
+                    r.get::<_, i64>(28)?,
+                    r.get::<_, i64>(29)?,
+                    r.get(30)?,
+                    r.get(31)?,
+                    r.get(32)?,
+                    r.get(33)?,
+                    r.get(34)?,
                 ))
             },
         )
@@ -2763,7 +3117,7 @@ fn read_imported_character(
         .prepare("SELECT rule FROM character_rules WHERE character_id = ? ORDER BY idx ASC")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let rule_rows = stmt
-        .query_map(params![character_id], |r| Ok(r.get::<_, String>(0)?))
+        .query_map(params![character_id], |r| r.get::<_, String>(0))
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     for rule in rule_rows {
         rules.push(JsonValue::String(rule.map_err(|e| {
@@ -2774,7 +3128,7 @@ fn read_imported_character(
     // Read scenes
     let mut scenes: Vec<JsonValue> = Vec::new();
     let mut scenes_stmt = conn
-        .prepare("SELECT id, content, direction, created_at, selected_variant_id FROM scenes WHERE character_id = ? ORDER BY created_at ASC")
+        .prepare("SELECT id, content, direction, background_image_path, created_at, selected_variant_id FROM scenes WHERE character_id = ? ORDER BY created_at ASC")
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let scenes_rows = scenes_stmt
         .query_map(params![character_id], |r| {
@@ -2782,15 +3136,22 @@ fn read_imported_character(
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
                 r.get::<_, Option<String>>(2)?,
-                r.get::<_, i64>(3)?,
-                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     for row in scenes_rows {
-        let (scene_id, content, direction, _scene_created_at, selected_variant_id) =
-            row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let (
+            scene_id,
+            content,
+            direction,
+            background_image_path,
+            _scene_created_at,
+            selected_variant_id,
+        ) = row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
         // Read scene variants
         let mut variants: Vec<JsonValue> = Vec::new();
@@ -2825,6 +3186,9 @@ fn read_imported_character(
         if let Some(dir) = direction {
             scene_obj.insert("direction".into(), JsonValue::String(dir));
         }
+        if let Some(path) = background_image_path {
+            scene_obj.insert("backgroundImagePath".into(), JsonValue::String(path));
+        }
         scene_obj.insert("createdAt".into(), JsonValue::from(_scene_created_at));
         if !variants.is_empty() {
             scene_obj.insert("variants".into(), JsonValue::Array(variants));
@@ -2844,6 +3208,12 @@ fn read_imported_character(
     if let (Some(x), Some(y), Some(scale)) = (avatar_crop_x, avatar_crop_y, avatar_crop_scale) {
         root.insert(
             "avatarCrop".into(),
+            serde_json::json!({ "x": x, "y": y, "scale": scale }),
+        );
+    }
+    if let (Some(x), Some(y), Some(scale)) = (banner_crop_x, banner_crop_y, banner_crop_scale) {
+        root.insert(
+            "bannerCrop".into(),
             serde_json::json!({ "x": x, "y": y, "scale": scale }),
         );
     }
@@ -2893,6 +3263,22 @@ fn read_imported_character(
     }
     if let Some(dm) = default_model_id {
         root.insert("defaultModelId".into(), JsonValue::String(dm));
+    }
+    root.insert(
+        "mode".into(),
+        JsonValue::String(mode.unwrap_or_else(|| "roleplay".to_string())),
+    );
+    if let Some(value) = companion_raw {
+        if let Ok(parsed) = serde_json::from_str::<JsonValue>(&value) {
+            if !parsed.is_null() {
+                root.insert("companion".into(), parsed);
+            }
+        }
+    }
+    if let Some(value) = active_lorebook_ids {
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&value) {
+            root.insert("activeLorebookIds".into(), serde_json::json!(parsed));
+        }
     }
     let memory_value = memory_type.unwrap_or_else(|| "manual".to_string());
     root.insert("memoryType".into(), JsonValue::String(memory_value));
@@ -2950,7 +3336,7 @@ pub fn persona_export(app: tauri::AppHandle, persona_id: String) -> Result<Strin
     let conn = open_db(&app)?;
 
     // Read persona data
-    let (title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, is_default, created_at, updated_at): (
+    let (title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, active_lorebook_ids, is_default, created_at, updated_at): (
         String,
         String,
         Option<String>,
@@ -2958,14 +3344,15 @@ pub fn persona_export(app: tauri::AppHandle, persona_id: String) -> Result<Strin
         Option<f64>,
         Option<f64>,
         Option<f64>,
+        String,
         i64,
         i64,
         i64,
     ) = conn
         .query_row(
-            "SELECT title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, is_default, created_at, updated_at FROM personas WHERE id = ?",
+            "SELECT title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, COALESCE(active_lorebook_ids, '[]'), is_default, created_at, updated_at FROM personas WHERE id = ?",
             params![&persona_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
         )
         .map_err(|e| crate::utils::err_msg(module_path!(), line!(), format!("Persona not found: {}", e)))?;
 
@@ -3001,6 +3388,11 @@ pub fn persona_export(app: tauri::AppHandle, persona_id: String) -> Result<Strin
             "avatarCrop".into(),
             serde_json::json!({ "x": x, "y": y, "scale": scale }),
         );
+    }
+    if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&active_lorebook_ids) {
+        if !parsed.is_empty() {
+            app_specific.insert("activeLorebookIds".into(), serde_json::json!(parsed));
+        }
     }
 
     let export_card = create_persona_uec(
@@ -3112,6 +3504,8 @@ pub fn persona_import(app: tauri::AppHandle, import_json: String) -> Result<Stri
         .as_ref()
         .map(|crop| (Some(crop.x), Some(crop.y), Some(crop.scale)))
         .unwrap_or((None, None, None));
+    let active_lorebook_ids = serde_json::to_string(&package.persona.active_lorebook_ids)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     if is_default {
         tx.execute("UPDATE personas SET is_default = 0", [])
             .map_err(|e| {
@@ -3124,8 +3518,8 @@ pub fn persona_import(app: tauri::AppHandle, import_json: String) -> Result<Stri
     }
 
     tx.execute(
-        r#"INSERT INTO personas (id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, is_default, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        r#"INSERT INTO personas (id, title, description, nickname, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, active_lorebook_ids, is_default, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
         params![
             &new_persona_id,
             &package.persona.title,
@@ -3135,6 +3529,7 @@ pub fn persona_import(app: tauri::AppHandle, import_json: String) -> Result<Stri
             avatar_crop_x,
             avatar_crop_y,
             avatar_crop_scale,
+            active_lorebook_ids,
             is_default as i64,
             now,
             now
@@ -3158,13 +3553,13 @@ pub fn persona_import(app: tauri::AppHandle, import_json: String) -> Result<Stri
 
 /// Helper: Read imported persona and return as JSON
 fn read_imported_persona(conn: &rusqlite::Connection, persona_id: &str) -> Result<String, String> {
-    let (title, description, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, is_default, created_at, updated_at):
-        (String, String, Option<String>, Option<f64>, Option<f64>, Option<f64>, i64, i64, i64) =
+    let (title, description, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, active_lorebook_ids, is_default, created_at, updated_at):
+        (String, String, Option<String>, Option<f64>, Option<f64>, Option<f64>, String, i64, i64, i64) =
         conn.query_row(
-            "SELECT title, description, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, is_default, created_at, updated_at FROM personas WHERE id = ?",
+            "SELECT title, description, avatar_path, avatar_crop_x, avatar_crop_y, avatar_crop_scale, COALESCE(active_lorebook_ids, '[]'), is_default, created_at, updated_at FROM personas WHERE id = ?",
             params![persona_id],
             |r| Ok((
-                r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get::<_, i64>(6)?, r.get(7)?, r.get(8)?
+                r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get::<_, i64>(7)?, r.get(8)?, r.get(9)?
             )),
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -3181,6 +3576,9 @@ fn read_imported_persona(conn: &rusqlite::Connection, persona_id: &str) -> Resul
             "avatarCrop".into(),
             serde_json::json!({ "x": x, "y": y, "scale": scale }),
         );
+    }
+    if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&active_lorebook_ids) {
+        root.insert("activeLorebookIds".into(), serde_json::json!(parsed));
     }
     root.insert("isDefault".into(), JsonValue::Bool(is_default != 0));
     root.insert("createdAt".into(), JsonValue::from(created_at));
@@ -3316,356 +3714,4 @@ pub fn save_json_to_downloads(
     );
 
     Ok(path_str)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn normalize_uec_for_read_accepts_v1_schema() {
-        let card = json!({
-            "schema": { "name": "UEC", "version": SCHEMA_VERSION },
-            "kind": "character",
-            "payload": {
-                "id": "char-v1",
-                "name": "Aster Vale"
-            }
-        });
-
-        let parsed = normalize_uec_for_read(&card, false).expect("v1 UEC should be readable");
-        assert_eq!(parsed.kind, UecKind::Character);
-        assert_eq!(parsed.schema.version, SCHEMA_VERSION);
-    }
-
-    #[test]
-    fn normalize_uec_for_read_downgrades_v2_schema_for_legacy_parser() {
-        let card = json!({
-            "schema": {
-                "name": "UEC",
-                "version": SCHEMA_VERSION_V2
-            },
-            "kind": "character",
-            "payload": {
-                "id": "char-v2",
-                "name": "Aster Vale",
-                "scene": {
-                    "id": "scene-1",
-                    "content": "Hello there",
-                    "selectedVariant": 0,
-                    "variants": []
-                }
-            },
-            "meta": {
-                "originalCreatedAt": 1,
-                "originalUpdatedAt": 2
-            }
-        });
-
-        let parsed = normalize_uec_for_read(&card, false).expect("v2 UEC should be readable");
-        assert_eq!(parsed.kind, UecKind::Character);
-        assert_eq!(parsed.schema.version, SCHEMA_VERSION);
-        let payload = parsed.payload.as_object().expect("payload object");
-        assert!(payload.get("scenes").is_some());
-        assert!(payload.get("scene").is_none());
-    }
-
-    #[test]
-    fn stringify_v2_uec_upgrades_v1_schema_to_v2() {
-        let mut payload = JsonMap::new();
-        payload.insert("id".into(), JsonValue::String("char-1".to_string()));
-        payload.insert("name".into(), JsonValue::String("Aster Vale".to_string()));
-        payload.insert(
-            "avatar".into(),
-            JsonValue::String("data:image/webp;base64,QUJD".to_string()),
-        );
-        payload.insert(
-            "chatBackground".into(),
-            JsonValue::String("https://example.com/bg.png".to_string()),
-        );
-        payload.insert(
-            "scenes".into(),
-            JsonValue::Array(vec![json!({
-                "id": "scene-1",
-                "content": "Hello there",
-                "selectedVariantId": null,
-                "variants": []
-            })]),
-        );
-        payload.insert(
-            "defaultSceneId".into(),
-            JsonValue::String("scene-1".to_string()),
-        );
-        payload.insert("createdAt".into(), JsonValue::from(1));
-        payload.insert("updatedAt".into(), JsonValue::from(2));
-
-        let v1 = create_character_uec(
-            payload,
-            false,
-            None,
-            None,
-            Some(json!({ "createdAt": 1, "updatedAt": 2, "source": "lettuceai" })),
-            None,
-        );
-        let value: JsonValue =
-            serde_json::from_str(&stringify_v2_uec(&v1).expect("v2 json")).expect("valid json");
-        let schema = value
-            .get("schema")
-            .and_then(|schema| schema.as_object())
-            .expect("schema object");
-
-        assert_eq!(
-            schema.get("version").and_then(|value| value.as_str()),
-            Some(SCHEMA_VERSION_V2)
-        );
-        let payload = value
-            .get("payload")
-            .and_then(|payload| payload.as_object())
-            .expect("payload object");
-        assert!(payload.get("scene").is_some());
-        assert!(payload.get("scenes").is_none());
-        assert_eq!(
-            payload
-                .get("avatar")
-                .and_then(|avatar| avatar.get("type"))
-                .and_then(|value| value.as_str()),
-            Some("inline_base64")
-        );
-        assert_eq!(
-            payload
-                .get("chatBackground")
-                .and_then(|background| background.get("type"))
-                .and_then(|value| value.as_str()),
-            Some("remote_url")
-        );
-    }
-
-    #[test]
-    fn stringify_v2_uec_preserves_scene_variants_and_selected_id() {
-        let mut payload = JsonMap::new();
-        payload.insert("id".into(), JsonValue::String("char-1".to_string()));
-        payload.insert("name".into(), JsonValue::String("Aster Vale".to_string()));
-        payload.insert(
-            "scenes".into(),
-            JsonValue::Array(vec![json!({
-                "id": "scene-1",
-                "content": "Hello there",
-                "selectedVariantId": "variant-2",
-                "variants": [
-                    {
-                        "id": "variant-1",
-                        "content": "Variant one",
-                        "createdAt": 10
-                    },
-                    {
-                        "id": "variant-2",
-                        "content": "Variant two",
-                        "direction": "Second",
-                        "createdAt": 20
-                    }
-                ]
-            })]),
-        );
-        payload.insert(
-            "defaultSceneId".into(),
-            JsonValue::String("scene-1".to_string()),
-        );
-        payload.insert("createdAt".into(), JsonValue::from(1));
-        payload.insert("updatedAt".into(), JsonValue::from(2));
-
-        let v1 = create_character_uec(
-            payload,
-            false,
-            None,
-            None,
-            Some(json!({ "createdAt": 1, "updatedAt": 2, "source": "lettuceai" })),
-            None,
-        );
-
-        let value: JsonValue =
-            serde_json::from_str(&stringify_v2_uec(&v1).expect("v2 json")).expect("valid json");
-        let scene = value
-            .get("payload")
-            .and_then(|payload| payload.get("scene"))
-            .and_then(JsonValue::as_object)
-            .expect("scene object");
-
-        assert_eq!(
-            scene.get("selectedVariant").and_then(JsonValue::as_str),
-            Some("variant-2")
-        );
-        let variants = scene
-            .get("variants")
-            .and_then(JsonValue::as_array)
-            .expect("variants array");
-        assert_eq!(variants.len(), 2);
-        assert_eq!(
-            variants[1].get("id").and_then(JsonValue::as_str),
-            Some("variant-2")
-        );
-        assert_eq!(
-            variants[1].get("direction").and_then(JsonValue::as_str),
-            Some("Second")
-        );
-    }
-
-    #[test]
-    fn stringify_v2_uec_flattens_additional_scenes_into_variants() {
-        let mut payload = JsonMap::new();
-        payload.insert("id".into(), JsonValue::String("char-1".to_string()));
-        payload.insert("name".into(), JsonValue::String("Aster Vale".to_string()));
-        payload.insert(
-            "scenes".into(),
-            JsonValue::Array(vec![
-                json!({
-                    "id": "scene-1",
-                    "content": "Primary scene",
-                    "selectedVariantId": null,
-                    "variants": []
-                }),
-                json!({
-                    "id": "scene-2",
-                    "content": "Second scene",
-                    "direction": "alt",
-                    "createdAt": 20,
-                    "selectedVariantId": null,
-                    "variants": []
-                }),
-                json!({
-                    "id": "scene-3",
-                    "content": "Third scene",
-                    "createdAt": 30,
-                    "selectedVariantId": null,
-                    "variants": []
-                }),
-            ]),
-        );
-        payload.insert(
-            "defaultSceneId".into(),
-            JsonValue::String("scene-1".to_string()),
-        );
-        payload.insert("createdAt".into(), JsonValue::from(1));
-        payload.insert("updatedAt".into(), JsonValue::from(2));
-
-        let v1 = create_character_uec(
-            payload,
-            false,
-            None,
-            None,
-            Some(json!({ "createdAt": 1, "updatedAt": 2, "source": "lettuceai" })),
-            None,
-        );
-
-        let value: JsonValue =
-            serde_json::from_str(&stringify_v2_uec(&v1).expect("v2 json")).expect("valid json");
-        let scene = value
-            .get("payload")
-            .and_then(|payload| payload.get("scene"))
-            .and_then(JsonValue::as_object)
-            .expect("scene object");
-        let variants = scene
-            .get("variants")
-            .and_then(JsonValue::as_array)
-            .expect("variants array");
-
-        assert_eq!(variants.len(), 2);
-        assert_eq!(
-            variants[0].get("id").and_then(JsonValue::as_str),
-            Some("scene-2")
-        );
-        assert_eq!(
-            variants[1].get("id").and_then(JsonValue::as_str),
-            Some("scene-3")
-        );
-    }
-
-    #[test]
-    fn parse_uec_character_reads_v2_asset_locators() {
-        let card = json!({
-            "schema": { "name": "UEC", "version": SCHEMA_VERSION_V2 },
-            "kind": "character",
-            "payload": {
-                "id": "char-v2",
-                "name": "Aster Vale",
-                "avatar": {
-                    "type": "inline_base64",
-                    "mimeType": "image/webp",
-                    "data": "QUJD"
-                },
-                "chatBackground": {
-                    "type": "remote_url",
-                    "url": "https://example.com/bg.png"
-                },
-                "scene": {
-                    "id": "scene-1",
-                    "content": "Hello there",
-                    "selectedVariant": 0,
-                    "variants": []
-                }
-            },
-            "meta": {
-                "createdAt": 1,
-                "updatedAt": 2,
-                "originalCreatedAt": 1,
-                "originalUpdatedAt": 2
-            }
-        });
-
-        let package = parse_uec_character(&card).expect("v2 character should parse");
-        assert_eq!(
-            package.avatar_data.as_deref(),
-            Some("data:image/webp;base64,QUJD")
-        );
-        assert_eq!(
-            package.background_image_data.as_deref(),
-            Some("https://example.com/bg.png")
-        );
-    }
-
-    #[test]
-    fn parse_uec_character_expands_v2_scene_variants_into_scenes() {
-        let card = json!({
-            "schema": { "name": "UEC", "version": SCHEMA_VERSION_V2 },
-            "kind": "character",
-            "payload": {
-                "id": "char-v2",
-                "name": "Aster Vale",
-                "scene": {
-                    "id": "scene-1",
-                    "content": "Primary scene",
-                    "selectedVariant": "scene-3",
-                    "variants": [
-                        {
-                            "id": "scene-2",
-                            "content": "Second scene",
-                            "direction": "Alt two",
-                            "createdAt": 20
-                        },
-                        {
-                            "id": "scene-3",
-                            "content": "Third scene",
-                            "createdAt": 30
-                        }
-                    ]
-                }
-            },
-            "meta": {
-                "createdAt": 1,
-                "updatedAt": 2,
-                "originalCreatedAt": 1,
-                "originalUpdatedAt": 2
-            }
-        });
-
-        let package = parse_uec_character(&card).expect("v2 character should parse");
-        assert_eq!(package.character.scenes.len(), 3);
-        assert_eq!(package.character.scenes[0].id, "scene-1");
-        assert_eq!(package.character.scenes[1].id, "scene-2");
-        assert_eq!(package.character.scenes[2].id, "scene-3");
-        assert_eq!(
-            package.character.default_scene_id.as_deref(),
-            Some("scene-3")
-        );
-    }
 }

@@ -13,6 +13,8 @@ pub struct ImageGenerationRequest {
     pub advanced_model_settings: Option<AdvancedModelSettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_images: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_modalities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -21,6 +23,18 @@ pub struct ImageGenerationRequest {
     pub style: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub n: Option<u32>,
+    /// Optional usage attribution: when set, recorded usage is associated
+    /// with the originating chat session/character instead of the generic
+    /// "Image Generation" placeholder. Standalone callers can omit these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub character_name: Option<String>,
+    /// Optional sub-flow tag (e.g. "scene", "manual"). Stored in metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

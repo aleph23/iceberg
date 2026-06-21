@@ -85,6 +85,7 @@ pub fn get_adapter(provider_id: &str) -> Result<Box<dyn ImageProviderAdapter>, S
         "automatic1111" => Ok(Box::new(automatic1111::Automatic1111Adapter)),
         "openai" => Ok(Box::new(openai::OpenAIAdapter)),
         "openrouter" => Ok(Box::new(openrouter::OpenRouterAdapter)),
+        "pollinations" => Ok(Box::new(pollinations::PollinationsAdapter)),
         "gemini" => Ok(Box::new(google_gemini::GoogleGeminiAdapter)),
         "stability" => Ok(Box::new(stability::StabilityAdapter)),
         "pollinations-image" => Ok(Box::new(pollinations::PollinationsAdapter)),

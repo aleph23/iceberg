@@ -11,6 +11,8 @@ import {
 import { AvatarPicker } from "../../components/AvatarPicker";
 import { Switch } from "../../components/Switch";
 import { DesignReferenceEditor } from "../../components/DesignReferenceEditor";
+import { LoraSelector } from "../../components/LoraSelector";
+import { ActiveLorebooksSelector } from "../characters/components/ActiveLorebooksSelector";
 import { useI18n } from "../../../core/i18n/context";
 import { typography, radius, spacing, interactive, cn } from "../../design-tokens";
 
@@ -37,6 +39,9 @@ export function EditPersonaPage() {
       avatarRoundPath,
       designDescription,
       designReferenceImageIds,
+      loraName,
+      loraStrength,
+      activeLorebookIds,
     },
     setTitle,
     setDescription,
@@ -47,6 +52,8 @@ export function EditPersonaPage() {
     setAvatarRoundPath,
     setDesignDescription,
     setDesignReferenceImageIds,
+    setLora,
+    setActiveLorebookIds,
     handleSave,
     resetToInitial,
     canSave,
@@ -82,7 +89,7 @@ export function EditPersonaPage() {
       await downloadJson(exportJson, filename);
     } catch (err: any) {
       console.error("Failed to export persona:", err);
-      alert(err?.message || "Failed to export persona");
+      alert(err?.message || t("personas.errors.exportFailed"));
     } finally {
       setExporting(false);
     }
@@ -125,6 +132,7 @@ export function EditPersonaPage() {
                     onAvatarChange={handleAvatarChange}
                     promptSubjectName={title}
                     promptSubjectDescription={description}
+                    loraTag={loraName ? `<lora:${loraName}:${loraStrength ?? 0.8}>` : null}
                     avatarCrop={avatarCrop}
                     onAvatarCropChange={setAvatarCrop}
                     avatarRoundPath={avatarRoundPath}
@@ -258,6 +266,12 @@ export function EditPersonaPage() {
                 </div>
               </div>
 
+              <ActiveLorebooksSelector
+                selectedIds={activeLorebookIds}
+                onChange={setActiveLorebookIds}
+                subjectLabel="persona"
+              />
+
               <div className={spacing.field}>
                 <motion.button
                   onClick={handleExport}
@@ -324,8 +338,13 @@ export function EditPersonaPage() {
                 subjectName={title}
                 subjectDescription={description}
                 avatarImage={avatarPath}
-                title="Design references"
-                description="Attach a few stable image references and one concise design note for scene generation."
+                title={t("personas.designReferences.title")}
+                description={t("personas.designReferences.description")}
+              />
+              <LoraSelector
+                loraName={loraName}
+                loraStrength={loraStrength}
+                onChange={setLora}
               />
             </div>
           </div>

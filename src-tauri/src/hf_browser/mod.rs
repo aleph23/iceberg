@@ -9,7 +9,9 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::utils::log_info;
+use crate::utils::{log_info, log_info_global, log_warn_global};
+
+pub mod sd;
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -111,6 +113,9 @@ pub struct HfModelFile {
     pub size: u64,
     pub quantization: String,
     pub is_mmproj: bool,
+    pub is_mtp: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -122,6 +127,7 @@ pub struct DownloadedGgufModel {
     pub size: u64,
     pub quantization: String,
     pub is_mmproj: bool,
+    pub is_mtp: bool,
     pub architecture: Option<String>,
     pub context_length: Option<u64>,
 }
@@ -154,11 +160,24 @@ pub struct QueuedDownload {
     pub result_path: Option<String>,
     pub create_model_when_finished: bool,
     pub mmproj_file: MmprojFileLink,
+    pub mtp_file: MmprojFileLink,
+    pub mtp_bundled: bool,
     pub install_id: Option<String>,
     pub display_name: Option<String>,
     pub context_length: Option<u64>,
     pub kv_type: Option<String>,
+    pub llama_offload_kqv: Option<bool>,
+    pub llama_gpu_layers: Option<u32>,
+    pub llama_model_offload_mode: Option<String>,
     pub download_role: Option<String>,
+    pub queue_kind: Option<String>,
+    pub asset_root: Option<String>,
+    pub install_kind: Option<String>,
+    pub variant: Option<String>,
+    pub voice_id: Option<String>,
+    pub download_url: Option<String>,
+    pub destination_path: Option<String>,
+    pub force_redownload: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +201,10 @@ pub struct QueueDownloadMetadata {
     #[serde(default)]
     pub mmproj_file: MmprojFileLink,
     #[serde(default)]
+    pub mtp_file: MmprojFileLink,
+    #[serde(default)]
+    pub mtp_bundled: bool,
+    #[serde(default)]
     pub install_id: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -190,7 +213,29 @@ pub struct QueueDownloadMetadata {
     #[serde(default)]
     pub kv_type: Option<String>,
     #[serde(default)]
+    pub llama_offload_kqv: Option<bool>,
+    #[serde(default)]
+    pub llama_gpu_layers: Option<u32>,
+    #[serde(default)]
+    pub llama_model_offload_mode: Option<String>,
+    #[serde(default)]
     pub download_role: Option<String>,
+    #[serde(default)]
+    pub queue_kind: Option<String>,
+    #[serde(default)]
+    pub asset_root: Option<String>,
+    #[serde(default)]
+    pub install_kind: Option<String>,
+    #[serde(default)]
+    pub variant: Option<String>,
+    #[serde(default)]
+    pub voice_id: Option<String>,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    #[serde(default)]
+    pub destination_path: Option<String>,
+    #[serde(default)]
+    pub force_redownload: bool,
 }
 
 struct DownloadQueueState {
@@ -298,9 +343,88 @@ fn emit_queue(app: &AppHandle, queue: &[QueuedDownload]) {
     let _ = app.emit("hf_download_queue", queue);
 }
 
-fn hf_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) async fn enqueue_external_item(app: &AppHandle, item: QueuedDownload) {
+    let mut state = HF_DOWNLOAD_QUEUE.lock().await;
+    state.queue.push(item);
+    emit_queue(app, &state.queue);
+}
+
+pub(crate) async fn update_external_progress(
+    app: &AppHandle,
+    queue_id: &str,
+    status_label: &str,
+    downloaded: u64,
+    total: u64,
+) {
+    let mut state = HF_DOWNLOAD_QUEUE.lock().await;
+    if let Some(item) = state.queue.iter_mut().find(|d| d.id == queue_id) {
+        item.status = status_label.to_string();
+        item.downloaded = downloaded;
+        item.total = total;
+    }
+    emit_queue(app, &state.queue);
+}
+
+pub(crate) async fn update_external_speed(
+    app: &AppHandle,
+    queue_id: &str,
+    speed_bytes_per_sec: u64,
+) {
+    let mut state = HF_DOWNLOAD_QUEUE.lock().await;
+    if let Some(item) = state.queue.iter_mut().find(|d| d.id == queue_id) {
+        item.speed_bytes_per_sec = speed_bytes_per_sec;
+    }
+    emit_queue(app, &state.queue);
+}
+
+pub(crate) async fn finish_external_item(
+    app: &AppHandle,
+    queue_id: &str,
+    success: bool,
+    error: Option<String>,
+) {
+    let mut state = HF_DOWNLOAD_QUEUE.lock().await;
+    if let Some(item) = state.queue.iter_mut().find(|d| d.id == queue_id) {
+        item.status = if success { "complete" } else { "error" }.to_string();
+        item.error = error;
+        if success && item.total > 0 {
+            item.downloaded = item.total;
+        }
+        item.speed_bytes_per_sec = 0;
+    }
+    state.cancel_ids.remove(queue_id);
+    emit_queue(app, &state.queue);
+}
+
+pub(crate) async fn cancel_external_item(app: &AppHandle, queue_id: &str) {
+    let mut state = HF_DOWNLOAD_QUEUE.lock().await;
+    if let Some(item) = state.queue.iter_mut().find(|d| d.id == queue_id) {
+        item.status = "cancelled".to_string();
+        item.speed_bytes_per_sec = 0;
+    }
+    state.cancel_ids.remove(queue_id);
+    emit_queue(app, &state.queue);
+}
+
+pub(crate) async fn external_item_cancel_requested(queue_id: &str) -> bool {
+    let state = HF_DOWNLOAD_QUEUE.lock().await;
+    state.cancel_ids.contains(queue_id)
+}
+
+fn default_hf_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let lettuce_dir = crate::utils::lettuce_dir(app)?;
-    let dir = lettuce_dir.join("models").join("gguf");
+    Ok(lettuce_dir.join("models").join("gguf"))
+}
+
+fn custom_llm_models_dir(app: &AppHandle) -> Option<PathBuf> {
+    crate::infra::model_storage::read_custom_dir(app, "customLlmModelsDir")
+}
+
+fn hf_models_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = match custom_llm_models_dir(app) {
+        Some(custom) => custom,
+        None => default_hf_models_dir(app)?,
+    };
     if !dir.exists() {
         std::fs::create_dir_all(&dir).map_err(|e| {
             crate::utils::err_msg(
@@ -332,6 +456,16 @@ struct GgufModelMeta {
     key_length: Option<u64>,
     /// Per-head value dimension (used for MLA KV cache sizing)
     value_length: Option<u64>,
+    /// Total routed experts per MoE layer (e.g. 8 for Mixtral, 60 for Qwen3-MoE)
+    expert_count: Option<u64>,
+    /// Routed experts actually executed per token (top-k)
+    expert_used_count: Option<u64>,
+    /// Shared (always-on) experts per layer (DeepSeek V2/V3)
+    expert_shared_count: Option<u64>,
+    /// Per-expert FFN hidden dim (usually smaller than dense feed_forward_length)
+    expert_feed_forward_length: Option<u64>,
+    /// MTP/NextN speculative layers included in block_count (GLM-4.x, DeepSeek V3.x)
+    nextn_predict_layers: Option<u64>,
     /// Number of metadata KV pairs declared in header (for truncation detection)
     metadata_kv_count: u64,
     /// Number of KV pairs actually parsed before buffer ran out
@@ -459,7 +593,6 @@ impl<'a> GgufReader<'a> {
         Some(())
     }
 
-    /// Read a GGUF value as u64 (coercing integer types) Returns None for non-integer types
     fn read_value_as_u64(&mut self, value_type: u32) -> Option<u64> {
         match value_type {
             0 => self.read_u8().map(|v| v as u64),
@@ -474,6 +607,22 @@ impl<'a> GgufReader<'a> {
             5 => self.read_i32().map(|v| v as u64),
             10 => self.read_u64(),
             11 => self.read_i64().map(|v| v as u64),
+            9 => {
+                let arr_type = self.read_u32()?;
+                let arr_len = self.read_u64()?;
+                let mut first: Option<u64> = None;
+                for i in 0..arr_len {
+                    if i == 0 {
+                        first = self.read_value_as_u64(arr_type);
+                        if first.is_none() {
+                            self.skip_value(arr_type)?;
+                        }
+                    } else {
+                        self.skip_value(arr_type)?;
+                    }
+                }
+                first
+            }
             _ => None,
         }
     }
@@ -484,53 +633,116 @@ impl<'a> GgufReader<'a> {
     }
 }
 
-/// Parse GGUF metadata from a byte buffer (typically the first 512KB–5MB of a GGUF file)
 fn parse_gguf_meta(data: &[u8]) -> Option<GgufModelMeta> {
+    log_info_global(
+        "gguf_parser",
+        format!("parse start: buffer={} bytes", data.len()),
+    );
     let mut reader = GgufReader::new(data);
 
-    // Magic: "GGUF"
     let magic = reader.read_bytes(4)?;
     if magic != b"GGUF" {
+        log_warn_global("gguf_parser", format!("magic mismatch: got {:02x?}", magic));
         return None;
     }
 
-    // Version
     let version = reader.read_u32()?;
-    if version < 2 || version > 3 {
+    if !(2..=3).contains(&version) {
+        log_warn_global("gguf_parser", format!("unsupported version: {}", version));
         return None;
     }
 
-    let _tensor_count = reader.read_u64()?;
+    let tensor_count = reader.read_u64()?;
     let metadata_kv_count = reader.read_u64()?;
+    log_info_global(
+        "gguf_parser",
+        format!(
+            "header: version={} tensors={} kv_pairs={} body_offset={}",
+            version, tensor_count, metadata_kv_count, reader.pos
+        ),
+    );
 
     let mut meta = GgufModelMeta {
         metadata_kv_count,
         ..Default::default()
     };
 
-    // First pass: find architecture name
     let start_pos = reader.pos;
+    let mut pass1_scanned: u64 = 0;
     for _ in 0..metadata_kv_count {
         if reader.remaining() < 8 {
+            log_warn_global(
+                "gguf_parser",
+                format!(
+                    "pass1 short: after {} keys, remaining={}, pos={}",
+                    pass1_scanned,
+                    reader.remaining(),
+                    reader.pos
+                ),
+            );
             break;
         }
+        let key_pos = reader.pos;
         let key = match reader.read_string() {
             Some(k) => k,
-            None => break,
+            None => {
+                log_warn_global(
+                    "gguf_parser",
+                    format!(
+                        "pass1 key read fail at pos={} after {} keys",
+                        key_pos, pass1_scanned
+                    ),
+                );
+                break;
+            }
         };
         let value_type = match reader.read_u32() {
             Some(t) => t,
-            None => break,
+            None => {
+                log_warn_global(
+                    "gguf_parser",
+                    format!(
+                        "pass1 value_type read fail at key='{}' pos={}",
+                        key, reader.pos
+                    ),
+                );
+                break;
+            }
         };
 
         if key == "general.architecture" && value_type == 8 {
             meta.architecture = reader.read_string();
+            log_info_global(
+                "gguf_parser",
+                format!(
+                    "pass1 found architecture={:?} after {} keys",
+                    meta.architecture, pass1_scanned
+                ),
+            );
             break;
-        } else {
-            if reader.skip_value(value_type).is_none() {
-                break;
-            }
+        } else if reader.skip_value(value_type).is_none() {
+            log_warn_global(
+                "gguf_parser",
+                format!(
+                    "pass1 skip_value failed: key='{}' type={} pos={} remaining={}",
+                    key,
+                    value_type,
+                    reader.pos,
+                    reader.remaining()
+                ),
+            );
+            break;
         }
+        pass1_scanned += 1;
+    }
+    if meta.architecture.is_none() {
+        log_warn_global(
+            "gguf_parser",
+            format!(
+                "pass1 finished without finding architecture (scanned {} keys)",
+                pass1_scanned
+            ),
+        );
     }
 
     let arch = meta
@@ -548,68 +760,156 @@ fn parse_gguf_meta(data: &[u8]) -> Option<GgufModelMeta> {
     let key_kv_lora_rank = format!("{}.attention.kv_lora_rank", arch);
     let key_key_length = format!("{}.attention.key_length", arch);
     let key_value_length = format!("{}.attention.value_length", arch);
+    let key_expert_count = format!("{}.expert_count", arch);
+    let key_expert_used_count = format!("{}.expert_used_count", arch);
+    let key_expert_shared_count = format!("{}.expert_shared_count", arch);
+    let key_expert_ffn = format!("{}.expert_feed_forward_length", arch);
+    let key_nextn = format!("{}.nextn_predict_layers", arch);
 
     reader.pos = start_pos;
     let mut parsed: u64 = 0;
-    for _ in 0..metadata_kv_count {
+    log_info_global(
+        "gguf_parser",
+        format!("pass2 start at pos={} arch={}", start_pos, arch),
+    );
+    for kv_index in 0..metadata_kv_count {
         if reader.remaining() < 8 {
+            log_warn_global(
+                "gguf_parser",
+                format!(
+                    "pass2 short at kv #{}: remaining={} pos={} buffer_total={}",
+                    kv_index,
+                    reader.remaining(),
+                    reader.pos,
+                    data.len()
+                ),
+            );
             break;
         }
+        let key_pos = reader.pos;
         let key = match reader.read_string() {
             Some(k) => k,
-            None => break,
+            None => {
+                log_warn_global(
+                    "gguf_parser",
+                    format!(
+                        "pass2 key read failed at kv #{} pos={} remaining={}",
+                        kv_index,
+                        key_pos,
+                        reader.remaining()
+                    ),
+                );
+                break;
+            }
         };
         let value_type = match reader.read_u32() {
             Some(t) => t,
-            None => break,
+            None => {
+                log_warn_global(
+                    "gguf_parser",
+                    format!(
+                        "pass2 value_type read failed at kv #{} key='{}' pos={}",
+                        kv_index, key, reader.pos
+                    ),
+                );
+                break;
+            }
         };
 
-        let ok = if key == "general.architecture" {
-            reader.skip_value(value_type).is_some()
-        } else if key == "general.file_type" {
+        let pos_before_value = reader.pos;
+        let mut matched = "";
+        if key == "general.file_type" {
             meta.file_type = reader.read_value_as_u32(value_type);
-            meta.file_type.is_some()
+            matched = "general.file_type";
         } else if key == key_block_count {
             meta.block_count = reader.read_value_as_u64(value_type);
-            meta.block_count.is_some()
+            matched = "block_count";
         } else if key == key_embedding_length {
             meta.embedding_length = reader.read_value_as_u64(value_type);
-            meta.embedding_length.is_some()
+            matched = "embedding_length";
         } else if key == key_head_count {
             meta.head_count = reader.read_value_as_u64(value_type);
-            meta.head_count.is_some()
+            matched = "head_count";
         } else if key == key_head_count_kv {
             meta.head_count_kv = reader.read_value_as_u64(value_type);
-            meta.head_count_kv.is_some()
+            matched = "head_count_kv";
         } else if key == key_context_length {
             meta.context_length = reader.read_value_as_u64(value_type);
-            meta.context_length.is_some()
+            matched = "context_length";
         } else if key == key_feed_forward {
             meta.feed_forward_length = reader.read_value_as_u64(value_type);
-            meta.feed_forward_length.is_some()
+            matched = "feed_forward_length";
         } else if key == key_sliding_window {
             meta.sliding_window = reader.read_value_as_u64(value_type);
-            meta.sliding_window.is_some()
+            matched = "sliding_window";
         } else if key == key_kv_lora_rank {
             meta.kv_lora_rank = reader.read_value_as_u64(value_type);
-            meta.kv_lora_rank.is_some()
+            matched = "kv_lora_rank";
         } else if key == key_key_length {
             meta.key_length = reader.read_value_as_u64(value_type);
-            meta.key_length.is_some()
+            matched = "key_length";
         } else if key == key_value_length {
             meta.value_length = reader.read_value_as_u64(value_type);
-            meta.value_length.is_some()
-        } else {
-            reader.skip_value(value_type).is_some()
-        };
-
-        if ok {
-            parsed += 1;
-        } else {
-            break;
+            matched = "value_length";
+        } else if key == key_expert_count {
+            meta.expert_count = reader.read_value_as_u64(value_type);
+            matched = "expert_count";
+        } else if key == key_expert_used_count {
+            meta.expert_used_count = reader.read_value_as_u64(value_type);
+            matched = "expert_used_count";
+        } else if key == key_expert_shared_count {
+            meta.expert_shared_count = reader.read_value_as_u64(value_type);
+            matched = "expert_shared_count";
+        } else if key == key_expert_ffn {
+            meta.expert_feed_forward_length = reader.read_value_as_u64(value_type);
+            matched = "expert_feed_forward_length";
+        } else if key == key_nextn {
+            meta.nextn_predict_layers = reader.read_value_as_u64(value_type);
+            matched = "nextn_predict_layers";
         }
+
+        if !matched.is_empty() {
+            log_info_global(
+                "gguf_parser",
+                format!(
+                    "pass2 kv #{} key='{}' matched={} type={} pos_before={} pos_after={}",
+                    kv_index, key, matched, value_type, pos_before_value, reader.pos
+                ),
+            );
+        }
+
+        if reader.pos == pos_before_value {
+            if reader.skip_value(value_type).is_none() {
+                log_warn_global(
+                    "gguf_parser",
+                    format!(
+                        "pass2 skip_value failed: kv #{} key='{}' type={} pos={} remaining={}",
+                        kv_index,
+                        key,
+                        value_type,
+                        reader.pos,
+                        reader.remaining()
+                    ),
+                );
+                break;
+            }
+        }
+
+        parsed += 1;
     }
     meta.parsed_kv_count = parsed;
+    log_info_global(
+        "gguf_parser",
+        format!(
+            "parse done: parsed={}/{} arch={:?} blocks={:?} heads_kv={:?} expert_count={:?}",
+            parsed,
+            metadata_kv_count,
+            meta.architecture,
+            meta.block_count,
+            meta.head_count_kv,
+            meta.expert_count
+        ),
+    );
 
     Some(meta)
 }
@@ -621,15 +921,19 @@ fn read_local_gguf_meta(path: &Path) -> Option<GgufModelMeta> {
     primary.truncate(primary_read);
 
     let primary_meta = parse_gguf_meta(&primary);
-    if primary_meta
-        .as_ref()
-        .is_some_and(|meta| meta.parsed_kv_count >= meta.metadata_kv_count)
-    {
+    let essentials_ok = |m: &GgufModelMeta| {
+        m.architecture.is_some()
+            && m.block_count.is_some()
+            && m.embedding_length.is_some()
+            && m.head_count.is_some()
+            && m.context_length.is_some()
+    };
+    if primary_meta.as_ref().is_some_and(essentials_ok) {
         return primary_meta;
     }
 
     let mut file = std::fs::File::open(path).ok()?;
-    let mut fallback = vec![0u8; 5_242_880];
+    let mut fallback = vec![0u8; 10_485_760];
     let fallback_read = file.read(&mut fallback).ok()?;
     fallback.truncate(fallback_read);
 
@@ -645,6 +949,7 @@ pub struct RunabilityScore {
     pub label: String,
     pub fits_in_ram: bool,
     pub fits_in_vram: bool,
+    pub gpu_mode: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -658,22 +963,34 @@ pub struct RunabilityFileInput {
 fn quant_quality_score(quant: &str) -> f64 {
     match quant.to_uppercase().as_str() {
         "F32" | "BF16" | "F16" => 100.0,
+        "UD-Q8_K_XL" => 96.0,
         "Q8_K" | "Q8_K_S" | "Q8_K_L" | "Q8_K_XL" => 95.0,
-        "Q8_0" => 90.0, // Legacy 8-bit
+        "UD-Q6_K_XL" => 92.0,
+        "Q8_0" => 90.0,
         "Q6_K" | "Q6_K_S" | "Q6_K_L" | "Q6_K_XL" => 90.0,
+        "UD-Q5_K_XL" => 88.0,
         "Q5_K_M" | "Q5_K_L" | "Q5_K_XL" | "Q5_K" => 85.0,
         "Q5_K_S" => 80.0,
-        "Q5_0" | "Q5_1" => 70.0, // Legacy 5-bit (−10)
+        "UD-Q4_K_XL" => 82.0,
+        "Q5_0" | "Q5_1" => 70.0,
         "Q4_K_M" | "Q4_K_L" | "Q4_K_XL" | "Q4_K" => 75.0,
         "Q4_K_S" => 70.0,
-        "IQ4_XS" | "IQ4_NL" => 72.0, // I-quant 4-bit (↑ from 65)
-        "Q4_0" | "Q4_1" => 60.0,     // Legacy 4-bit (−10)
+        "UD-IQ4_XS" | "UD-IQ4_NL" => 80.0,
+        "IQ4_XS" | "IQ4_NL" => 72.0,
+        "Q4_0" | "Q4_1" => 60.0,
+        "UD-Q3_K_XL" => 70.0,
         "Q3_K_M" | "Q3_K_L" | "Q3_K_XL" | "Q3_K" => 60.0,
         "Q3_K_S" => 50.0,
-        "IQ3_M" | "IQ3_S" => 52.0, // I-quant 3-bit (↑ from 45)
+        "UD-IQ3_XXS" => 60.0,
+        "IQ3_M" | "IQ3_S" => 52.0,
         "IQ3_XS" | "IQ3_XXS" => 45.0,
+        "UD-Q2_K_XL" => 55.0,
         "Q2_K" | "Q2_K_S" | "Q2_K_M" | "Q2_K_L" | "Q2_K_XL" => 35.0,
+        "UD-IQ2_M" => 50.0,
+        "UD-IQ2_XXS" => 40.0,
         "IQ2_M" | "IQ2_S" | "IQ2_XS" | "IQ2_XXS" => 25.0,
+        "UD-IQ1_M" => 30.0,
+        "UD-IQ1_S" => 22.0,
         "IQ1_M" | "IQ1_S" => 15.0,
         "MXFP4_MOE" => 70.0,
         _ => 50.0,
@@ -690,7 +1007,8 @@ fn quant_quality_score(quant: &str) -> f64 {
 /// - **DeepSeek V2/V3 (MLA)**: Multi-Head Latent Attention compresses KV cache
 ///   using a low-rank projection, dramatically reducing per-token cost.
 fn kv_base_per_token(meta: &GgufModelMeta) -> Option<f64> {
-    let blocks = meta.block_count? as f64;
+    let nextn = meta.nextn_predict_layers.unwrap_or(0);
+    let blocks = meta.block_count?.saturating_sub(nextn).max(1) as f64;
     let embd = meta.embedding_length? as f64;
     let heads = meta.head_count.filter(|&h| h > 0)? as f64;
     let heads_kv = meta.head_count_kv.unwrap_or(meta.head_count?) as f64;
@@ -702,8 +1020,11 @@ fn kv_base_per_token(meta: &GgufModelMeta) -> Option<f64> {
         .to_lowercase();
 
     // DeepSeek MLA: KV cache uses compressed latent dimension instead of full head dim
-    if (arch.starts_with("deepseek") || arch == "deepseek2") && meta.kv_lora_rank.is_some() {
-        let lora_rank = meta.kv_lora_rank.unwrap() as f64;
+    if let (true, Some(lora_rank)) = (
+        arch.starts_with("deepseek") || arch == "deepseek2",
+        meta.kv_lora_rank,
+    ) {
+        let lora_rank = lora_rank as f64;
         // MLA stores compressed KV: block_count × lora_rank × 2 (K+V)
         // Key uses rope_dim + lora_rank, value uses lora_rank
         // Simplified: use lora_rank for both as a conservative estimate
@@ -734,8 +1055,13 @@ fn effective_kv_context(meta: &GgufModelMeta, requested_ctx: u64) -> u64 {
 #[allow(dead_code)]
 fn kv_bytes_per_value(kv_type: &str) -> f64 {
     match kv_type {
+        "f32" => 4.0,
         "f16" => 2.0,
+        "q8_1" => 1.0625,
         "q8_0" => 1.0,
+        "q5_1" => 0.75,
+        "q5_0" => 0.6875,
+        "iq4_nl" => 0.5625,
         "q4_0" => 0.5,
         _ => 2.0,
     }
@@ -752,11 +1078,74 @@ fn score_label(score: u32) -> String {
     .to_string()
 }
 
-/// Compute buffer overhead: scratch/work RAM for matrix multiplications.
-/// Safe heuristic: max(model_size × 5%, 200MB).
-fn compute_overhead(model_size: u64) -> u64 {
-    let five_pct = (model_size as f64 * 0.05) as u64;
-    five_pct.max(200_000_000) // 200MB minimum
+fn is_moe(meta: &GgufModelMeta) -> bool {
+    meta.expert_count.unwrap_or(0) > 0 && meta.expert_used_count.unwrap_or(0) > 0
+}
+
+fn active_weight_ratio(meta: &GgufModelMeta) -> f64 {
+    if !is_moe(meta) {
+        return 1.0;
+    }
+    let expert_count = meta.expert_count.unwrap_or(0).max(1) as f64;
+    let used = meta.expert_used_count.unwrap_or(0) as f64;
+    let shared = meta.expert_shared_count.unwrap_or(0) as f64;
+    let active_experts = used + shared;
+    let total_experts = expert_count + shared;
+    let attn_frac = 0.10_f64;
+    let ffn_frac = 1.0 - attn_frac;
+    let active_ffn = ffn_frac * (active_experts / total_experts.max(1.0));
+    (attn_frac + active_ffn).clamp(0.05, 1.0)
+}
+
+fn effective_model_size(file_size: u64, meta: Option<&GgufModelMeta>) -> u64 {
+    let Some(meta) = meta else {
+        return file_size;
+    };
+    let nextn = meta.nextn_predict_layers.unwrap_or(0);
+    let Some(blocks) = meta.block_count.filter(|&b| b > 0) else {
+        return file_size;
+    };
+    if nextn == 0 {
+        return file_size;
+    }
+    let share =
+        (file_size as f64 * (nextn as f64 / blocks as f64) * 1.5).min(file_size as f64 * 0.10);
+    file_size.saturating_sub(share as u64)
+}
+
+fn is_qat_name(name: &str) -> bool {
+    name.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|part| part == "qat")
+}
+
+fn quant_quality_with_qat(quant: &str, qat: bool) -> f64 {
+    let base = quant_quality_score(quant);
+    if qat {
+        base.max(90.0)
+    } else {
+        base
+    }
+}
+
+fn is_mtp_asset(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    let basename = lower.rsplit('/').next().unwrap_or(&lower);
+    basename.starts_with("mtp-")
+        || basename.contains("-mtp.")
+        || basename.contains("_mtp.")
+        || lower.contains("/mtp/")
+        || lower.starts_with("mtp/")
+}
+
+fn is_draft_file(name: &str) -> bool {
+    name.to_lowercase().contains("draft") || is_mtp_asset(name)
+}
+
+fn compute_overhead(model_size: u64, active_ratio: f64) -> u64 {
+    let active_size = (model_size as f64 * active_ratio.clamp(0.05, 1.0)) as u64;
+    let five_pct = (active_size as f64 * 0.05) as u64;
+    five_pct.max(200_000_000)
 }
 
 /// Core scoring for a single configuration. All parameters are concrete values.
@@ -767,14 +1156,20 @@ fn score_configuration(
     model_size: u64,
     quant_quality: f64,
     kv_cache_bytes: u64,
+    available_ram: u64,
     total_available: u64,
     available_vram: u64,
+    active_ratio: f64,
 ) -> (u32, bool, bool, u32, u32, u32, &'static str) {
-    let overhead = compute_overhead(model_size);
+    let overhead = compute_overhead(model_size, active_ratio);
     let total_needed = model_size
         .saturating_add(kv_cache_bytes)
         .saturating_add(overhead);
     let fits_in_ram = total_available > 0 && total_needed <= total_available;
+    let ram_budget = (available_ram as f64 * 0.90) as u64;
+    let vram_budget = (available_vram as f64 * 0.90) as u64;
+    let model_fits_ram = available_ram > 0 && model_size.saturating_add(overhead) <= ram_budget;
+    let kv_fits_vram = available_vram > 0 && kv_cache_bytes.saturating_add(overhead) <= vram_budget;
 
     // Memory fitness (25%)
     let memory_score = if total_available == 0 {
@@ -783,14 +1178,16 @@ fn score_configuration(
         0.0
     } else {
         let ratio = total_available as f64 / total_needed as f64;
-        if ratio < 1.2 {
-            20.0
+        if ratio < 1.05 {
+            40.0
+        } else if ratio < 1.2 {
+            60.0
         } else if ratio < 1.5 {
-            50.0
+            75.0
         } else if ratio < 2.0 {
-            70.0
-        } else if ratio < 3.0 {
             85.0
+        } else if ratio < 3.0 {
+            95.0
         } else {
             100.0
         }
@@ -799,9 +1196,9 @@ fn score_configuration(
     //   GPU acceleration (35%)
     //   1. Everything fits in VRAM → 100 (blazing fast)
     //   2. Model fits, KV/compute spills → 70-95 (fast inference, slow prefill)
-    //   3. Model spills to RAM → 10-70 (partial layer offload via -ngl)
+    //   3. Model fits in RAM but not VRAM → 62-92 (RAM-backed model with VRAM context)
+    //   4. Model spills to RAM → 10-70 (partial layer offload via -ngl)
     let (gpu_score, fits_in_vram, gpu_mode) = if available_vram > 0 {
-        let vram_budget = (available_vram as f64 * 0.90) as u64;
         if total_needed <= vram_budget {
             // Full offload: model + KV + compute all fit in VRAM
             (100.0, true, "full")
@@ -825,6 +1222,29 @@ fn score_configuration(
             };
             // 70-95: good experience, layers all on GPU
             (70.0 + fit_ratio * 25.0, true, mode)
+        } else if model_fits_ram && kv_fits_vram {
+            let ram_fit_ratio = if model_size.saturating_add(overhead) > 0 {
+                (ram_budget as f64 / model_size.saturating_add(overhead) as f64).min(1.0)
+            } else {
+                1.0
+            };
+            let kv_fit_ratio = if kv_cache_bytes.saturating_add(overhead) > 0 {
+                (vram_budget as f64 / kv_cache_bytes.saturating_add(overhead) as f64).min(1.0)
+            } else {
+                1.0
+            };
+            (
+                78.0 + ram_fit_ratio * 12.0 + kv_fit_ratio * 10.0,
+                false,
+                "ramModelVramCtx",
+            )
+        } else if model_fits_ram {
+            let ram_fit_ratio = if model_size.saturating_add(overhead) > 0 {
+                (ram_budget as f64 / model_size.saturating_add(overhead) as f64).min(1.0)
+            } else {
+                1.0
+            };
+            (62.0 + ram_fit_ratio * 18.0, false, "ramModelRamCtx")
         } else {
             // Model doesn't fit: partial layer offload
             let offload_ratio = (vram_budget as f64 / model_size as f64).min(1.0);
@@ -892,33 +1312,72 @@ fn resolve_total_available(available_ram: u64, available_vram: u64, unified: boo
     }
 }
 
+pub(crate) struct LlamaRuntimeDefaults {
+    pub context_length: u64,
+    pub kv_bytes_per_value: f64,
+}
+
+pub(crate) fn llama_runtime_defaults(app: &AppHandle) -> LlamaRuntimeDefaults {
+    let settings: Option<crate::chat_manager::types::Settings> =
+        crate::storage_manager::settings::read_settings_typed(app)
+            .ok()
+            .flatten();
+    let advanced = settings.as_ref().and_then(|s| s.advanced_settings.as_ref());
+    let context_length = advanced
+        .and_then(|a| a.llama_default_context_length)
+        .map(u64::from)
+        .filter(|value| *value >= 512)
+        .unwrap_or(8192);
+    let kv_type = advanced
+        .and_then(|a| a.llama_default_kv_cache_type.clone())
+        .unwrap_or_else(|| "auto".to_string());
+    let kv_bytes_per_value = if kv_type == "auto" {
+        2.0
+    } else {
+        kv_bytes_per_value(&kv_type)
+    };
+    LlamaRuntimeDefaults {
+        context_length,
+        kv_bytes_per_value,
+    }
+}
+
 fn compute_scores(
     files: &[RunabilityFileInput],
+    model_id: &str,
     meta: Option<&GgufModelMeta>,
     available_ram: Option<u64>,
     available_vram: Option<u64>,
+    defaults: &LlamaRuntimeDefaults,
 ) -> Vec<RunabilityScore> {
     let ram = available_ram.unwrap_or(0);
     let vram = available_vram.unwrap_or(0);
     let unified = crate::llama_cpp::is_unified_memory();
     let total_available = resolve_total_available(ram, vram, unified);
 
-    // KV cache at 8192 context, F16 KV
-    let effective_ctx = meta.map(|m| effective_kv_context(m, 8192)).unwrap_or(8192);
+    let default_ctx = defaults.context_length;
+    let effective_ctx = meta
+        .map(|m| effective_kv_context(m, default_ctx))
+        .unwrap_or(default_ctx);
     let kv_8k: u64 = meta
-        .and_then(|m| kv_base_per_token(m))
-        .map(|base| (base * 2.0 * effective_ctx as f64) as u64) // F16 = 2.0 bytes
+        .and_then(kv_base_per_token)
+        .map(|base| (base * defaults.kv_bytes_per_value * effective_ctx as f64) as u64)
         .unwrap_or(0);
+    let active_ratio = meta.map(active_weight_ratio).unwrap_or(1.0);
+    let repo_qat = is_qat_name(model_id);
 
     files
         .iter()
         .map(|file| {
-            let (score, fits_in_ram, fits_in_vram, ..) = score_configuration(
-                file.size,
-                quant_quality_score(&file.quantization),
+            let qat = repo_qat || is_qat_name(&file.filename);
+            let (score, fits_in_ram, fits_in_vram, .., gpu_mode) = score_configuration(
+                effective_model_size(file.size, meta),
+                quant_quality_with_qat(&file.quantization, qat),
                 kv_8k,
+                ram,
                 total_available,
                 vram,
+                active_ratio,
             );
             RunabilityScore {
                 filename: file.filename.clone(),
@@ -926,6 +1385,7 @@ fn compute_scores(
                 label: score_label(score),
                 fits_in_ram,
                 fits_in_vram,
+                gpu_mode: gpu_mode.to_string(),
             }
         })
         .collect()
@@ -947,11 +1407,19 @@ pub struct ModelArchInfo {
     pub kv_lora_rank: Option<u64>,
     pub key_length: Option<u64>,
     pub value_length: Option<u64>,
+    pub expert_count: Option<u64>,
+    pub expert_used_count: Option<u64>,
+    pub expert_shared_count: Option<u64>,
+    pub expert_feed_forward_length: Option<u64>,
+    pub nextn_predict_layers: Option<u64>,
+    pub is_moe: bool,
+    pub active_weight_ratio: Option<f64>,
     pub incomplete_parse: bool,
 }
 
 impl From<&GgufModelMeta> for ModelArchInfo {
     fn from(m: &GgufModelMeta) -> Self {
+        let moe = is_moe(m);
         Self {
             architecture: m.architecture.clone(),
             block_count: m.block_count,
@@ -965,7 +1433,22 @@ impl From<&GgufModelMeta> for ModelArchInfo {
             kv_lora_rank: m.kv_lora_rank,
             key_length: m.key_length,
             value_length: m.value_length,
-            incomplete_parse: m.parsed_kv_count < m.metadata_kv_count,
+            expert_count: m.expert_count,
+            expert_used_count: m.expert_used_count,
+            expert_shared_count: m.expert_shared_count,
+            expert_feed_forward_length: m.expert_feed_forward_length,
+            nextn_predict_layers: m.nextn_predict_layers,
+            is_moe: moe,
+            active_weight_ratio: if moe {
+                Some(active_weight_ratio(m))
+            } else {
+                None
+            },
+            incomplete_parse: m.architecture.is_none()
+                || m.block_count.is_none()
+                || m.embedding_length.is_none()
+                || m.head_count.is_none()
+                || m.context_length.is_none(),
         }
     }
 }
@@ -975,6 +1458,7 @@ impl From<&GgufModelMeta> for ModelArchInfo {
 pub struct RecommendationData {
     pub available_ram: u64,
     pub available_vram: u64,
+    pub supports_gpu_offload: bool,
     /// Whether RAM and VRAM share the same pool (Apple Silicon, iGPU)
     pub unified_memory: bool,
     /// Effective total memory (max or sum depending on unified)
@@ -1017,7 +1501,14 @@ pub struct BestRecommendation {
     pub viable: bool,
 }
 
-const KV_TYPES: &[(&str, f64)] = &[("f16", 2.0), ("q8_0", 1.0), ("q4_0", 0.5)];
+const RECOMMENDATION_KV_TYPES: &[(&str, f64)] = &[
+    ("q8_1", 1.0625),
+    ("q8_0", 1.0),
+    ("q5_1", 0.75),
+    ("q5_0", 0.6875),
+    ("iq4_nl", 0.5625),
+    ("q4_0", 0.5),
+];
 const MIN_CONTEXT: u64 = 4096;
 
 fn calculate_optimal_context(
@@ -1025,8 +1516,9 @@ fn calculate_optimal_context(
     model_weight_bytes: u64,
     bytes_per_token: f64, // kv_base × bytes_per_value (accounts for GQA/MLA + KV quant)
     model_max_ctx: u64,
+    active_ratio: f64,
 ) -> u64 {
-    let overhead = compute_overhead(model_weight_bytes);
+    let overhead = compute_overhead(model_weight_bytes, active_ratio);
     let remaining = budget_bytes
         .saturating_sub(model_weight_bytes)
         .saturating_sub(overhead);
@@ -1058,9 +1550,10 @@ fn max_context_for(
     bpv: f64,
     total_available: u64,
     model_max_ctx: u64,
+    active_ratio: f64,
 ) -> u64 {
     let safety = dynamic_safety_reserve(total_available);
-    let overhead = compute_overhead(model_size);
+    let overhead = compute_overhead(model_size, active_ratio);
     let available = total_available
         .saturating_sub(model_size)
         .saturating_sub(overhead)
@@ -1075,14 +1568,18 @@ fn max_context_for(
 
 fn build_recommendation(
     files: &[RunabilityFileInput],
+    model_id: &str,
     meta: Option<&GgufModelMeta>,
     available_ram: u64,
     available_vram: u64,
+    supports_gpu_offload: bool,
+    default_context_cap: u64,
 ) -> RecommendationData {
     let unified = crate::llama_cpp::is_unified_memory();
     let total_available = resolve_total_available(available_ram, available_vram, unified);
-    let kv_base = meta.and_then(|m| kv_base_per_token(m));
+    let kv_base = meta.and_then(kv_base_per_token);
     let model_max_ctx = meta.and_then(|m| m.context_length).unwrap_or(8192);
+    let active_ratio = meta.map(active_weight_ratio).unwrap_or(1.0);
     // SWA cap: for sliding window architectures, KV cache doesn't grow past window size
     let kv_ctx_cap = meta.and_then(|m| {
         let arch = m.architecture.as_deref().unwrap_or("llama").to_lowercase();
@@ -1093,6 +1590,7 @@ fn build_recommendation(
         }
     });
 
+    let repo_qat = is_qat_name(model_id);
     let mut file_recs: Vec<FileRecommendation> = Vec::new();
     let mut best: Option<BestRecommendation> = None;
 
@@ -1101,12 +1599,35 @@ fn build_recommendation(
             continue;
         }
 
-        let qq = quant_quality_score(&file.quantization);
+        let load_size = effective_model_size(file.size, meta);
+        let qq =
+            quant_quality_with_qat(&file.quantization, repo_qat || is_qat_name(&file.filename));
         let (max_f16, max_q8, max_q4) = if let Some(base) = kv_base {
             (
-                max_context_for(file.size, base, 2.0, total_available, model_max_ctx),
-                max_context_for(file.size, base, 1.0, total_available, model_max_ctx),
-                max_context_for(file.size, base, 0.5, total_available, model_max_ctx),
+                max_context_for(
+                    load_size,
+                    base,
+                    2.0,
+                    total_available,
+                    model_max_ctx,
+                    active_ratio,
+                ),
+                max_context_for(
+                    load_size,
+                    base,
+                    1.0,
+                    total_available,
+                    model_max_ctx,
+                    active_ratio,
+                ),
+                max_context_for(
+                    load_size,
+                    base,
+                    0.5,
+                    total_available,
+                    model_max_ctx,
+                    active_ratio,
+                ),
             )
         } else {
             (model_max_ctx, model_max_ctx, model_max_ctx)
@@ -1121,17 +1642,24 @@ fn build_recommendation(
         let bpv_q8 = 1.0; // Q8_0 KV
         let bytes_per_token_q8 = kv_base.map(|b| b * bpv_q8).unwrap_or(0.0);
 
-        let optimal_gpu_ctx = if file.size <= vram_budget {
-            calculate_optimal_context(vram_budget, file.size, bytes_per_token_q8, model_max_ctx)
+        let optimal_gpu_ctx = if load_size <= vram_budget {
+            calculate_optimal_context(
+                vram_budget,
+                load_size,
+                bytes_per_token_q8,
+                model_max_ctx,
+                active_ratio,
+            )
         } else {
-            0 // Model doesn't fit in VRAM
+            0
         };
 
         let optimal_ram_ctx = calculate_optimal_context(
             total_available.saturating_sub(safety),
-            file.size,
+            load_size,
             bytes_per_token_q8,
             model_max_ctx,
+            active_ratio,
         );
 
         file_recs.push(FileRecommendation {
@@ -1146,10 +1674,21 @@ fn build_recommendation(
             optimal_ram_ctx,
         });
 
+        if is_draft_file(&file.filename) {
+            continue;
+        }
+
         // Try each KV type, find the best scoring configuration for this file
-        for &(kv_name, bpv) in KV_TYPES {
+        for &(kv_name, bpv) in RECOMMENDATION_KV_TYPES {
             let max_ctx = if let Some(base) = kv_base {
-                max_context_for(file.size, base, bpv, total_available, model_max_ctx)
+                max_context_for(
+                    load_size,
+                    base,
+                    bpv,
+                    total_available,
+                    model_max_ctx,
+                    active_ratio,
+                )
             } else {
                 model_max_ctx
             };
@@ -1158,16 +1697,23 @@ fn build_recommendation(
                 continue;
             }
 
-            let ctx = max_ctx.min(8192);
+            let ctx = max_ctx.min(default_context_cap);
             let effective_ctx = kv_ctx_cap.map(|cap| ctx.min(cap)).unwrap_or(ctx);
             let kv_bytes = kv_base
                 .map(|b| (b * bpv * effective_ctx as f64) as u64)
                 .unwrap_or(0);
 
-            let (score, ..) =
-                score_configuration(file.size, qq, kv_bytes, total_available, available_vram);
+            let (score, ..) = score_configuration(
+                load_size,
+                qq,
+                kv_bytes,
+                available_ram,
+                total_available,
+                available_vram,
+                active_ratio,
+            );
 
-            if best.as_ref().map_or(true, |b| score > b.score) {
+            if best.as_ref().is_none_or(|b| score > b.score) {
                 best = Some(BestRecommendation {
                     filename: file.filename.clone(),
                     context_length: ctx,
@@ -1188,13 +1734,15 @@ fn build_recommendation(
         let vram_budget = (available_vram as f64 * 0.90) as u64;
         let mut gpu_candidate: Option<(&RunabilityFileInput, &FileRecommendation)> = None;
         for (file, rec) in files.iter().zip(file_recs.iter()) {
-            if file.size == 0 || file.size > vram_budget {
+            let load_size = effective_model_size(file.size, meta);
+            if file.size == 0 || load_size > vram_budget || is_draft_file(&file.filename) {
                 continue;
             }
-            let qq = quant_quality_score(&file.quantization);
+            let qq =
+                quant_quality_with_qat(&file.quantization, repo_qat || is_qat_name(&file.filename));
             if gpu_candidate
                 .as_ref()
-                .map_or(true, |(_, prev_rec)| qq > prev_rec.quant_quality as f64)
+                .is_none_or(|(_, prev_rec)| qq > prev_rec.quant_quality as f64)
             {
                 gpu_candidate = Some((file, rec));
             }
@@ -1205,11 +1753,16 @@ fn build_recommendation(
                 let effective_ctx = kv_ctx_cap.map(|cap| ctx.min(cap)).unwrap_or(ctx);
                 let kv_bytes = (base * 1.0 * effective_ctx as f64) as u64; // Q8_0
                 let (score, ..) = score_configuration(
-                    file.size,
-                    quant_quality_score(&file.quantization),
+                    effective_model_size(file.size, meta),
+                    quant_quality_with_qat(
+                        &file.quantization,
+                        repo_qat || is_qat_name(&file.filename),
+                    ),
                     kv_bytes,
+                    available_ram,
                     total_available,
                     available_vram,
+                    active_ratio,
                 );
                 if score > best.as_ref().map_or(0, |b| b.score) {
                     best = Some(BestRecommendation {
@@ -1227,6 +1780,7 @@ fn build_recommendation(
     RecommendationData {
         available_ram,
         available_vram,
+        supports_gpu_offload,
         unified_memory: unified,
         total_available,
         kv_base_per_token: kv_base,
@@ -1293,6 +1847,9 @@ fn extract_quantization(filename: &str) -> String {
     ];
     for p in &patterns {
         if upper.contains(p) {
+            if upper.contains(&format!("UD-{p}")) {
+                return format!("UD-{p}");
+            }
             return p.to_string();
         }
     }
@@ -1314,14 +1871,25 @@ pub async fn hf_search_models(
     limit: Option<u32>,
     sort: Option<String>,
     offset: Option<u32>,
+    mode: Option<String>,
 ) -> Result<Vec<HfSearchResult>, String> {
     let limit = limit.unwrap_or(20).min(100);
     let sort_field = sort.unwrap_or_else(|| "trendingScore".to_string());
     let offset = offset.unwrap_or(0);
 
+    let direct_repo_query = query.trim().contains('/');
+    let filter = if mode.as_deref() == Some("sd") {
+        if direct_repo_query {
+            ""
+        } else {
+            "pipeline_tag=text-to-image"
+        }
+    } else {
+        "filter=gguf"
+    };
     let mut url = format!(
-        "https://huggingface.co/api/models?filter=gguf&limit={}&sort={}&offset={}",
-        limit, sort_field, offset
+        "https://huggingface.co/api/models?{}&limit={}&sort={}&offset={}",
+        filter, limit, sort_field, offset
     );
     let trimmed = query.trim();
     if !trimmed.is_empty() {
@@ -1390,7 +1958,12 @@ pub async fn hf_search_models(
 }
 
 #[tauri::command]
-pub async fn hf_get_model_files(app: AppHandle, model_id: String) -> Result<HfModelInfo, String> {
+pub async fn hf_get_model_files(
+    app: AppHandle,
+    model_id: String,
+    mode: Option<String>,
+) -> Result<HfModelInfo, String> {
+    let sd_mode = mode.as_deref() == Some("sd");
     log_info(
         &app,
         "hf_browser",
@@ -1457,17 +2030,32 @@ pub async fn hf_get_model_files(app: AppHandle, model_id: String) -> Result<HfMo
         .iter()
         .filter(|s| {
             let lower = s.rfilename.to_lowercase();
-            lower.ends_with(".gguf") && !lower.contains("imatrix")
+            if lower.contains("imatrix") {
+                return false;
+            }
+            if sd_mode {
+                !lower.contains('/')
+                    && (lower.ends_with(".gguf") || lower.ends_with(".safetensors"))
+            } else {
+                lower.ends_with(".gguf")
+            }
         })
         .map(|s| {
             let lower = s.rfilename.to_lowercase();
             let size = size_map.get(&s.rfilename).copied().unwrap_or(0);
             let quantization = extract_quantization(&s.rfilename);
+            let role = if sd_mode {
+                Some(sd::guess_role(&s.rfilename, size).to_string())
+            } else {
+                None
+            };
             HfModelFile {
                 filename: s.rfilename.clone(),
                 size,
                 quantization,
                 is_mmproj: lower.contains("mmproj"),
+                is_mtp: is_mtp_asset(&s.rfilename),
+                role,
             }
         })
         .collect();
@@ -1530,11 +2118,24 @@ pub async fn hf_queue_download(
             result_path: None,
             create_model_when_finished: metadata.create_model_when_finished,
             mmproj_file: metadata.mmproj_file,
+            mtp_file: metadata.mtp_file,
+            mtp_bundled: metadata.mtp_bundled,
             install_id: metadata.install_id,
             display_name: metadata.display_name,
             context_length: metadata.context_length,
             kv_type: metadata.kv_type,
+            llama_offload_kqv: metadata.llama_offload_kqv,
+            llama_gpu_layers: metadata.llama_gpu_layers,
+            llama_model_offload_mode: metadata.llama_model_offload_mode,
             download_role: metadata.download_role,
+            queue_kind: metadata.queue_kind,
+            asset_root: metadata.asset_root,
+            install_kind: metadata.install_kind,
+            variant: metadata.variant,
+            voice_id: metadata.voice_id,
+            download_url: metadata.download_url,
+            destination_path: metadata.destination_path,
+            force_redownload: metadata.force_redownload,
         });
         emit_queue(&app, &state.queue);
     }
@@ -1620,7 +2221,7 @@ async fn process_download_queue(app: &AppHandle) {
             emit_queue(app, &state.queue);
         }
 
-        let result = do_queue_download(app, &item.id, &item.model_id, &item.filename).await;
+        let result = do_queue_download(app, &item).await;
 
         {
             let mut state = HF_DOWNLOAD_QUEUE.lock().await;
@@ -1646,32 +2247,47 @@ async fn process_download_queue(app: &AppHandle) {
     }
 }
 
-async fn do_queue_download(
-    app: &AppHandle,
-    queue_id: &str,
-    model_id: &str,
-    filename: &str,
-) -> Result<String, String> {
-    let models_dir = hf_models_dir(app)?;
+async fn do_queue_download(app: &AppHandle, item: &QueuedDownload) -> Result<String, String> {
+    let queue_id = item.id.as_str();
+    let model_id = item.model_id.as_str();
+    let filename = item.filename.as_str();
+    let dest_path = if let Some(destination_path) = item.destination_path.as_deref() {
+        PathBuf::from(destination_path)
+    } else {
+        let models_dir = hf_models_dir(app)?;
+        let safe_model_name = model_id.replace('/', "--");
+        let model_dir = models_dir.join(&safe_model_name);
+        if !model_dir.exists() {
+            tokio::fs::create_dir_all(&model_dir).await.map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to create model directory: {}", e),
+                )
+            })?;
+        }
+        model_dir.join(filename)
+    };
 
-    let safe_model_name = model_id.replace('/', "--");
-    let model_dir = models_dir.join(&safe_model_name);
-    if !model_dir.exists() {
-        tokio::fs::create_dir_all(&model_dir).await.map_err(|e| {
+    if let Some(parent) = dest_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
             crate::utils::err_msg(
                 module_path!(),
                 line!(),
-                format!("Failed to create model directory: {}", e),
+                format!("Failed to create destination directory: {}", e),
             )
         })?;
     }
 
-    let dest_path = model_dir.join(filename);
-
-    if dest_path.exists() {
+    if dest_path.exists() && !item.force_redownload {
         let meta = tokio::fs::metadata(&dest_path).await.ok();
         if let Some(m) = meta {
-            if m.len() > 1_000_000 {
+            let min_existing_size = if item.queue_kind.as_deref() == Some("kokoro") {
+                1
+            } else {
+                1_000_000
+            };
+            if m.len() >= min_existing_size {
                 log_info(
                     app,
                     "hf_browser",
@@ -1693,10 +2309,12 @@ async fn do_queue_download(
         }
     }
 
-    let download_url = format!(
-        "https://huggingface.co/{}/resolve/main/{}",
-        model_id, filename
-    );
+    let download_url = item.download_url.clone().unwrap_or_else(|| {
+        format!(
+            "https://huggingface.co/{}/resolve/main/{}",
+            model_id, filename
+        )
+    });
 
     log_info(
         app,
@@ -1876,6 +2494,7 @@ pub async fn hf_list_downloaded_models(app: AppHandle) -> Result<Vec<DownloadedG
 
                 if fname.to_lowercase().ends_with(".gguf") && !fname.ends_with(".tmp") {
                     let is_mmproj = fname.to_lowercase().contains("mmproj");
+                    let is_mtp = is_mtp_asset(&fname);
                     let size = file_entry.metadata().map(|m| m.len()).unwrap_or(0);
                     let meta = read_local_gguf_meta(&file_path);
                     results.push(DownloadedGgufModel {
@@ -1885,6 +2504,7 @@ pub async fn hf_list_downloaded_models(app: AppHandle) -> Result<Vec<DownloadedG
                         size,
                         quantization: extract_quantization(&file_path.to_string_lossy()),
                         is_mmproj,
+                        is_mtp,
                         architecture: meta.as_ref().and_then(|value| value.architecture.clone()),
                         context_length: meta.as_ref().and_then(|value| value.context_length),
                     });
@@ -1936,6 +2556,154 @@ pub async fn hf_delete_downloaded_model(app: AppHandle, file_path: String) -> Re
 pub async fn hf_get_gguf_models_dir(app: AppHandle) -> Result<String, String> {
     let dir = hf_models_dir(&app)?;
     Ok(dir.to_string_lossy().to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmModelsDirInfo {
+    path: String,
+    default_path: String,
+    is_custom: bool,
+    model_count: u32,
+}
+
+#[tauri::command]
+pub async fn hf_get_llm_models_dir(app: AppHandle) -> Result<LlmModelsDirInfo, String> {
+    let default_path = default_hf_models_dir(&app)?;
+    let is_custom = custom_llm_models_dir(&app).is_some();
+    let path = hf_models_dir(&app)?;
+    let model_count = crate::infra::model_storage::count_models_in_dir(&path);
+    Ok(LlmModelsDirInfo {
+        path: path.to_string_lossy().to_string(),
+        default_path: default_path.to_string_lossy().to_string(),
+        is_custom,
+        model_count,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetLlmModelsDirResult {
+    path: String,
+    moved_entries: u32,
+    rewired_models: u32,
+}
+
+#[tauri::command]
+pub async fn hf_set_llm_models_dir(
+    app: AppHandle,
+    new_dir: String,
+    move_existing: bool,
+) -> Result<SetLlmModelsDirResult, String> {
+    let new_path = PathBuf::from(new_dir.trim());
+    if new_path.as_os_str().is_empty() {
+        return Err("New models folder path is empty".to_string());
+    }
+
+    let old_path = hf_models_dir(&app)?;
+
+    std::fs::create_dir_all(&new_path).map_err(|e| {
+        crate::utils::err_msg(
+            module_path!(),
+            line!(),
+            format!("Failed to create models folder: {}", e),
+        )
+    })?;
+
+    let same = crate::infra::model_storage::paths_equal(&old_path, &new_path);
+
+    let (moved_entries, rewired_models) = if move_existing && !same {
+        crate::infra::model_storage::migrate_models_dir(&old_path, &new_path, |old, new| {
+            rewire_llama_model_paths(&app, old, new)
+        })?
+    } else {
+        (0, 0)
+    };
+
+    if crate::infra::model_storage::paths_equal(&new_path, &default_hf_models_dir(&app)?) {
+        persist_custom_llm_models_dir(&app, None)?;
+    } else {
+        persist_custom_llm_models_dir(&app, Some(new_path.to_string_lossy().as_ref()))?;
+    }
+
+    Ok(SetLlmModelsDirResult {
+        path: new_path.to_string_lossy().to_string(),
+        moved_entries,
+        rewired_models,
+    })
+}
+
+fn rewire_llama_model_paths(
+    app: &AppHandle,
+    old_prefix: &str,
+    new_prefix: &str,
+) -> Result<u32, String> {
+    let mut conn = crate::storage_manager::db::open_db(app)?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let rows: Vec<(String, String, Option<String>)> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT id, name, advanced_model_settings FROM models WHERE provider_id = 'llamacpp'",
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        let collected = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        collected
+    };
+
+    let mut count = 0u32;
+    for (id, name, advanced) in rows {
+        let new_name =
+            crate::infra::model_storage::rewrite_path_prefix(&name, old_prefix, new_prefix);
+        let mut changed = new_name != name;
+        let new_advanced = match advanced.as_deref() {
+            Some(text) => match serde_json::from_str::<serde_json::Value>(text) {
+                Ok(mut value) => {
+                    if let Some(map) = value.as_object_mut() {
+                        for key in ["llamaMmprojPath", "llamaMtpModelPath"] {
+                            if let Some(serde_json::Value::String(current)) = map.get(key) {
+                                let rewritten = crate::infra::model_storage::rewrite_path_prefix(
+                                    current, old_prefix, new_prefix,
+                                );
+                                if rewritten != *current {
+                                    map.insert(
+                                        key.to_string(),
+                                        serde_json::Value::String(rewritten),
+                                    );
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                    serde_json::to_string(&value).ok()
+                }
+                Err(_) => advanced.clone(),
+            },
+            None => None,
+        };
+        if changed {
+            tx.execute(
+                "UPDATE models SET name = ?1, advanced_model_settings = ?2 WHERE id = ?3",
+                rusqlite::params![new_name, new_advanced, id],
+            )
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+            count += 1;
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    Ok(count)
+}
+
+fn persist_custom_llm_models_dir(app: &AppHandle, dir: Option<&str>) -> Result<(), String> {
+    crate::infra::model_storage::persist_custom_dir(app, "customLlmModelsDir", dir)
 }
 
 #[tauri::command]
@@ -2083,9 +2851,9 @@ pub async fn hf_fetch_readme(app: AppHandle, model_id: String) -> Result<String,
         .await
         .map_err(|e| format!("Failed to read README body: {}", e))?;
 
-    let content = if raw.starts_with("---") {
-        if let Some(end) = raw[3..].find("---") {
-            let after = &raw[3 + end + 3..];
+    let content = if let Some(stripped) = raw.strip_prefix("---") {
+        if let Some(end) = stripped.find("---") {
+            let after = &stripped[end + 3..];
             after
                 .trim_start_matches('\n')
                 .trim_start_matches('\r')
@@ -2123,17 +2891,25 @@ async fn fetch_gguf_meta(
     let meta = fetch_gguf_range(&client, &url, 524_287).await;
 
     // If parse was incomplete, retry with 5MB
+    let essentials_missing = |m: &GgufModelMeta| {
+        m.architecture.is_none()
+            || m.block_count.is_none()
+            || m.embedding_length.is_none()
+            || m.head_count.is_none()
+            || m.context_length.is_none()
+    };
+
     if let Some(ref m) = meta {
-        if m.parsed_kv_count < m.metadata_kv_count && m.block_count.is_none() {
+        if essentials_missing(m) {
             log_info(
                 app,
                 "hf_browser",
                 format!(
-                    "GGUF header truncated ({}/{} KVs parsed), retrying with 5MB",
+                    "GGUF essentials missing after 512KB ({}/{} KVs parsed), retrying with 10MB",
                     m.parsed_kv_count, m.metadata_kv_count
                 ),
             );
-            let retry = fetch_gguf_range(&client, &url, 5_242_879).await;
+            let retry = fetch_gguf_range(&client, &url, 10_485_759).await;
             if let Some(ref r) = retry {
                 log_gguf_meta(app, r);
                 return retry;
@@ -2205,19 +2981,30 @@ pub async fn hf_compute_runability(
     let meta = fetch_gguf_meta(&app, &model_id, &files).await;
 
     let available_ram = crate::llama_cpp::available_memory_bytes();
-    let available_vram = crate::llama_cpp::available_vram_bytes();
+    let supports_gpu_offload = crate::llama_cpp::supports_gpu_offload();
+    let available_vram = if supports_gpu_offload {
+        crate::llama_cpp::available_vram_bytes()
+    } else {
+        Some(0)
+    };
 
     log_info(
         &app,
         "hf_browser",
-        format!("system: RAM={:?} VRAM={:?}", available_ram, available_vram),
+        format!(
+            "system: RAM={:?} VRAM={:?} supports_gpu_offload={}",
+            available_ram, available_vram, supports_gpu_offload
+        ),
     );
 
+    let defaults = llama_runtime_defaults(&app);
     Ok(compute_scores(
         &files,
+        &model_id,
         meta.as_ref(),
         available_ram,
         available_vram,
+        &defaults,
     ))
 }
 
@@ -2243,6 +3030,9 @@ pub struct LocalRunabilityResult {
 pub async fn hf_compute_local_runability(
     app: AppHandle,
     file_path: String,
+    llama_mmproj_path: Option<String>,
+    llama_mtp_enabled: Option<bool>,
+    llama_mtp_model_path: Option<String>,
 ) -> Result<LocalRunabilityResult, String> {
     let path = PathBuf::from(&file_path);
     if !path.exists() {
@@ -2257,39 +3047,76 @@ pub async fn hf_compute_local_runability(
     let meta = read_local_gguf_meta(&path);
 
     let available_ram = crate::llama_cpp::available_memory_bytes().unwrap_or(0);
-    let available_vram = crate::llama_cpp::available_vram_bytes().unwrap_or(0);
+    let supports_gpu_offload = crate::llama_cpp::supports_gpu_offload();
+    let available_vram = if supports_gpu_offload {
+        crate::llama_cpp::available_vram_bytes().unwrap_or(0)
+    } else {
+        0
+    };
+    let sidecar_reserve_bytes = if supports_gpu_offload {
+        let mmproj_reserve = llama_mmproj_path
+            .as_deref()
+            .filter(|path| !path.trim().is_empty())
+            .and_then(|path| std::fs::metadata(path).ok())
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        let mtp_reserve = if llama_mtp_enabled == Some(true) {
+            llama_mtp_model_path
+                .as_deref()
+                .filter(|path| !path.trim().is_empty())
+                .and_then(|path| std::fs::metadata(path).ok())
+                .map(|meta| meta.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        mmproj_reserve.saturating_add(mtp_reserve)
+    } else {
+        0
+    };
     let unified = crate::llama_cpp::is_unified_memory();
     let total_available = resolve_total_available(available_ram, available_vram, unified);
 
-    // KV cache at 8192 context, F16 KV
+    let defaults = llama_runtime_defaults(&app);
     let effective_ctx = meta
         .as_ref()
-        .map(|m| effective_kv_context(m, 8192))
-        .unwrap_or(8192);
+        .map(|m| effective_kv_context(m, defaults.context_length))
+        .unwrap_or(defaults.context_length);
     let kv_8k: u64 = meta
         .as_ref()
-        .and_then(|m| kv_base_per_token(m))
-        .map(|base| (base * 2.0 * effective_ctx as f64) as u64)
+        .and_then(kv_base_per_token)
+        .map(|base| (base * defaults.kv_bytes_per_value * effective_ctx as f64) as u64)
         .unwrap_or(0);
 
-    let quant_quality = quant_quality_score(&quantization);
+    let quant_quality = quant_quality_with_qat(&quantization, is_qat_name(&file_path));
 
     log_info(
         &app,
         "hf_browser",
         format!(
-            "local runability: path={} size={} quant={} RAM={} VRAM={}",
-            file_path, file_size, quantization, available_ram, available_vram
+            "local runability: path={} size={} quant={} RAM={} VRAM={} sidecar_reserve={} supports_gpu_offload={}",
+            file_path,
+            file_size,
+            quantization,
+            available_ram,
+            available_vram,
+            sidecar_reserve_bytes,
+            supports_gpu_offload
         ),
     );
 
+    let active_ratio = meta.as_ref().map(active_weight_ratio).unwrap_or(1.0);
+    let estimated_resident_size =
+        effective_model_size(file_size, meta.as_ref()).saturating_add(sidecar_reserve_bytes);
     let (score, fits_in_ram, fits_in_vram, memory_score, gpu_score, kv_score, gpu_mode) =
         score_configuration(
-            file_size,
+            estimated_resident_size,
             quant_quality,
             kv_8k,
+            available_ram,
             total_available,
             available_vram,
+            active_ratio,
         );
 
     Ok(LocalRunabilityResult {
@@ -2319,6 +3146,7 @@ pub async fn hf_get_recommendation_data(
         return Ok(RecommendationData {
             available_ram: 0,
             available_vram: 0,
+            supports_gpu_offload: false,
             unified_memory: false,
             total_available: 0,
             kv_base_per_token: None,
@@ -2342,12 +3170,21 @@ pub async fn hf_get_recommendation_data(
 
     let meta = fetch_gguf_meta(&app, &model_id, &files).await;
     let available_ram = crate::llama_cpp::available_memory_bytes().unwrap_or(0);
-    let available_vram = crate::llama_cpp::available_vram_bytes().unwrap_or(0);
+    let supports_gpu_offload = crate::llama_cpp::supports_gpu_offload();
+    let available_vram = if supports_gpu_offload {
+        crate::llama_cpp::available_vram_bytes().unwrap_or(0)
+    } else {
+        0
+    };
 
+    let defaults = llama_runtime_defaults(&app);
     Ok(build_recommendation(
         &files,
+        &model_id,
         meta.as_ref(),
         available_ram,
         available_vram,
+        supports_gpu_offload,
+        defaults.context_length,
     ))
 }

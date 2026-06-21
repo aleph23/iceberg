@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{extract_image_data_urls, extract_text_content, parse_data_url, ProviderAdapter};
+use super::{
+    extract_image_data_urls, extract_text_content, parse_data_url,
+    visible_chat_system_instruction_text, ProviderAdapter,
+};
 use crate::chat_manager::tooling::{anthropic_tool_choice, anthropic_tools, ToolConfig};
 
 pub struct AnthropicAdapter;
@@ -121,6 +124,16 @@ impl ProviderAdapter for AnthropicAdapter {
             let image_urls = extract_image_data_urls(msg.get("content"));
 
             if role == "system" || role == "developer" {
+                if let Some(visible_instruction) = visible_chat_system_instruction_text(msg) {
+                    msgs.push(json!({
+                        "role": "user",
+                        "content": [{
+                            "type": "text",
+                            "text": visible_instruction,
+                        }],
+                    }));
+                    continue;
+                }
                 if let Some(content_text) = content_text.filter(|text| !text.is_empty()) {
                     system_parts.push(content_text);
                 }
@@ -243,6 +256,9 @@ impl ProviderAdapter for AnthropicAdapter {
                             .map(|s| s.to_string()),
                         description: None,
                         context_length: None, // Anthropic doesn't explicitly send context_length in this list usually
+                        input_modalities: None,
+                        output_modalities: None,
+                        supported_endpoints: None,
                         input_price: None,
                         output_price: None,
                     });

@@ -93,7 +93,14 @@ pub async fn get_remote_models(
     let api_key = credential.api_key.as_deref().unwrap_or("");
     let headers = adapter.headers(api_key, None);
 
-    let client = reqwest::Client::new();
+    let client = crate::transport::build_client(
+        &app,
+        None,
+        false,
+        Some(&credential.provider_id),
+        Some(&url),
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut req_builder = client.get(&url);
 
     for (k, v) in headers {
@@ -202,6 +209,9 @@ fn parse_custom_models_list(config: Option<&Value>, payload: &Value) -> Option<V
             display_name,
             description,
             context_length,
+            input_modalities: None,
+            output_modalities: None,
+            supported_endpoints: None,
             input_price: None,
             output_price: None,
         });

@@ -1,8 +1,10 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, ZoomIn, ZoomOut, Check, RotateCcw } from "lucide-react";
 import { cn, typography, radius, interactive, shadows } from "../../design-tokens";
 import { useI18n } from "../../../core/i18n/context";
+import type { AvatarCrop } from "../../../core/storage/schemas";
 
 interface Position {
   x: number;
@@ -13,13 +15,22 @@ interface AvatarPositionModalProps {
   isOpen: boolean;
   onClose: () => void;
   imageSrc: string;
-  onConfirm: (roundImageData: string) => void;
+  shape?: "circle" | "banner";
+  onConfirm: (result: {
+    baseImageData: string;
+    shapeImageData: string;
+    crop: AvatarCrop;
+  }) => void;
 }
+
+const GUIDE_CENTER = 50;
+const GUIDE_RADIUS = 49;
 
 export function AvatarPositionModal({
   isOpen,
   onClose,
   imageSrc,
+  shape = "circle",
   onConfirm,
 }: AvatarPositionModalProps) {
   const { t } = useI18n();
@@ -48,13 +59,67 @@ export function AvatarPositionModal({
     };
   }, []);
 
+  // Smallest scale at which the image still fully covers the cropper container.
+  // Zooming below this would leave transparent pixels in the saved canvas — those
+  // show as empty/dark areas on the displayed card.
+  const computeCoverScale = useCallback((imgWidth: number, imgHeight: number) => {
+    if (!containerRef.current || !imgWidth || !imgHeight) return 0.02;
+    const containerRect = containerRef.current.getBoundingClientRect();
+    if (!containerRect.width || !containerRect.height) return 0.02;
+    return Math.max(containerRect.width / imgWidth, containerRect.height / imgHeight);
+  }, []);
+
+  // Constrain (x, y) so the scaled image still fully covers the cropper container.
+  const clampPosition = useCallback(
+    (x: number, y: number, s: number, imgWidth: number, imgHeight: number) => {
+      if (!containerRef.current) return { x, y };
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const scaledWidth = imgWidth * s;
+      const scaledHeight = imgHeight * s;
+      // image left must be <= 0, image right (x + scaledWidth) must be >= containerWidth
+      const maxX = 0;
+      const minX = containerRect.width - scaledWidth;
+      const maxY = 0;
+      const minY = containerRect.height - scaledHeight;
+      // If image is somehow smaller than the container (shouldn't happen above cover-scale),
+      // fall back to center to avoid NaN ranges.
+      const clampedX =
+        scaledWidth >= containerRect.width
+          ? Math.min(maxX, Math.max(minX, x))
+          : (containerRect.width - scaledWidth) / 2;
+      const clampedY =
+        scaledHeight >= containerRect.height
+          ? Math.min(maxY, Math.max(minY, y))
+          : (containerRect.height - scaledHeight) / 2;
+      return { x: clampedX, y: clampedY };
+    },
+    [],
+  );
+
   const applyInitialCrop = useCallback(
     (imgWidth: number, imgHeight: number) => {
       if (!containerRef.current) return;
+      if (!imgWidth || !imgHeight) return;
 
-      const centered = centerImage(imgWidth, imgHeight, 1);
+      const containerRect = containerRef.current.getBoundingClientRect();
+      if (!containerRect.width || !containerRect.height) return;
+
+      // Compute "cover" fit: smallest scale such that the image fully covers
+      // the cropper container. Matches how `object-cover` would frame the image,
+      // so the cropper opens with the same useful framing as the bare avatar.
+      const coverScale = Math.max(
+        containerRect.width / imgWidth,
+        containerRect.height / imgHeight,
+      );
+
+      // Start a touch zoomed in beyond cover-fit so faces are more prominent in
+      // typical full-body source photos. User can always zoom out to cover-fit.
+      const initialScale = Math.min(coverScale * 1.3, 4);
+
+      const centered = centerImage(imgWidth, imgHeight, initialScale);
+      setScale(initialScale);
       setPosition(centered);
-      setZoomInput("100");
+      setZoomInput((initialScale * 100).toFixed(2).replace(/\.?0+$/, ""));
     },
     [centerImage],
   );
@@ -83,6 +148,9 @@ export function AvatarPositionModal({
     (newScale: number) => {
       if (!containerRef.current || !imageSize) return;
 
+      const minScale = computeCoverScale(imageSize.width, imageSize.height);
+      const clampedScale = Math.min(Math.max(newScale, minScale), 4);
+
       const containerRect = containerRef.current.getBoundingClientRect();
       const containerCenterX = containerRect.width / 2;
       const containerCenterY = containerRect.height / 2;
@@ -90,13 +158,14 @@ export function AvatarPositionModal({
       const imageCenterX = (containerCenterX - position.x) / scale;
       const imageCenterY = (containerCenterY - position.y) / scale;
 
-      const newX = containerCenterX - imageCenterX * newScale;
-      const newY = containerCenterY - imageCenterY * newScale;
+      const newX = containerCenterX - imageCenterX * clampedScale;
+      const newY = containerCenterY - imageCenterY * clampedScale;
 
-      setScale(newScale);
-      setPosition({ x: newX, y: newY });
+      const clamped = clampPosition(newX, newY, clampedScale, imageSize.width, imageSize.height);
+      setScale(clampedScale);
+      setPosition(clamped);
     },
-    [scale, position, imageSize],
+    [scale, position, imageSize, computeCoverScale, clampPosition],
   );
 
   const handleZoomIn = useCallback(() => {
@@ -105,7 +174,7 @@ export function AvatarPositionModal({
   }, [scale, zoomToCenter]);
 
   const handleZoomOut = useCallback(() => {
-    const newScale = Math.max(scale - 0.1, 0.1);
+    const newScale = scale - 0.1;
     zoomToCenter(newScale);
   }, [scale, zoomToCenter]);
 
@@ -116,11 +185,16 @@ export function AvatarPositionModal({
   }, [scale, isInputFocused]);
 
   const handleReset = useCallback(() => {
-    if (!imageSize) return;
-    const newScale = 1;
-    setScale(newScale);
-    setZoomInput("100");
-    const centered = centerImage(imageSize.width, imageSize.height, newScale);
+    if (!imageSize || !containerRef.current) return;
+    const containerRect = containerRef.current.getBoundingClientRect();
+    if (!containerRect.width || !containerRect.height) return;
+    const coverScale = Math.max(
+      containerRect.width / imageSize.width,
+      containerRect.height / imageSize.height,
+    );
+    setScale(coverScale);
+    setZoomInput((coverScale * 100).toFixed(2).replace(/\.?0+$/, ""));
+    const centered = centerImage(imageSize.width, imageSize.height, coverScale);
     setPosition(centered);
   }, [imageSize, centerImage]);
 
@@ -138,12 +212,20 @@ export function AvatarPositionModal({
   const handleDragMove = useCallback(
     (clientX: number, clientY: number) => {
       if (!isDragging) return;
-      setPosition({
-        x: clientX - dragStart.x,
-        y: clientY - dragStart.y,
-      });
+      if (!imageSize) {
+        setPosition({ x: clientX - dragStart.x, y: clientY - dragStart.y });
+        return;
+      }
+      const clamped = clampPosition(
+        clientX - dragStart.x,
+        clientY - dragStart.y,
+        scale,
+        imageSize.width,
+        imageSize.height,
+      );
+      setPosition(clamped);
     },
-    [isDragging, dragStart],
+    [isDragging, dragStart, imageSize, scale, clampPosition],
   );
 
   const handleDragEnd = useCallback(() => {
@@ -199,7 +281,8 @@ export function AvatarPositionModal({
 
         if (lastPinchDistance.current !== null) {
           const scaleDelta = (distance - lastPinchDistance.current) * 0.004;
-          const newScale = Math.min(Math.max(scale + scaleDelta, 0.1), 4);
+          const minScale = computeCoverScale(imageSize.width, imageSize.height);
+          const newScale = Math.min(Math.max(scale + scaleDelta, minScale), 4);
 
           const containerRect = containerRef.current.getBoundingClientRect();
           const containerCenterX = containerRect.width / 2;
@@ -209,13 +292,14 @@ export function AvatarPositionModal({
           const newX = containerCenterX - imageCenterX * newScale;
           const newY = containerCenterY - imageCenterY * newScale;
 
+          const clamped = clampPosition(newX, newY, newScale, imageSize.width, imageSize.height);
           setScale(newScale);
-          setPosition({ x: newX, y: newY });
+          setPosition(clamped);
         }
         lastPinchDistance.current = distance;
       }
     },
-    [handleDragMove, scale, position, imageSize],
+    [handleDragMove, scale, position, imageSize, computeCoverScale, clampPosition],
   );
 
   const handleTouchEnd = useCallback(() => {
@@ -229,7 +313,8 @@ export function AvatarPositionModal({
       if (!containerRef.current || !imageSize) return;
 
       const delta = e.deltaY > 0 ? -0.08 : 0.08;
-      const newScale = Math.min(Math.max(scale + delta, 0.1), 4);
+      const minScale = computeCoverScale(imageSize.width, imageSize.height);
+      const newScale = Math.min(Math.max(scale + delta, minScale), 4);
 
       const containerRect = containerRef.current.getBoundingClientRect();
       const containerCenterX = containerRect.width / 2;
@@ -239,10 +324,11 @@ export function AvatarPositionModal({
       const newX = containerCenterX - imageCenterX * newScale;
       const newY = containerCenterY - imageCenterY * newScale;
 
+      const clamped = clampPosition(newX, newY, newScale, imageSize.width, imageSize.height);
       setScale(newScale);
-      setPosition({ x: newX, y: newY });
+      setPosition(clamped);
     },
-    [scale, position, imageSize],
+    [scale, position, imageSize, computeCoverScale, clampPosition],
   );
 
   const handleZoomInput = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -263,7 +349,7 @@ export function AvatarPositionModal({
     let num = parseFloat(zoomInput);
     if (isNaN(num)) num = scale * 100;
 
-    const constrainedNum = Math.min(Math.max(num, 10), 400);
+    const constrainedNum = Math.min(Math.max(num, 2), 400);
     const newScale = constrainedNum / 100;
 
     zoomToCenter(newScale);
@@ -276,23 +362,20 @@ export function AvatarPositionModal({
     if (!containerRect.width || !containerRect.height) return;
     if (!imageSize.width || !imageSize.height) return;
 
-    const size = Math.min(containerRect.width, containerRect.height);
-    if (!size) return;
+    // Banner saves a square image (same shape as base avatar). The BannerCharacterCard
+    // object-covers it into its wide slot at display time, which preserves vertical
+    // headroom — matching the look you get when falling back to the base avatar.
+    const outputWidth = 1024;
+    const outputHeight = 1024;
+    const exportScale = outputWidth / containerRect.width;
+    const squareCanvas = document.createElement("canvas");
+    squareCanvas.width = outputWidth;
+    squareCanvas.height = outputHeight;
+    const squareCtx = squareCanvas.getContext("2d");
+    if (!squareCtx) return;
 
-    const outputSize = 512;
-    const exportScale = outputSize / size;
-    const canvas = document.createElement("canvas");
-    canvas.width = outputSize;
-    canvas.height = outputSize;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, outputSize, outputSize);
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(outputSize / 2, outputSize / 2, outputSize / 2, 0, Math.PI * 2);
-    ctx.clip();
-    ctx.setTransform(
+    squareCtx.clearRect(0, 0, outputWidth, outputHeight);
+    squareCtx.setTransform(
       scale * exportScale,
       0,
       0,
@@ -300,15 +383,41 @@ export function AvatarPositionModal({
       position.x * exportScale,
       position.y * exportScale,
     );
-    ctx.drawImage(imageRef.current, 0, 0);
-    ctx.restore();
+    squareCtx.drawImage(imageRef.current, 0, 0);
 
-    const roundImageData = canvas.toDataURL("image/png");
-    onConfirm(roundImageData);
+    const baseImageData = squareCanvas.toDataURL("image/png");
+    let shapeImageData = baseImageData;
+
+    if (shape === "circle") {
+      const roundCanvas = document.createElement("canvas");
+      roundCanvas.width = outputWidth;
+      roundCanvas.height = outputHeight;
+      const roundCtx = roundCanvas.getContext("2d");
+      if (!roundCtx) return;
+
+      roundCtx.clearRect(0, 0, outputWidth, outputHeight);
+      roundCtx.save();
+      roundCtx.beginPath();
+      roundCtx.arc(outputWidth / 2, outputHeight / 2, outputWidth / 2, 0, Math.PI * 2);
+      roundCtx.clip();
+      roundCtx.drawImage(squareCanvas, 0, 0);
+      roundCtx.restore();
+      shapeImageData = roundCanvas.toDataURL("image/png");
+    }
+
+    onConfirm({
+      baseImageData,
+      shapeImageData,
+      crop: {
+        x: position.x,
+        y: position.y,
+        scale,
+      },
+    });
     onClose();
-  }, [scale, position, onConfirm, onClose, imageSize]);
+  }, [scale, position, onConfirm, onClose, imageSize, shape]);
 
-  return (
+  return createPortal(
     <AnimatePresence>
       {isOpen && (
         <>
@@ -357,11 +466,12 @@ export function AvatarPositionModal({
                 {t("components.avatarPosition.instructions")}
               </p>
 
-              {/* Full image container (rectangular) */}
+              {/* Full image container */}
               <div
                 ref={containerRef}
                 className={cn(
-                  "relative mx-auto aspect-square w-full max-w-70 overflow-hidden",
+                  "relative mx-auto w-full max-w-70 overflow-hidden",
+                  "aspect-square",
                   radius.lg,
                   "cursor-move touch-none select-none",
                   "border border-white/10",
@@ -397,12 +507,14 @@ export function AvatarPositionModal({
                   draggable={false}
                 />
 
-                {/* Darkening overlay with circular cutout */}
+                {/* Darkening overlay — circular cutout for circle shape, none for banner (full square is captured) */}
                 <div
                   className="absolute inset-0 z-10 pointer-events-none"
                   style={{
                     background:
-                      "radial-gradient(circle closest-side, transparent 90%, rgba(0, 0, 0, 0.7) 90%)",
+                      shape === "banner"
+                        ? "transparent"
+                        : "radial-gradient(circle closest-side, transparent 98%, rgba(0, 0, 0, 0.7) 98%)",
                     WebkitBackdropFilter: "none",
                   }}
                 />
@@ -410,34 +522,88 @@ export function AvatarPositionModal({
                 {/* SVG for guides and border */}
                 <div className="absolute inset-0 z-20 pointer-events-none">
                   <svg className="h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    {/* Circle border */}
-                    <circle
-                      cx="50"
-                      cy="50"
-                      r="45"
-                      fill="none"
-                      stroke="rgba(52, 211, 153, 0.6)"
-                      strokeWidth="0.8"
-                    />
-                    {/* Rule of thirds grid inside circle */}
-                    <line
-                      x1="50"
-                      y1="5"
-                      x2="50"
-                      y2="95"
-                      stroke="rgba(255, 255, 255, 0.15)"
-                      strokeWidth="0.3"
-                    />
-                    <line
-                      x1="5"
-                      y1="50"
-                      x2="95"
-                      y2="50"
-                      stroke="rgba(255, 255, 255, 0.15)"
-                      strokeWidth="0.3"
-                    />
+                    {shape === "banner" ? (
+                      <>
+                        {/* Full square border — what gets saved */}
+                        <rect
+                          x="1"
+                          y="1"
+                          width="98"
+                          height="98"
+                          rx="2"
+                          fill="none"
+                          stroke="rgba(52, 211, 153, 0.55)"
+                          strokeWidth="0.6"
+                        />
+                        {/* Rule-of-thirds */}
+                        <line
+                          x1="33.33"
+                          y1="2"
+                          x2="33.33"
+                          y2="98"
+                          stroke="rgba(255, 255, 255, 0.12)"
+                          strokeWidth="0.25"
+                        />
+                        <line
+                          x1="66.66"
+                          y1="2"
+                          x2="66.66"
+                          y2="98"
+                          stroke="rgba(255, 255, 255, 0.12)"
+                          strokeWidth="0.25"
+                        />
+                        <line
+                          x1="2"
+                          y1="33.33"
+                          x2="98"
+                          y2="33.33"
+                          stroke="rgba(255, 255, 255, 0.12)"
+                          strokeWidth="0.25"
+                        />
+                        <line
+                          x1="2"
+                          y1="66.66"
+                          x2="98"
+                          y2="66.66"
+                          stroke="rgba(255, 255, 255, 0.12)"
+                          strokeWidth="0.25"
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <circle
+                          cx={GUIDE_CENTER}
+                          cy={GUIDE_CENTER}
+                          r={GUIDE_RADIUS}
+                          fill="none"
+                          stroke="rgba(52, 211, 153, 0.6)"
+                          strokeWidth="0.8"
+                        />
+                        <line
+                          x1={GUIDE_CENTER}
+                          y1={GUIDE_CENTER - GUIDE_RADIUS}
+                          x2={GUIDE_CENTER}
+                          y2={GUIDE_CENTER + GUIDE_RADIUS}
+                          stroke="rgba(255, 255, 255, 0.15)"
+                          strokeWidth="0.3"
+                        />
+                        <line
+                          x1={GUIDE_CENTER - GUIDE_RADIUS}
+                          y1={GUIDE_CENTER}
+                          x2={GUIDE_CENTER + GUIDE_RADIUS}
+                          y2={GUIDE_CENTER}
+                          stroke="rgba(255, 255, 255, 0.15)"
+                          strokeWidth="0.3"
+                        />
+                      </>
+                    )}
                     {/* Center point */}
-                    <circle cx="50" cy="50" r="1.5" fill="rgba(52, 211, 153, 0.5)" />
+                    <circle
+                      cx={GUIDE_CENTER}
+                      cy={GUIDE_CENTER}
+                      r="1.5"
+                      fill="rgba(52, 211, 153, 0.5)"
+                    />
                   </svg>
                 </div>
 
@@ -550,6 +716,7 @@ export function AvatarPositionModal({
           </motion.div>
         </>
       )}
-    </AnimatePresence>
+    </AnimatePresence>,
+    document.body,
   );
 }

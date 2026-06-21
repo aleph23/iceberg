@@ -7,11 +7,12 @@
 //! - Coordinating with the chat_manager for actual response generation
 //! - Full dynamic memory system support (decay, hot/cold, summarization, tool updates)
 
-mod selection;
+pub mod selection;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
@@ -61,7 +62,8 @@ use crate::chat_manager::tooling::{
 };
 use crate::chat_manager::types::{
     Character, DynamicMemorySettings, MemoryRetrievalStrategy, Model, Persona, PromptEntryChatMode,
-    PromptEntryPosition, PromptEntryRole, ProviderCredential, Settings, SystemPromptEntry,
+    PromptEntryInfoSource, PromptEntryPosition, PromptEntryRole, ProviderCredential, Settings,
+    SystemPromptEntry,
 };
 use crate::embedding;
 use crate::storage_manager::db::{now_ms, DbConnection, SwappablePool};
@@ -85,6 +87,72 @@ const ALLOWED_MEMORY_CATEGORIES: &[&str] = &[
     "other",
 ];
 const HARD_DELETE_CONFIDENCE_THRESHOLD: f32 = 0.7;
+const MEMORY_MIGRATION_EMBED_TIMEOUT_SECS: u64 = 90;
+
+fn dynamic_memory_summary_template_id(settings: &Settings) -> String {
+    settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| {
+            advanced
+                .dynamic_memory_summarizer_prompt_template_id
+                .clone()
+        })
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| APP_DYNAMIC_SUMMARY_TEMPLATE_ID.to_string())
+}
+
+fn dynamic_memory_manager_template_id(
+    settings: &Settings,
+    provider_cred: &ProviderCredential,
+    model: &Model,
+) -> String {
+    settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.dynamic_memory_manager_prompt_template_id.clone())
+        .filter(|id| !id.trim().is_empty())
+        .unwrap_or_else(|| {
+            if uses_local_dynamic_memory_model(provider_cred, model) {
+                APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID.to_string()
+            } else {
+                APP_DYNAMIC_MEMORY_TEMPLATE_ID.to_string()
+            }
+        })
+}
+
+fn resolve_group_dynamic_memory_summarisation_model_id(
+    app: &AppHandle,
+    settings: &Settings,
+) -> Result<String, String> {
+    if let Some(id) = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| advanced.summarisation_model_id.as_ref())
+        .filter(|id| !id.trim().is_empty())
+    {
+        return Ok(id.clone());
+    }
+
+    if let Some(id) = settings
+        .default_model_id
+        .as_ref()
+        .filter(|id| !id.trim().is_empty())
+    {
+        log_info(
+            app,
+            "group_dynamic_memory",
+            format!(
+                "summarisation model not set; falling back to app default model: {}",
+                id
+            ),
+        );
+        return Ok(id.clone());
+    }
+
+    Err("Summarisation model not configured".to_string())
+}
+
 fn max_hard_deletes_per_cycle(initial_count: usize, ratio: f32) -> usize {
     if initial_count == 0 {
         return 0;
@@ -252,6 +320,13 @@ fn emit_group_chat_error_status(app: &AppHandle, session_id: &str, message: &str
     emit_group_chat_status(app, session_id, "error", extra);
 }
 
+fn is_request_abort_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("aborted by user")
+        || normalized.contains("cancelled by user")
+        || normalized.contains("canceled by user")
+}
+
 struct AbortGuard<'a> {
     registry: &'a AbortRegistry,
     request_id: String,
@@ -396,6 +471,17 @@ fn normalize_llama_sampler_profile(value: &str) -> Option<String> {
     }
 }
 
+fn decode_llama_sequence_breaker(value: &str) -> String {
+    match value.trim() {
+        "\\n" => "\n".to_string(),
+        "\\r" => "\r".to_string(),
+        "\\t" => "\t".to_string(),
+        "\\\"" => "\"".to_string(),
+        "\\\\" => "\\".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn resolve_llama_sampler_profile(model: &Model, settings: &Settings) -> String {
     model
         .advanced_model_settings
@@ -417,6 +503,27 @@ fn resolve_llama_sampler_order(model: &Model, settings: &Settings) -> Option<Vec
         .as_ref()
         .and_then(|a| a.llama_sampler_order.clone())
         .or_else(|| settings.advanced_model_settings.llama_sampler_order.clone())
+}
+
+fn resolve_llama_dry_sequence_breakers(model: &Model, settings: &Settings) -> Option<Vec<String>> {
+    model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_dry_sequence_breakers.clone())
+        .or_else(|| {
+            settings
+                .advanced_model_settings
+                .llama_dry_sequence_breakers
+                .clone()
+        })
+        .map(|values| {
+            values
+                .into_iter()
+                .map(|value| decode_llama_sequence_breaker(&value))
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
 }
 
 fn llama_sampler_profile_defaults(profile: &str) -> LlamaSamplerProfileDefaults {
@@ -537,6 +644,14 @@ fn build_llama_extra_fields(model: &Model, settings: &Settings) -> Option<HashMa
     if let Some(v) = model
         .advanced_model_settings
         .as_ref()
+        .and_then(|a| a.llama_swa_full)
+        .or(settings.advanced_model_settings.llama_swa_full)
+    {
+        extra.insert("llamaSwaFull".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
         .and_then(|a| a.llama_batch_size)
         .or(settings.advanced_model_settings.llama_batch_size)
         .filter(|v| *v > 0)
@@ -596,6 +711,38 @@ fn build_llama_extra_fields(model: &Model, settings: &Settings) -> Option<HashMa
     if let Some(v) = model
         .advanced_model_settings
         .as_ref()
+        .and_then(|a| a.llama_mtp_enabled)
+        .or(settings.advanced_model_settings.llama_mtp_enabled)
+    {
+        extra.insert("llamaMtpEnabled".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_mtp_draft_tokens)
+        .or(settings.advanced_model_settings.llama_mtp_draft_tokens)
+        .filter(|v| *v > 0)
+    {
+        extra.insert("llamaMtpDraftTokens".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_mtp_model_path.clone())
+        .or_else(|| {
+            settings
+                .advanced_model_settings
+                .llama_mtp_model_path
+                .clone()
+        })
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+    {
+        extra.insert("llamaMtpModelPath".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
         .and_then(|a| a.llama_chat_template_preset.clone())
         .or_else(|| {
             settings
@@ -638,6 +785,41 @@ fn build_llama_extra_fields(model: &Model, settings: &Settings) -> Option<HashMa
     }
     if let Some(v) = explicit_typical_p.or(sampler_defaults.typical_p) {
         extra.insert("llamaTypicalP".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_dry_multiplier)
+        .or(settings.advanced_model_settings.llama_dry_multiplier)
+    {
+        extra.insert("llamaDryMultiplier".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_dry_base)
+        .or(settings.advanced_model_settings.llama_dry_base)
+    {
+        extra.insert("llamaDryBase".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_dry_allowed_length)
+        .or(settings.advanced_model_settings.llama_dry_allowed_length)
+    {
+        extra.insert("llamaDryAllowedLength".to_string(), json!(v));
+    }
+    if let Some(v) = model
+        .advanced_model_settings
+        .as_ref()
+        .and_then(|a| a.llama_dry_penalty_last_n)
+        .or(settings.advanced_model_settings.llama_dry_penalty_last_n)
+    {
+        extra.insert("llamaDryPenaltyLastN".to_string(), json!(v));
+    }
+    if let Some(v) = resolve_llama_dry_sequence_breakers(model, settings) {
+        extra.insert("llamaDrySequenceBreakers".to_string(), json!(v));
     }
 
     if extra.is_empty() {
@@ -829,7 +1011,7 @@ async fn record_group_usage(
         model_id: model.id.clone(),
         model_name: model.name.clone(),
         provider_id: provider_cred.provider_id.clone(),
-        provider_label: provider_cred.provider_id.clone(),
+        provider_label: provider_cred.label.clone(),
         operation_type,
         finish_reason: usage_info
             .finish_reason
@@ -919,7 +1101,7 @@ async fn record_decision_maker_usage(
         model_id: model.id.clone(),
         model_name: model.name.clone(),
         provider_id: provider_cred.provider_id.clone(),
-        provider_label: provider_cred.provider_id.clone(),
+        provider_label: provider_cred.label.clone(),
         operation_type: UsageOperationType::GroupChatDecisionMaker,
         finish_reason: usage_info
             .finish_reason
@@ -1086,12 +1268,24 @@ fn cancel_group_dynamic_memory_cycle(
     session.memory_status = "idle".to_string();
     session.memory_error = None;
     session.updated_at = crate::utils::now_millis()? as i64;
+
+    // Persist embeddings via the normalised table; the legacy JSON column is
+    // cleared by `group_session_update_memories_internal` below since we pass
+    // an empty slice.
+    crate::storage_manager::memory_embeddings::replace_all_app(
+        app,
+        &session.id,
+        crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+        &session.memory_embeddings,
+    )?;
+
     let conn = pool.get_connection()?;
+    let empty: Vec<MemoryEmbedding> = Vec::new();
     group_session_update_memories_internal(
         &conn,
         &session.id,
         &session.memories,
-        &session.memory_embeddings,
+        &empty,
         Some(&session.memory_summary),
         session.memory_summary_token_count,
         &session.memory_tool_events,
@@ -1162,6 +1356,7 @@ fn fetch_group_conversation_messages_range(
                 is_pinned: r.get::<_, i64>(7)? != 0,
                 attachments: Vec::new(),
                 used_lorebook_entries: Vec::new(),
+                memory_refs: Vec::new(),
                 reasoning: None,
                 selection_reasoning: None,
                 model_id: None,
@@ -1456,7 +1651,9 @@ fn requested_parallel_tool_calls(
     extra_body_fields: Option<&HashMap<String, Value>>,
 ) -> Option<bool> {
     if provider_cred.provider_id != "llamacpp"
-        || !tool_config.map(|cfg| !cfg.tools.is_empty()).unwrap_or(false)
+        || !tool_config
+            .map(|cfg| !cfg.tools.is_empty())
+            .unwrap_or(false)
     {
         return None;
     }
@@ -1514,6 +1711,7 @@ async fn send_dynamic_memory_request(
         return Err("Request was cancelled by user".to_string());
     }
     let extra_body_fields = sanitize_dynamic_memory_extra_body_fields(
+        &provider_cred.provider_id,
         extra_body_fields,
         overwrite_llama_sampler_config,
     );
@@ -1766,10 +1964,11 @@ async fn send_dynamic_memory_request(
 }
 
 fn sanitize_dynamic_memory_extra_body_fields(
+    provider_id: &str,
     extra_body_fields: Option<HashMap<String, Value>>,
     overwrite_llama_sampler_config: bool,
 ) -> Option<HashMap<String, Value>> {
-    if !overwrite_llama_sampler_config {
+    if !overwrite_llama_sampler_config || provider_id != "llamacpp" {
         return extra_body_fields;
     }
     let mut extra = extra_body_fields.unwrap_or_default();
@@ -1778,6 +1977,11 @@ fn sanitize_dynamic_memory_extra_body_fields(
         "llamaSamplerOrder",
         "llamaMinP",
         "llamaTypicalP",
+        "llamaDryMultiplier",
+        "llamaDryBase",
+        "llamaDryAllowedLength",
+        "llamaDryPenaltyLastN",
+        "llamaDrySequenceBreakers",
         "llamaDisableSamplerProfileDefaults",
         "top_k",
         "frequency_penalty",
@@ -1799,6 +2003,7 @@ fn sanitize_dynamic_memory_extra_body_fields(
             "top_k",
             "top_p",
             "temp",
+            "dry",
             "min_p",
             "typical"
         ]),
@@ -1808,6 +2013,7 @@ fn sanitize_dynamic_memory_extra_body_fields(
     extra.insert("presence_penalty".to_string(), json!(0.0));
     extra.insert("min_p".to_string(), json!(0.0));
     extra.insert("typical_p".to_string(), json!(0.0));
+    extra.insert("llamaDryMultiplier".to_string(), json!(0.0));
 
     if extra.is_empty() {
         None
@@ -1820,10 +2026,155 @@ fn sanitize_dynamic_memory_extra_body_fields(
 // Memory Retrieval
 // ============================================================================
 
+fn emit_memory_vector_migration_toast(
+    app: &AppHandle,
+    toast_id: &str,
+    title: &str,
+    subtitle: &str,
+    progress: f32,
+) {
+    let _ = app.emit(
+        "app://toast",
+        json!({
+            "id": toast_id,
+            "kind": "modelLoad",
+            "title": title,
+            "subtitle": subtitle,
+            "modelName": "Memory embeddings",
+            "progress": progress,
+        }),
+    );
+}
+
+fn dismiss_memory_vector_migration_toast(app: &AppHandle, toast_id: &str) {
+    let _ = app.emit(
+        "app://toast",
+        json!({
+            "id": toast_id,
+            "dismiss": true,
+        }),
+    );
+}
+
+fn memory_embedding_requires_migration(
+    memory: &MemoryEmbedding,
+    target_source_version: &str,
+    target_dimensions: usize,
+) -> bool {
+    if memory.embedding.is_empty() || memory.embedding.len() != target_dimensions {
+        return true;
+    }
+
+    if memory.embedding_dimensions != Some(target_dimensions) {
+        return true;
+    }
+
+    match memory.embedding_source_version.as_deref() {
+        Some(version) => version != target_source_version,
+        None => !(target_source_version == "v3" && target_dimensions == 512),
+    }
+}
+
+async fn migrate_group_memory_embeddings_if_needed(
+    app: &AppHandle,
+    session: &mut GroupSession,
+    pool: &State<'_, SwappablePool>,
+) -> Result<(), String> {
+    if session.memory_embeddings.is_empty() {
+        return Ok(());
+    }
+
+    let (target_source_version, target_dimensions) =
+        embedding::resolve_active_embedding_signature(app)?;
+    let needs_migration = session.memory_embeddings.iter().any(|memory| {
+        memory_embedding_requires_migration(memory, &target_source_version, target_dimensions)
+    });
+    if !needs_migration {
+        return Ok(());
+    }
+
+    let toast_id = format!("group-memory-vector-migration:{}", session.id);
+    let total = session.memory_embeddings.len().max(1);
+    emit_memory_vector_migration_toast(
+        app,
+        &toast_id,
+        "Migrating memory vectors",
+        "Updating saved memories for the current memory model. Messages may be delayed briefly.",
+        0.0,
+    );
+
+    let migration_result: Result<(), String> = async {
+        for (idx, memory) in session.memory_embeddings.iter_mut().enumerate() {
+            if memory_embedding_requires_migration(
+                memory,
+                &target_source_version,
+                target_dimensions,
+            ) {
+                memory.embedding = tokio::time::timeout(
+                    Duration::from_secs(MEMORY_MIGRATION_EMBED_TIMEOUT_SECS),
+                    embedding::compute_embedding(app.clone(), memory.text.clone()),
+                )
+                .await
+                .map_err(|_| {
+                    crate::utils::err_msg(
+                        module_path!(),
+                        line!(),
+                        format!(
+                            "Timed out after {}s while re-embedding saved memory {}/{}",
+                            MEMORY_MIGRATION_EMBED_TIMEOUT_SECS,
+                            idx + 1,
+                            total
+                        ),
+                    )
+                })??;
+                memory.embedding_source_version = Some(target_source_version.clone());
+                memory.embedding_dimensions = Some(target_dimensions);
+            }
+
+            emit_memory_vector_migration_toast(
+                app,
+                &toast_id,
+                "Migrating memory vectors",
+                &format!("Re-embedded {}/{} saved memories.", idx + 1, total),
+                (idx + 1) as f32 / total as f32,
+            );
+        }
+
+        save_group_session_memories(app, session, pool)?;
+        Ok(())
+    }
+    .await;
+
+    dismiss_memory_vector_migration_toast(app, &toast_id);
+
+    if let Err(err) = migration_result {
+        let _ = app.emit(
+            "app://toast",
+            json!({
+                "variant": "error",
+                "title": "Memory migration failed",
+                "description": err.clone(),
+            }),
+        );
+        return Err(err);
+    }
+
+    let _ = app.emit(
+        "app://toast",
+        json!({
+            "variant": "success",
+            "title": "Memory migration complete",
+            "description": "Saved memory vectors are now using the current memory model.",
+        }),
+    );
+    Ok(())
+}
+
 /// Select relevant memories from a group session using semantic search
 async fn select_relevant_memories(
     app: &AppHandle,
-    session: &GroupSession,
+    session: &mut GroupSession,
+    pool: &State<'_, SwappablePool>,
     query: &str,
     limit: usize,
     min_similarity: f32,
@@ -1831,6 +2182,14 @@ async fn select_relevant_memories(
 ) -> Vec<MemoryEmbedding> {
     if query.is_empty() || session.memory_embeddings.is_empty() {
         return Vec::new();
+    }
+
+    if let Err(err) = migrate_group_memory_embeddings_if_needed(app, session, pool).await {
+        log_warn(
+            app,
+            "group_memory_retrieval",
+            format!("memory vector migration failed: {}", err),
+        );
     }
 
     let query_embedding = match embedding::compute_embedding(app.clone(), query.to_string()).await {
@@ -1857,7 +2216,13 @@ async fn select_relevant_memories(
         }
         return cosine_indices
             .into_iter()
-            .filter_map(|(idx, _score)| session.memory_embeddings.get(idx).cloned())
+            .filter_map(|(idx, score)| {
+                session.memory_embeddings.get(idx).map(|mem| {
+                    let mut cloned = mem.clone();
+                    cloned.match_score = Some(score);
+                    cloned
+                })
+            })
             .collect();
     }
 
@@ -1873,9 +2238,11 @@ async fn select_relevant_memories(
     let mut selected: HashSet<usize> = HashSet::new();
     let mut results: Vec<MemoryEmbedding> = Vec::new();
 
-    for (idx, _score) in &cosine_indices {
+    for (idx, score) in &cosine_indices {
         if let Some(mem) = session.memory_embeddings.get(*idx) {
-            results.push(mem.clone());
+            let mut cloned = mem.clone();
+            cloned.match_score = Some(*score);
+            results.push(cloned);
             selected.insert(*idx);
         }
     }
@@ -1922,13 +2289,15 @@ async fn select_relevant_memories(
             limit,
             min_similarity,
         );
-        for (idx, _score) in extra_indices {
+        for (idx, score) in extra_indices {
             if results.len() >= limit {
                 break;
             }
             if !selected.contains(&idx) {
                 if let Some(mem) = session.memory_embeddings.get(idx) {
-                    results.push(mem.clone());
+                    let mut cloned = mem.clone();
+                    cloned.match_score = Some(score);
+                    results.push(cloned);
                     selected.insert(idx);
                 }
             }
@@ -1959,7 +2328,7 @@ async fn select_relevant_memories(
     results
 }
 
-/// Format memories as a string block for injection into prompts
+// Format memories as a string block for injection into prompts
 
 // ============================================================================
 // Dynamic Memory Cycle
@@ -2032,7 +2401,7 @@ async fn process_group_dynamic_memory_cycle(
 
     // Check if enough new messages since last run (match normal chat behavior)
     // Use last_window_end from memory_tool_events to track progress
-    let (last_window_end, cursor_rewound) = resolve_last_valid_group_window_end(&*conn, session)?;
+    let (last_window_end, cursor_rewound) = resolve_last_valid_group_window_end(&conn, session)?;
 
     log_info(
         app,
@@ -2074,7 +2443,7 @@ async fn process_group_dynamic_memory_cycle(
     let mut window_start = if cursor_rewound { 0 } else { last_window_end };
     let mut window_end = total_convo;
     let convo_window = match fetch_group_conversation_messages_range(
-        &*conn,
+        &conn,
         &session.id,
         window_start,
         window_end,
@@ -2153,49 +2522,25 @@ async fn process_group_dynamic_memory_cycle(
         );
     }
 
-    // Get summarisation model
-    let Some(advanced) = settings.advanced_settings.as_ref() else {
-        record_group_dynamic_memory_error(
-            app,
-            session,
-            pool,
-            "Advanced settings missing",
-            "settings",
-            window_start,
-            window_end,
-            &window_message_ids,
-            None,
-            None,
-        );
-        return Err(crate::utils::err_msg(
-            module_path!(),
-            line!(),
-            "Advanced settings missing",
-        ));
-    };
-
-    let summarisation_model_id = match advanced.summarisation_model_id.as_ref() {
-        Some(id) => id.clone(),
-        None => {
-            record_group_dynamic_memory_error(
-                app,
-                session,
-                pool,
-                "Summarisation model not configured",
-                "summary_model",
-                window_start,
-                window_end,
-                &window_message_ids,
-                None,
-                None,
-            );
-            return Err(crate::utils::err_msg(
-                module_path!(),
-                line!(),
-                "Summarisation model not configured",
-            ));
-        }
-    };
+    let summarisation_model_id =
+        match resolve_group_dynamic_memory_summarisation_model_id(app, settings) {
+            Ok(id) => id,
+            Err(err) => {
+                record_group_dynamic_memory_error(
+                    app,
+                    session,
+                    pool,
+                    &err,
+                    "summary_model",
+                    window_start,
+                    window_end,
+                    &window_message_ids,
+                    None,
+                    None,
+                );
+                return Err(crate::utils::err_msg(module_path!(), line!(), err));
+            }
+        };
 
     let (summary_model, summary_provider) =
         match find_model_with_credential(settings, &summarisation_model_id) {
@@ -2279,7 +2624,7 @@ async fn process_group_dynamic_memory_cycle(
         json!({ "sessionId": session.id, "step": 1, "totalSteps": 4, "label": "Summarizing conversation" }),
     );
 
-    ensure_group_dynamic_memory_not_cancelled(app, session, &*pool, &cancel_token)?;
+    ensure_group_dynamic_memory_not_cancelled(app, session, pool, &cancel_token)?;
 
     let prior_summary = if cursor_rewound || session.memory_summary.is_empty() {
         None
@@ -2322,7 +2667,7 @@ async fn process_group_dynamic_memory_cycle(
                     let _ =
                         finish_local_dynamic_memory_cycle(app, summary_model, &session.id).await;
                 }
-                return cancel_group_dynamic_memory_cycle(app, session, &*pool, &err);
+                return cancel_group_dynamic_memory_cycle(app, session, pool, &err);
             }
             log_error(
                 app,
@@ -2342,7 +2687,11 @@ async fn process_group_dynamic_memory_cycle(
                 window_end,
                 &window_message_ids,
                 prior_summary.as_deref(),
-                if debug_capture_enabled { Some(&debug_steps) } else { None },
+                if debug_capture_enabled {
+                    Some(&debug_steps)
+                } else {
+                    None
+                },
             );
             return Ok(());
         }
@@ -2362,7 +2711,7 @@ async fn process_group_dynamic_memory_cycle(
         json!({ "sessionId": session.id, "step": 2, "totalSteps": 4, "label": "Analyzing memories" }),
     );
 
-    ensure_group_dynamic_memory_not_cancelled(app, session, &*pool, &cancel_token)?;
+    ensure_group_dynamic_memory_not_cancelled(app, session, pool, &cancel_token)?;
 
     let tools_request_id = group_dynamic_memory_request_id(&session.id, "tools");
     run_guard.set_active_request_id(Some(tools_request_id.clone()));
@@ -2392,7 +2741,7 @@ async fn process_group_dynamic_memory_cycle(
                     let _ =
                         finish_local_dynamic_memory_cycle(app, summary_model, &session.id).await;
                 }
-                return cancel_group_dynamic_memory_cycle(app, session, &*pool, &err);
+                return cancel_group_dynamic_memory_cycle(app, session, pool, &err);
             }
             log_error(
                 app,
@@ -2412,7 +2761,11 @@ async fn process_group_dynamic_memory_cycle(
                 window_end,
                 &window_message_ids,
                 prior_summary.as_deref(),
-                if debug_capture_enabled { Some(&debug_steps) } else { None },
+                if debug_capture_enabled {
+                    Some(&debug_steps)
+                } else {
+                    None
+                },
             );
             return Ok(());
         }
@@ -2433,7 +2786,7 @@ async fn process_group_dynamic_memory_cycle(
         "group-dynamic-memory:progress",
         json!({ "sessionId": session.id, "step": 3, "totalSteps": 4, "label": "Applying changes" }),
     );
-    ensure_group_dynamic_memory_not_cancelled(app, session, &*pool, &cancel_token)?;
+    ensure_group_dynamic_memory_not_cancelled(app, session, pool, &cancel_token)?;
     session.memory_summary = summary;
     session.memory_summary_token_count =
         crate::embedding::tokenizer::count_tokens(app, &session.memory_summary).unwrap_or(0) as i32;
@@ -2465,13 +2818,20 @@ async fn process_group_dynamic_memory_cycle(
     // Enforce max entries
     let max_entries = dynamic_settings.max_entries.max(1) as usize;
     let trimmed = trim_memories_to_max(&mut session.memory_embeddings, max_entries);
-    if trimmed > 0 {
+    if !trimmed.is_empty() {
+        let _ = crate::storage_manager::memory_embeddings::delete_many_app(
+            app,
+            &session.id,
+            crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+            &trimmed,
+        );
         log_info(
             app,
             "group_dynamic_memory",
             format!(
                 "Trimmed {} memories to enforce max_entries={}",
-                trimmed, max_entries
+                trimmed.len(),
+                max_entries
             ),
         );
     }
@@ -2568,7 +2928,10 @@ async fn summarize_group_messages(
     let mut messages_for_api = Vec::new();
     let system_role = crate::chat_manager::request_builder::system_role_for(provider_cred);
 
-    let summary_template = prompts::get_template(app, APP_DYNAMIC_SUMMARY_TEMPLATE_ID)
+    let summary_template = prompts::get_template(
+        app,
+        &dynamic_memory_summary_template_id(settings),
+    )
         .ok()
         .flatten()
         .map(|t| t.content)
@@ -2614,13 +2977,13 @@ async fn summarize_group_messages(
         .max_output_tokens
         .unwrap_or(2048);
 
-    let context_length = resolve_context_length(model, &settings);
+    let context_length = resolve_context_length(model, settings);
     let extra_body_fields = if provider_cred.provider_id == "llamacpp" {
-        build_llama_extra_fields(model, &settings)
+        build_llama_extra_fields(model, settings)
     } else if provider_cred.provider_id == "ollama" {
         build_ollama_extra_fields(
             model,
-            &settings,
+            settings,
             context_length,
             max_tokens,
             0.2,
@@ -2851,13 +3214,9 @@ async fn run_group_memory_tool_update(
     let mut messages_for_api = Vec::new();
     let system_role = crate::chat_manager::request_builder::system_role_for(provider_cred);
 
-    let template_id = if uses_local_dynamic_memory_model(provider_cred, model) {
-        APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID
-    } else {
-        APP_DYNAMIC_MEMORY_TEMPLATE_ID
-    };
+    let template_id = dynamic_memory_manager_template_id(settings, provider_cred, model);
 
-    let base_template = prompts::get_template(app, template_id)
+    let base_template = prompts::get_template(app, &template_id)
         .ok()
         .flatten()
         .map(|t| t.content)
@@ -2909,13 +3268,13 @@ async fn run_group_memory_tool_update(
         .max_output_tokens
         .unwrap_or(2048);
 
-    let context_length = resolve_context_length(model, &settings);
+    let context_length = resolve_context_length(model, settings);
     let extra_body_fields = if provider_cred.provider_id == "llamacpp" {
-        build_llama_extra_fields(model, &settings)
+        build_llama_extra_fields(model, settings)
     } else if provider_cred.provider_id == "ollama" {
         build_ollama_extra_fields(
             model,
-            &settings,
+            settings,
             context_length,
             max_tokens,
             0.2,
@@ -3016,7 +3375,8 @@ async fn run_group_memory_tool_update(
                 );
                 if !api_response.ok {
                     let fallback = format!("Provider returned status {}", api_response.status);
-                    let err_message = extract_error_message(api_response.data()).unwrap_or(fallback);
+                    let err_message =
+                        extract_error_message(api_response.data()).unwrap_or(fallback);
                     log_warn(
                         app,
                         "group_dynamic_memory",
@@ -3088,7 +3448,8 @@ async fn run_group_memory_tool_update(
                         "text_fallback_after_http_error",
                     )
                 } else {
-                    let tool_calls = parse_tool_calls(&provider_cred.provider_id, api_response.data());
+                    let tool_calls =
+                        parse_tool_calls(&provider_cred.provider_id, api_response.data());
                     if !tool_calls.is_empty() {
                         (tool_calls, "provider_tool_calls")
                     } else {
@@ -3143,9 +3504,10 @@ async fn run_group_memory_tool_update(
                         );
 
                         if !api_response.ok {
-                            let fallback = format!("Provider returned status {}", api_response.status);
-                            let err_message =
-                                extract_error_message(api_response.data()).unwrap_or(fallback.clone());
+                            let fallback =
+                                format!("Provider returned status {}", api_response.status);
+                            let err_message = extract_error_message(api_response.data())
+                                .unwrap_or(fallback.clone());
                             return Err(if err_message == fallback {
                                 err_message
                             } else {
@@ -3153,11 +3515,12 @@ async fn run_group_memory_tool_update(
                             });
                         }
 
-                        let text = extract_text(api_response.data(), Some(&provider_cred.provider_id))
-                            .ok_or_else(|| {
-                                "memory fallback returned neither tool calls nor text output"
-                                    .to_string()
-                            })?;
+                        let text =
+                            extract_text(api_response.data(), Some(&provider_cred.provider_id))
+                                .ok_or_else(|| {
+                                    "memory fallback returned neither tool calls nor text output"
+                                        .to_string()
+                                })?;
                         (
                             parse_memory_operations_from_text(&text, fallback_format)?,
                             "text_fallback_after_empty_tool_calls",
@@ -3286,244 +3649,268 @@ async fn run_group_memory_tool_update(
         let mut saw_done = false;
 
         for call in calls {
-        match call.name.as_str() {
-            "create_memory" => {
-                if let Some(raw_text) = extract_text_argument(&call) {
-                    let text = match validate_memory_text(&raw_text) {
-                        Ok(text) => text,
-                        Err(reason) => {
-                            log_warn(
-                                app,
-                                "group_dynamic_memory",
-                                format!("Skipping invalid memory text: {}", reason),
-                            );
-                            actions_log.push(json!({
-                                "name": "create_memory",
-                                "arguments": call.arguments,
-                                "skipped": true,
-                                "reason": reason,
-                                "timestamp": now_millis().unwrap_or_default(),
-                            }));
-                            tool_results.push(json!({
-                                "status": "skipped",
-                                "name": "create_memory",
-                                "reason": reason,
-                                "arguments": call.arguments,
-                            }));
-                            continue;
-                        }
-                    };
-                    let mem_id = generate_memory_id();
-                    let embedding =
-                        match embedding::compute_embedding(app.clone(), text.clone()).await {
-                            Ok(vec) => Some(vec),
-                            Err(err) => {
-                                log_error(
+            match call.name.as_str() {
+                "create_memory" => {
+                    if let Some(raw_text) = extract_text_argument(&call) {
+                        let text = match validate_memory_text(&raw_text) {
+                            Ok(text) => text,
+                            Err(reason) => {
+                                log_warn(
                                     app,
                                     "group_dynamic_memory",
-                                    format!("failed to embed memory: {}", err),
+                                    format!("Skipping invalid memory text: {}", reason),
                                 );
-                                None
+                                actions_log.push(json!({
+                                    "name": "create_memory",
+                                    "arguments": call.arguments,
+                                    "skipped": true,
+                                    "reason": reason,
+                                    "timestamp": now_millis().unwrap_or_default(),
+                                }));
+                                tool_results.push(json!({
+                                    "status": "skipped",
+                                    "name": "create_memory",
+                                    "reason": reason,
+                                    "arguments": call.arguments,
+                                }));
+                                continue;
                             }
                         };
-                    if let Some(reason) = find_duplicate_memory_reason(
-                        &text,
-                        embedding.as_deref(),
-                        &session.memory_embeddings,
-                    ) {
-                        log_info(
-                            app,
-                            "group_dynamic_memory",
-                            format!("Skipping duplicate memory ({}): {}", reason, &text),
-                        );
-                        actions_log.push(json!({
-                            "name": "create_memory",
-                            "arguments": call.arguments,
-                            "skipped": true,
-                            "reason": reason,
-                            "timestamp": now_millis().unwrap_or_default(),
-                        }));
-                        tool_results.push(json!({
-                            "status": "skipped",
-                            "name": "create_memory",
-                            "reason": reason,
-                            "arguments": call.arguments,
-                        }));
-                        continue;
-                    }
-                    let token_count =
-                        crate::embedding::tokenizer::count_tokens(app, &text).unwrap_or(0);
-                    let is_pinned = call
-                        .arguments
-                        .get("important")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let category = match extract_required_memory_category(&call) {
-                        Ok(category) => category,
-                        Err(reason) => {
-                            log_warn(
-                                app,
-                                "group_dynamic_memory",
-                                format!("Skipping memory without required category: {}", reason),
-                            );
-                            actions_log.push(json!({
-                                "name": "create_memory",
-                                "arguments": call.arguments,
-                                "skipped": true,
-                                "reason": reason,
-                                "timestamp": now_millis().unwrap_or_default(),
-                            }));
+                        let mem_id = generate_memory_id();
+                        let embedding =
+                            match embedding::compute_embedding(app.clone(), text.clone()).await {
+                                Ok(vec) => Some(vec),
+                                Err(err) => {
+                                    log_error(
+                                        app,
+                                        "group_dynamic_memory",
+                                        format!("failed to embed memory: {}", err),
+                                    );
+                                    None
+                                }
+                            };
+                        if let Some(reason) = find_duplicate_memory_reason(
+                            &text,
+                            embedding.as_deref(),
+                            &session.memory_embeddings,
+                        ) {
                             log_info(
                                 app,
                                 "group_dynamic_memory",
-                                format!(
-                                    "Queued memory for category repair: text=\"{}\" pinned={}",
-                                    text, is_pinned
-                                ),
+                                format!("Skipping duplicate memory ({}): {}", reason, &text),
                             );
-                            untagged_candidates.push((text, is_pinned));
+                            actions_log.push(json!({
+                                "name": "create_memory",
+                                "arguments": call.arguments,
+                                "skipped": true,
+                                "reason": reason,
+                                "timestamp": now_millis().unwrap_or_default(),
+                            }));
                             tool_results.push(json!({
                                 "status": "skipped",
                                 "name": "create_memory",
                                 "reason": reason,
-                                "repairQueued": true,
                                 "arguments": call.arguments,
                             }));
                             continue;
                         }
-                    };
+                        let token_count =
+                            crate::embedding::tokenizer::count_tokens(app, &text).unwrap_or(0);
+                        let is_pinned = call
+                            .arguments
+                            .get("important")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        let category = match extract_required_memory_category(&call) {
+                            Ok(category) => category,
+                            Err(reason) => {
+                                log_warn(
+                                    app,
+                                    "group_dynamic_memory",
+                                    format!(
+                                        "Skipping memory without required category: {}",
+                                        reason
+                                    ),
+                                );
+                                actions_log.push(json!({
+                                    "name": "create_memory",
+                                    "arguments": call.arguments,
+                                    "skipped": true,
+                                    "reason": reason,
+                                    "timestamp": now_millis().unwrap_or_default(),
+                                }));
+                                log_info(
+                                    app,
+                                    "group_dynamic_memory",
+                                    format!(
+                                        "Queued memory for category repair: text=\"{}\" pinned={}",
+                                        text, is_pinned
+                                    ),
+                                );
+                                untagged_candidates.push((text, is_pinned));
+                                tool_results.push(json!({
+                                    "status": "skipped",
+                                    "name": "create_memory",
+                                    "reason": reason,
+                                    "repairQueued": true,
+                                    "arguments": call.arguments,
+                                }));
+                                continue;
+                            }
+                        };
 
-                    session.memory_embeddings.push(MemoryEmbedding {
-                        id: mem_id.clone(),
-                        text,
-                        embedding: embedding.unwrap_or_default(),
-                        created_at: now_millis().unwrap_or_default() as i64,
-                        token_count: token_count as i32,
-                        is_cold: false,
-                        last_accessed_at: now_millis().unwrap_or_default() as i64,
-                        importance_score: 1.0,
-                        is_pinned,
-                        access_count: 0,
-                        category: Some(category),
-                    });
+                        let (embedding_source_version, embedding_dimensions) =
+                            embedding::resolve_active_embedding_signature(app)
+                                .unwrap_or_else(|_| ("v3".to_string(), 512));
+                        let _now = now_millis().unwrap_or_default();
+                        session.memory_embeddings.push(MemoryEmbedding {
+                            id: mem_id.clone(),
+                            text,
+                            embedding: embedding.unwrap_or_default(),
+                            created_at: _now,
+                            token_count: token_count as u32,
+                            is_cold: false,
+                            last_accessed_at: _now,
+                            importance_score: 1.0,
+                            persistence_importance: 1.0,
+                            prompt_importance: 1.0,
+                            volatility: 0.4,
+                            is_pinned,
+                            access_count: 0,
+                            embedding_source_version: Some(embedding_source_version),
+                            embedding_dimensions: Some(embedding_dimensions),
+                            match_score: None,
+                            category: Some(category),
+                            observed_at: None,
+                            observed_time_precision: None,
+                            canonical_entities: Vec::new(),
+                            fact_signature: None,
+                            fact_polarity: None,
+                            source_role: None,
+                            source_message_id: None,
+                            superseded_by: None,
+                            superseded_at: None,
+                            supersedes: Vec::new(),
+                        });
 
-                    let action = json!({
-                        "name": "create_memory",
-                        "arguments": call.arguments,
-                        "memoryId": mem_id,
-                        "timestamp": now_millis().unwrap_or_default(),
-                        "updatedMemories": format_memories_with_ids(session),
-                    });
-                    tool_results.push(json!({
+                        let action = json!({
+                            "name": "create_memory",
+                            "arguments": call.arguments,
+                            "memoryId": mem_id,
+                            "timestamp": now_millis().unwrap_or_default(),
+                            "updatedMemories": format_memories_with_ids(session),
+                        });
+                        tool_results.push(json!({
                         "status": "created",
                         "name": "create_memory",
                         "memoryId": action.get("memoryId").cloned().unwrap_or(Value::Null),
                         "updatedMemories": action.get("updatedMemories").cloned().unwrap_or(Value::Null),
                     }));
-                    actions_log.push(action);
+                        actions_log.push(action);
 
-                    log_info(
-                        app,
-                        "group_dynamic_memory",
-                        format!("Created memory {}", mem_id),
-                    );
+                        log_info(
+                            app,
+                            "group_dynamic_memory",
+                            format!("Created memory {}", mem_id),
+                        );
+                    }
                 }
-            }
-            "delete_memory" => {
-                if let Some(text) = call.arguments.get("text").and_then(|v| v.as_str()) {
-                    let sanitized = sanitize_memory_id(text);
-                    let target_idx =
-                        if sanitized.len() == 6 && sanitized.chars().all(char::is_numeric) {
-                            session
-                                .memory_embeddings
-                                .iter()
-                                .position(|m| m.id == sanitized)
-                        } else {
-                            session
-                                .memory_embeddings
-                                .iter()
-                                .position(|m| m.text == text)
-                        };
+                "delete_memory" => {
+                    if let Some(text) = call.arguments.get("text").and_then(|v| v.as_str()) {
+                        let sanitized = sanitize_memory_id(text);
+                        let target_idx =
+                            if sanitized.len() == 6 && sanitized.chars().all(char::is_numeric) {
+                                session
+                                    .memory_embeddings
+                                    .iter()
+                                    .position(|m| m.id == sanitized)
+                            } else {
+                                session
+                                    .memory_embeddings
+                                    .iter()
+                                    .position(|m| m.text == text)
+                            };
 
-                    if let Some(idx) = target_idx {
-                        let target_memory = session.memory_embeddings.get(idx).cloned();
-                        let confidence = call
-                            .arguments
-                            .get("confidence")
-                            .and_then(|v| v.as_f64())
-                            .unwrap_or(dynamic_settings.delete_confidence_default as f64)
-                            as f32;
-                        let confidence_defaulted = call
-                            .arguments
-                            .get("confidence")
-                            .and_then(|v| v.as_f64())
-                            .is_none();
-                        let force_soft_delete = confidence >= HARD_DELETE_CONFIDENCE_THRESHOLD
-                            && hard_delete_count >= max_hard_deletes;
-                        if confidence < HARD_DELETE_CONFIDENCE_THRESHOLD || force_soft_delete {
-                            // Soft-delete: move to cold storage instead of removing
-                            if idx < session.memory_embeddings.len() {
-                                let cold_threshold = dynamic_settings.cold_threshold;
-                                session.memory_embeddings[idx].is_cold = true;
-                                session.memory_embeddings[idx].importance_score = cold_threshold;
-                                log_info(
-                                    app,
-                                    "group_dynamic_memory",
-                                    if force_soft_delete {
-                                        format!(
+                        if let Some(idx) = target_idx {
+                            let target_memory = session.memory_embeddings.get(idx).cloned();
+                            let confidence = call
+                                .arguments
+                                .get("confidence")
+                                .and_then(|v| v.as_f64())
+                                .unwrap_or(dynamic_settings.delete_confidence_default as f64)
+                                as f32;
+                            let confidence_defaulted = call
+                                .arguments
+                                .get("confidence")
+                                .and_then(|v| v.as_f64())
+                                .is_none();
+                            let force_soft_delete = confidence >= HARD_DELETE_CONFIDENCE_THRESHOLD
+                                && hard_delete_count >= max_hard_deletes;
+                            if confidence < HARD_DELETE_CONFIDENCE_THRESHOLD || force_soft_delete {
+                                // Soft-delete: move to cold storage instead of removing
+                                if idx < session.memory_embeddings.len() {
+                                    let cold_threshold = dynamic_settings.cold_threshold;
+                                    session.memory_embeddings[idx].is_cold = true;
+                                    session.memory_embeddings[idx].importance_score =
+                                        cold_threshold;
+                                    log_info(
+                                        app,
+                                        "group_dynamic_memory",
+                                        if force_soft_delete {
+                                            format!(
                                             "Soft-deleted memory due to hard-delete safeguard (hard_deletes={}/{}, confidence={:.2})",
                                             hard_delete_count,
                                             max_hard_deletes,
                                             confidence
                                         )
-                                    } else {
-                                        format!(
+                                        } else {
+                                            format!(
                                             "Soft-deleted memory (confidence={:.2}, defaulted={})",
                                             confidence, confidence_defaulted
                                         )
+                                        },
+                                    );
+                                }
+                                actions_log.push(json!({
+                                    "name": "delete_memory",
+                                    "arguments": call.arguments,
+                                    "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
+                                    "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
+                                    "memorySnapshot": target_memory,
+                                    "softDelete": true,
+                                    "reason": if force_soft_delete {
+                                        "hard_delete_limit_reached"
+                                    } else {
+                                        "low_confidence"
                                     },
-                                );
-                            }
-                            actions_log.push(json!({
-                                "name": "delete_memory",
-                                "arguments": call.arguments,
-                                "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
-                                "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
-                                "memorySnapshot": target_memory,
-                                "softDelete": true,
-                                "reason": if force_soft_delete {
-                                    "hard_delete_limit_reached"
-                                } else {
-                                    "low_confidence"
-                                },
-                                "confidence": confidence,
-                                "confidenceDefaulted": confidence_defaulted,
-                                "hardDeleteCount": hard_delete_count,
-                                "hardDeleteLimit": max_hard_deletes,
-                                "timestamp": now_millis().unwrap_or_default(),
-                                "updatedMemories": format_memories_with_ids(session),
-                            }));
-                            tool_results.push(json!({
-                                "status": "soft_deleted",
-                                "name": "delete_memory",
-                                "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
-                                "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
-                                "updatedMemories": format_memories_with_ids(session),
-                            }));
-                        } else {
-                            let removed_memory = if idx < session.memory_embeddings.len() {
-                                let removed = session.memory_embeddings.remove(idx);
-                                log_info(
-                                    app,
-                                    "group_dynamic_memory",
-                                    format!("Deleted memory {}", removed.id),
-                                );
-                                Some(removed)
+                                    "confidence": confidence,
+                                    "confidenceDefaulted": confidence_defaulted,
+                                    "hardDeleteCount": hard_delete_count,
+                                    "hardDeleteLimit": max_hard_deletes,
+                                    "timestamp": now_millis().unwrap_or_default(),
+                                    "updatedMemories": format_memories_with_ids(session),
+                                }));
+                                tool_results.push(json!({
+                                    "status": "soft_deleted",
+                                    "name": "delete_memory",
+                                    "deletedMemoryId": target_memory.as_ref().map(|m| m.id.clone()),
+                                    "deletedText": target_memory.as_ref().map(|m| m.text.clone()),
+                                    "updatedMemories": format_memories_with_ids(session),
+                                }));
                             } else {
-                                None
-                            };
-                            hard_delete_count += 1;
-                            actions_log.push(json!({
+                                let removed_memory = if idx < session.memory_embeddings.len() {
+                                    let removed = session.memory_embeddings.remove(idx);
+                                    log_info(
+                                        app,
+                                        "group_dynamic_memory",
+                                        format!("Deleted memory {}", removed.id),
+                                    );
+                                    Some(removed)
+                                } else {
+                                    None
+                                };
+                                hard_delete_count += 1;
+                                actions_log.push(json!({
                                 "name": "delete_memory",
                                 "arguments": call.arguments,
                                 "deletedText": removed_memory.as_ref().map(|m| m.text.clone()),
@@ -3536,91 +3923,93 @@ async fn run_group_memory_tool_update(
                                 "timestamp": now_millis().unwrap_or_default(),
                                 "updatedMemories": format_memories_with_ids(session),
                             }));
-                            tool_results.push(json!({
+                                tool_results.push(json!({
                                 "status": "deleted",
                                 "name": "delete_memory",
                                 "deletedMemoryId": removed_memory.as_ref().map(|m| m.id.clone()),
                                 "deletedText": removed_memory.as_ref().map(|m| m.text.clone()),
                                 "updatedMemories": format_memories_with_ids(session),
                             }));
+                            }
+                        } else {
+                            log_warn(
+                                app,
+                                "group_dynamic_memory",
+                                format!("delete_memory could not find: {}", text),
+                            );
+                            tool_results.push(json!({
+                                "status": "skipped",
+                                "name": "delete_memory",
+                                "reason": "target_not_found",
+                                "arguments": call.arguments,
+                            }));
                         }
-                    } else {
-                        log_warn(
-                            app,
-                            "group_dynamic_memory",
-                            format!("delete_memory could not find: {}", text),
-                        );
-                        tool_results.push(json!({
-                            "status": "skipped",
-                            "name": "delete_memory",
-                            "reason": "target_not_found",
-                            "arguments": call.arguments,
-                        }));
                     }
                 }
-            }
-            "pin_memory" => {
-                if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
-                    let id = sanitize_memory_id(raw_id);
-                    if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id) {
-                        mem.is_pinned = true;
-                        mem.importance_score = 1.0;
-                        actions_log.push(json!({
-                            "name": "pin_memory",
-                            "arguments": call.arguments,
-                            "timestamp": now_millis().unwrap_or_default(),
-                        }));
-                        tool_results.push(json!({
-                            "status": "pinned",
-                            "name": "pin_memory",
-                            "memoryId": id,
-                        }));
-                        log_info(app, "group_dynamic_memory", format!("Pinned memory {}", id));
+                "pin_memory" => {
+                    if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
+                        let id = sanitize_memory_id(raw_id);
+                        if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id)
+                        {
+                            mem.is_pinned = true;
+                            mem.importance_score = 1.0;
+                            actions_log.push(json!({
+                                "name": "pin_memory",
+                                "arguments": call.arguments,
+                                "timestamp": now_millis().unwrap_or_default(),
+                            }));
+                            tool_results.push(json!({
+                                "status": "pinned",
+                                "name": "pin_memory",
+                                "memoryId": id,
+                            }));
+                            log_info(app, "group_dynamic_memory", format!("Pinned memory {}", id));
+                        }
                     }
                 }
-            }
-            "unpin_memory" => {
-                if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
-                    let id = sanitize_memory_id(raw_id);
-                    if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id) {
-                        mem.is_pinned = false;
-                        actions_log.push(json!({
-                            "name": "unpin_memory",
-                            "arguments": call.arguments,
-                            "timestamp": now_millis().unwrap_or_default(),
-                        }));
-                        tool_results.push(json!({
-                            "status": "unpinned",
-                            "name": "unpin_memory",
-                            "memoryId": id,
-                        }));
-                        log_info(
-                            app,
-                            "group_dynamic_memory",
-                            format!("Unpinned memory {}", id),
-                        );
+                "unpin_memory" => {
+                    if let Some(raw_id) = call.arguments.get("id").and_then(|v| v.as_str()) {
+                        let id = sanitize_memory_id(raw_id);
+                        if let Some(mem) = session.memory_embeddings.iter_mut().find(|m| m.id == id)
+                        {
+                            mem.is_pinned = false;
+                            actions_log.push(json!({
+                                "name": "unpin_memory",
+                                "arguments": call.arguments,
+                                "timestamp": now_millis().unwrap_or_default(),
+                            }));
+                            tool_results.push(json!({
+                                "status": "unpinned",
+                                "name": "unpin_memory",
+                                "memoryId": id,
+                            }));
+                            log_info(
+                                app,
+                                "group_dynamic_memory",
+                                format!("Unpinned memory {}", id),
+                            );
+                        }
                     }
                 }
-            }
-            "done" => {
-                actions_log.push(json!({
-                    "name": "done",
-                    "arguments": call.arguments,
-                    "timestamp": now_millis().unwrap_or_default(),
-                }));
-                saw_done = true;
-                break;
-            }
-            _ => {
-                tool_results.push(json!({
-                    "status": "skipped",
-                    "name": call.name,
-                    "reason": "unsupported_tool",
-                    "arguments": call.arguments,
-                }));
+                "done" => {
+                    actions_log.push(json!({
+                        "name": "done",
+                        "arguments": call.arguments,
+                        "timestamp": now_millis().unwrap_or_default(),
+                    }));
+                    saw_done = true;
+                    break;
+                }
+                _ => {
+                    tool_results.push(json!({
+                        "status": "skipped",
+                        "name": call.name,
+                        "reason": "unsupported_tool",
+                        "arguments": call.arguments,
+                    }));
+                }
             }
         }
-    }
 
         let skipped_results = tool_results
             .iter()
@@ -3823,18 +4212,38 @@ async fn run_group_memory_tool_update(
 
                     let token_count =
                         crate::embedding::tokenizer::count_tokens(app, &text).unwrap_or(0);
+                    let (embedding_source_version, embedding_dimensions) =
+                        embedding::resolve_active_embedding_signature(app)
+                            .unwrap_or_else(|_| ("v3".to_string(), 512));
+                    let now = now_millis().unwrap_or_default();
                     session.memory_embeddings.push(MemoryEmbedding {
                         id: mem_id.clone(),
                         text: text.clone(),
                         embedding: embedding.unwrap_or_default(),
-                        created_at: now_millis().unwrap_or_default() as i64,
-                        token_count: token_count as i32,
+                        created_at: now,
+                        token_count: token_count as u32,
                         is_cold: false,
-                        last_accessed_at: now_millis().unwrap_or_default() as i64,
+                        last_accessed_at: now,
                         importance_score: 1.0,
+                        persistence_importance: 1.0,
+                        prompt_importance: 1.0,
+                        volatility: 0.4,
                         is_pinned,
                         access_count: 0,
+                        embedding_source_version: Some(embedding_source_version),
+                        embedding_dimensions: Some(embedding_dimensions),
+                        match_score: None,
                         category: Some(category.clone()),
+                        observed_at: None,
+                        observed_time_precision: None,
+                        canonical_entities: Vec::new(),
+                        fact_signature: None,
+                        fact_polarity: None,
+                        source_role: None,
+                        source_message_id: None,
+                        superseded_by: None,
+                        superseded_at: None,
+                        supersedes: Vec::new(),
                     });
                     actions_log.push(json!({
                         "name": "create_memory",
@@ -3869,13 +4278,20 @@ async fn run_group_memory_tool_update(
     }
 
     let trimmed = trim_memories_to_max(&mut session.memory_embeddings, max_entries);
-    if trimmed > 0 {
+    if !trimmed.is_empty() {
+        let _ = crate::storage_manager::memory_embeddings::delete_many_app(
+            app,
+            &session.id,
+            crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+            &trimmed,
+        );
         log_info(
             app,
             "group_dynamic_memory",
             format!(
                 "Trimmed {} memories to enforce max_entries={}",
-                trimmed, max_entries
+                trimmed.len(),
+                max_entries
             ),
         );
     }
@@ -4235,12 +4651,24 @@ fn save_group_session_memories(
     session: &GroupSession,
     pool: &State<'_, SwappablePool>,
 ) -> Result<(), String> {
+    // Persist embeddings to the new normalised table first. If this fails, the
+    // legacy JSON column still holds the previous state.
+    crate::storage_manager::memory_embeddings::replace_all_app(
+        app,
+        &session.id,
+        crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+        &session.memory_embeddings,
+    )?;
+
+    // Then clear the legacy JSON column by writing an empty slice. The other
+    // memory metadata still travels through this path.
     let conn = pool.get_connection()?;
+    let empty: Vec<MemoryEmbedding> = Vec::new();
     group_session_update_memories_internal(
         &conn,
         &session.id,
         &session.memories,
-        &session.memory_embeddings,
+        &empty,
         Some(&session.memory_summary),
         session.memory_summary_token_count,
         &session.memory_tool_events,
@@ -4266,34 +4694,27 @@ fn save_group_session_memories(
 
 /// Load full Character struct from database
 fn load_character(conn: &rusqlite::Connection, character_id: &str) -> Result<Character, String> {
-    // Load character JSON for full data
-    let char_json: Option<String> = conn
-        .query_row(
-            "SELECT json_data FROM characters WHERE id = ?1",
-            rusqlite::params![character_id],
-            |row| row.get(0),
-        )
-        .ok();
-
-    if let Some(json_str) = char_json {
-        if let Ok(character) = serde_json::from_str::<Character>(&json_str) {
-            return Ok(character);
-        }
-    }
-
-    // Fallback: construct from basic columns
     let row: (
         String,
         String,
         Option<String>,
         Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         i64,
         i64,
+        Option<String>,
+        Option<String>,
+        Option<String>,
         Option<String>,
         Option<String>,
     ) = conn
         .query_row(
-            "SELECT id, name, description, definition, created_at, updated_at, default_model_id, memory_type
+            "SELECT id, name, avatar_path, design_description, design_reference_image_ids, background_image_path,
+                    description, definition, created_at, updated_at, default_model_id, memory_type,
+                    prompt_template_id, group_chat_prompt_template_id, group_chat_roleplay_prompt_template_id
              FROM characters WHERE id = ?1",
             rusqlite::params![character_id],
             |row| {
@@ -4306,6 +4727,13 @@ fn load_character(conn: &rusqlite::Connection, character_id: &str) -> Result<Cha
                     row.get(5)?,
                     row.get(6)?,
                     row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
+                    row.get(12)?,
+                    row.get(13)?,
+                    row.get(14)?,
                 ))
             },
         )
@@ -4317,30 +4745,40 @@ fn load_character(conn: &rusqlite::Connection, character_id: &str) -> Result<Cha
             )
         })?;
 
-    let description = row.2;
-    let definition = row.3.or(description.clone());
+    let description = row.6;
+    let definition = row.7.or(description.clone());
+    let design_reference_image_ids = row
+        .4
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .unwrap_or_default();
 
     Ok(Character {
         id: row.0,
         name: row.1,
-        avatar_path: None,
-        design_description: None,
-        design_reference_image_ids: Vec::new(),
-        background_image_path: None,
+        avatar_path: row.2,
+        design_description: row.3,
+        design_reference_image_ids,
+        lora_name: None,
+        lora_strength: None,
+        background_image_path: row.5,
         description,
         definition,
         rules: Vec::new(),
         scenes: Vec::new(),
         default_scene_id: None,
-        default_model_id: row.6,
+        default_model_id: row.10,
         fallback_model_id: None,
-        memory_type: row.7.unwrap_or_else(|| "manual".to_string()),
-        prompt_template_id: None,
-        group_chat_prompt_template_id: None,
-        group_chat_roleplay_prompt_template_id: None,
+        mode: "roleplay".to_string(),
+        companion: None,
+        memory_type: row.11.unwrap_or_else(|| "manual".to_string()),
+        active_lorebook_ids: Vec::new(),
+        prompt_template_id: row.12,
+        group_chat_prompt_template_id: row.13,
+        group_chat_roleplay_prompt_template_id: row.14,
         system_prompt: None,
-        created_at: row.4 as u64,
-        updated_at: row.5 as u64,
+        created_at: row.8 as u64,
+        updated_at: row.9 as u64,
     })
 }
 
@@ -4488,6 +4926,7 @@ fn save_user_message(
         is_pinned: false,
         attachments: vec![],
         used_lorebook_entries: Vec::new(),
+        memory_refs: Vec::new(),
         reasoning: None,
         selection_reasoning: None,
         model_id: None,
@@ -4506,6 +4945,7 @@ fn save_assistant_message(
     usage: Option<&UsageSummary>,
     model_id: Option<&str>,
     used_lorebook_entries: &[String],
+    memory_refs: &[String],
 ) -> Result<GroupMessage, String> {
     let now = now_ms();
     let id = Uuid::new_v4().to_string();
@@ -4536,8 +4976,8 @@ fn save_assistant_message(
 
     conn.execute(
         "INSERT INTO group_messages (id, session_id, role, content, speaker_character_id, turn_number,
-         created_at, prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id)
-         VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, '[]', ?11, ?12, ?13, ?14)",
+         created_at, prompt_tokens, completion_tokens, total_tokens, selected_variant_id, is_pinned, attachments, used_lorebook_entries, reasoning, selection_reasoning, model_id, memory_refs)
+         VALUES (?1, ?2, 'assistant', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0, '[]', ?11, ?12, ?13, ?14, ?15)",
         rusqlite::params![
             id,
             session_id,
@@ -4552,7 +4992,8 @@ fn save_assistant_message(
             serde_json::to_string(used_lorebook_entries).unwrap_or_else(|_| "[]".to_string()),
             reasoning,
             selection_reasoning,
-            model_id
+            model_id,
+            serde_json::to_string(memory_refs).unwrap_or_else(|_| "[]".to_string())
         ],
     )
     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -4617,6 +5058,7 @@ fn save_assistant_message(
         is_pinned: false,
         attachments: vec![],
         used_lorebook_entries: used_lorebook_entries.to_vec(),
+        memory_refs: memory_refs.to_vec(),
         reasoning: reasoning.map(|s| s.to_string()),
         selection_reasoning: selection_reasoning.map(|s| s.to_string()),
         model_id: model_id.map(|s| s.to_string()),
@@ -4633,7 +5075,7 @@ fn build_messages_for_api(
 ) -> Vec<serde_json::Value> {
     let mut messages = Vec::new();
     let _char_name = &selected_character.name;
-    let persona_name = persona.map(|p| p.title.as_str()).unwrap_or("User");
+    let persona_name = persona.map(|p| p.title.as_str()).unwrap_or("user");
 
     for msg in group_messages {
         if msg.role == "user" {
@@ -4903,6 +5345,57 @@ fn group_model_supports_vision(model: &Model) -> bool {
 }
 
 /// Build group chat system prompt for a specific character
+fn render_group_author_note_text(
+    character: &Character,
+    persona: Option<&Persona>,
+    session: &GroupSession,
+) -> Option<String> {
+    let raw_note = session.author_note.as_deref()?.trim();
+    if raw_note.is_empty() {
+        return None;
+    }
+
+    let char_name = character.name.as_str();
+    let persona_name = persona.map(|p| p.title.as_str()).unwrap_or("user");
+    let char_desc = character
+        .definition
+        .as_ref()
+        .or(character.description.as_ref())
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("")
+        .replace("{{char}}", char_name)
+        .replace("{{char.name}}", char_name)
+        .replace("{{persona}}", persona_name)
+        .replace("{{persona.name}}", persona_name)
+        .replace("{{user}}", persona_name)
+        .replace("{{user.name}}", persona_name);
+    let persona_desc = persona
+        .map(|p| p.description.trim())
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
+
+    let mut rendered = raw_note.to_string();
+    rendered = rendered.replace("{{char.name}}", char_name);
+    rendered = rendered.replace("{{char.desc}}", &char_desc);
+    rendered = rendered.replace("{{persona.name}}", persona_name);
+    rendered = rendered.replace("{{persona.desc}}", persona_desc);
+    rendered = rendered.replace("{{user.name}}", persona_name);
+    rendered = rendered.replace("{{user.desc}}", persona_desc);
+    rendered = rendered.replace("{{ai_name}}", char_name);
+    rendered = rendered.replace("{{ai_description}}", &char_desc);
+    rendered = rendered.replace("{{char}}", char_name);
+    rendered = rendered.replace("{{persona}}", persona_name);
+    rendered = rendered.replace("{{user}}", persona_name);
+
+    let rendered = rendered.trim();
+    if rendered.is_empty() {
+        None
+    } else {
+        Some(rendered.to_string())
+    }
+}
+
 fn build_group_system_prompt(
     app: &AppHandle,
     character: &Character,
@@ -5046,7 +5539,7 @@ fn build_group_system_prompt(
         .or(character.description.as_deref())
         .unwrap_or("");
 
-    let persona_name = persona.map(|p| p.title.as_str()).unwrap_or("User");
+    let persona_name = persona.map(|p| p.title.as_str()).unwrap_or("user");
     let persona_desc = persona
         .map(|p| p.description.trim())
         .filter(|s| !s.is_empty())
@@ -5179,6 +5672,10 @@ fn build_group_system_prompt(
     let has_lorebook_placeholder = entries
         .iter()
         .any(|entry| entry.content.contains("{{lorebook}}"));
+    let author_note_text = render_group_author_note_text(character, persona, session);
+    let has_author_note_placeholder = entries
+        .iter()
+        .any(|entry| entry.content.contains("{{author_note}}"));
     let recent_text = recent_messages
         .iter()
         .rev()
@@ -5194,6 +5691,7 @@ fn build_group_system_prompt(
     let has_scene_direction = is_roleplay && !scene_direction.trim().is_empty();
     let condition_context = PromptEntryConditionContext {
         chat_mode: PromptEntryChatMode::Group,
+        info_source: PromptEntryInfoSource::Messages,
         scene_generation_enabled: group_scene_generation_enabled(settings),
         avatar_generation_enabled: group_avatar_generation_enabled(settings),
         has_scene,
@@ -5206,6 +5704,8 @@ fn build_group_system_prompt(
         has_memory_summary: !context_summary_text.trim().is_empty(),
         has_key_memories: !key_memories_text.trim().is_empty(),
         has_lorebook_content: !lorebook_text.trim().is_empty(),
+        does_author_note_exists: author_note_text.is_some(),
+        has_active_scheduled_note: false,
         has_subject_description: false,
         has_current_description: false,
         has_character_reference_images: false,
@@ -5222,6 +5722,8 @@ fn build_group_system_prompt(
             .and_then(|cfg| cfg.reasoning_enabled)
             .unwrap_or(false),
         vision_enabled: group_model_supports_vision(model),
+        time_awareness_enabled: false,
+        companion_mode_enabled: false,
     };
 
     let mut rendered_entries = Vec::new();
@@ -5253,6 +5755,8 @@ fn build_group_system_prompt(
         } else {
             result = result.replace("{{lorebook}}", lorebook_text);
         }
+
+        result = result.replace("{{author_note}}", author_note_text.as_deref().unwrap_or(""));
 
         // Legacy placeholder support
         result = result.replace("{{char}}", char_name);
@@ -5287,6 +5791,29 @@ fn build_group_system_prompt(
         });
     }
 
+    if !has_author_note_placeholder {
+        if let Some(author_note) = author_note_text.as_deref() {
+            rendered_entries.push(SystemPromptEntry {
+                id: "entry_author_note".to_string(),
+                name: "Author Note".to_string(),
+                role: PromptEntryRole::System,
+                content: format!(
+                    "# Author Note\nThe following is private session-level guidance from {}. Treat it as hidden continuity and writing context for this group chat. Use its facts naturally when relevant, including answering with those facts when the conversation calls for them, but do not say they came from an author note or hidden instruction.\n\n{}",
+                    persona.map(|p| p.title.as_str()).unwrap_or("user"),
+                    author_note
+                ),
+                enabled: true,
+                injection_position: PromptEntryPosition::InChat,
+                injection_depth: 1,
+                conditional_min_messages: None,
+                interval_turns: None,
+                system_prompt: true,
+                conditions: None,
+                prompt_entry_payload: None,
+            });
+        }
+    }
+
     if condense_prompt_entries {
         condense_entries_into_single_system_message(rendered_entries)
     } else {
@@ -5300,27 +5827,23 @@ fn replace_character_name_placeholders(content: &str, characters: &[CharacterInf
     let mut result = content.to_string();
 
     // Find all {{@"..."}} patterns and replace them
-    loop {
-        if let Some(start) = result.find(r#"{{@""#) {
-            if let Some(end) = result[start + 4..].find(r#""}}"#) {
-                let name_start = start + 4;
-                let name_end = start + 4 + end;
-                let character_name = &result[name_start..name_end];
+    while let Some(start) = result.find(r#"{{@""#) {
+        if let Some(end) = result[start + 4..].find(r#""}}"#) {
+            let name_start = start + 4;
+            let name_end = start + 4 + end;
+            let character_name = &result[name_start..name_end];
 
-                // Check if this character exists in the group
-                let replacement = if characters.iter().any(|c| c.name == character_name) {
-                    character_name.to_string()
-                } else {
-                    // If character not found, keep the original placeholder
-                    format!(r#"{{{{@"{}"}}}}"#, character_name)
-                };
-
-                // Replace this occurrence
-                let placeholder_end = name_end + 2;
-                result.replace_range(start..placeholder_end, &replacement);
+            // Check if this character exists in the group
+            let replacement = if characters.iter().any(|c| c.name == character_name) {
+                character_name.to_string()
             } else {
-                break;
-            }
+                // If character not found, keep the original placeholder
+                format!(r#"{{{{@"{}"}}}}"#, character_name)
+            };
+
+            // Replace this occurrence
+            let placeholder_end = name_end + 2;
+            result.replace_range(start..placeholder_end, &replacement);
         } else {
             break;
         }
@@ -5376,8 +5899,9 @@ async fn select_speaker_via_llm(
     app: &AppHandle,
     context: &GroupChatContext,
     settings: &Settings,
+    request_id: &str,
 ) -> Result<selection::SelectionResult, String> {
-    select_speaker_via_llm_with_tracking(app, context, settings, true).await
+    select_speaker_via_llm_with_tracking(app, context, settings, request_id, true).await
 }
 
 /// Use LLM with tool calling to select next speaker, with optional usage tracking
@@ -5385,6 +5909,7 @@ async fn select_speaker_via_llm_with_tracking(
     app: &AppHandle,
     context: &GroupChatContext,
     settings: &Settings,
+    request_id: &str,
     track_usage: bool,
 ) -> Result<selection::SelectionResult, String> {
     // Get the first available model for selection
@@ -5441,13 +5966,13 @@ async fn select_speaker_via_llm_with_tracking(
         choice: Some(ToolChoice::Required),
     };
 
-    let context_length = resolve_context_length(model, &settings);
+    let context_length = resolve_context_length(model, settings);
     let extra_body_fields = if credential.provider_id == "llamacpp" {
-        build_llama_extra_fields(model, &settings)
+        build_llama_extra_fields(model, settings)
     } else if credential.provider_id == "ollama" {
         build_ollama_extra_fields(
             model,
-            &settings,
+            settings,
             context_length,
             500,
             0.3,
@@ -5490,7 +6015,7 @@ async fn select_speaker_via_llm_with_tracking(
         body: Some(built.body),
         timeout_ms: Some(crate::transport::DEFAULT_REQUEST_TIMEOUT_MS),
         stream: Some(false),
-        request_id: None,
+        request_id: Some(request_id.to_string()),
         provider_id: Some(credential.provider_id.clone()),
     };
 
@@ -5503,19 +6028,25 @@ async fn select_speaker_via_llm_with_tracking(
         ));
     }
 
-    // Record usage for decision maker
     if track_usage {
+        let app = app.clone();
         let usage = extract_usage(api_response.data());
-        record_decision_maker_usage(
-            app,
-            &usage,
-            &context.session,
-            model,
-            credential,
-            &api_key,
-            "group_chat_decision_maker",
-        )
-        .await;
+        let session = context.session.clone();
+        let model = model.clone();
+        let credential = credential.clone();
+        let api_key = api_key.clone();
+        tauri::async_runtime::spawn(async move {
+            record_decision_maker_usage(
+                &app,
+                &usage,
+                &session,
+                &model,
+                &credential,
+                &api_key,
+                "group_chat_decision_maker",
+            )
+            .await;
+        });
     }
 
     // Parse tool call response
@@ -5555,7 +6086,7 @@ async fn select_speaker_via_llm_with_tracking(
     log_info(
         app,
         "group_chat",
-        "LLM selection failed, using heuristic fallback".to_string(),
+        "LLM selection failed, using heuristic fallback",
     );
     selection::heuristic_select_speaker(context)
 }
@@ -5575,6 +6106,7 @@ async fn generate_character_response(
         Option<String>,
         Option<UsageSummary>,
         String,
+        Vec<String>,
         Vec<String>,
     ),
     String,
@@ -5617,7 +6149,8 @@ async fn generate_character_response(
 
         select_relevant_memories(
             app,
-            &context.session,
+            &mut context.session,
+            pool,
             &search_query,
             dynamic_settings.retrieval_limit.max(1) as usize,
             min_similarity,
@@ -5628,22 +6161,40 @@ async fn generate_character_response(
         Vec::new()
     };
 
-    // Mark retrieved memories as accessed and promote cold ones
+    // Mark retrieved memories as accessed and promote cold ones, persisting
+    // the changes through narrow DB updates.
     if !retrieved_memories.is_empty() {
         let memory_ids: Vec<String> = retrieved_memories.iter().map(|m| m.id.clone()).collect();
         let now = now_millis().unwrap_or_default();
         let promoted =
             promote_cold_memories(&mut context.session.memory_embeddings, &memory_ids, now);
-        let accessed =
+        let access_updates =
             mark_memories_accessed(&mut context.session.memory_embeddings, &memory_ids, now);
+        if !promoted.is_empty() {
+            let _ = crate::storage_manager::memory_embeddings::set_cold_many_app(
+                app,
+                &context.session.id,
+                crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+                &promoted,
+                false,
+            );
+        }
+        if !access_updates.is_empty() {
+            let _ = crate::storage_manager::memory_embeddings::apply_access_updates_app(
+                app,
+                &context.session.id,
+                crate::storage_manager::memory_embeddings::SessionKind::GroupSession,
+                &access_updates,
+            );
+        }
         log_info(
             app,
             "group_chat",
             format!(
                 "Retrieved {} memories (promoted={}, accessed={}, query_enriched={})",
                 retrieved_memories.len(),
-                promoted,
-                accessed,
+                promoted.len(),
+                access_updates.len(),
                 dynamic_settings.context_enrichment_enabled
             ),
         );
@@ -5709,6 +6260,7 @@ async fn generate_character_response(
         conversation_window(&recent_messages, manual_window)
     };
 
+    let no_chat_history = messages_for_generation.is_empty();
     let mut api_messages = build_messages_for_api(
         &messages_for_generation,
         &context.characters,
@@ -5725,14 +6277,15 @@ async fn generate_character_response(
     }
     messages_for_api.extend(api_messages);
 
-    let persona_name = persona.as_ref().map(|p| p.title.as_str()).unwrap_or("User");
-    messages_for_api.push(json!({
-        "role": "user",
-        "content": format!("[{}]: {}", persona_name, context.user_message)
-    }));
+    if no_chat_history {
+        messages_for_api.push(json!({
+            "role": "user",
+            "content": format!("[Begin the conversation. Respond as {}.]", selected_char_info.name)
+        }));
+    }
 
     let sampler_profile = if credential.provider_id == "llamacpp" {
-        Some(resolve_llama_sampler_profile(model, &settings))
+        Some(resolve_llama_sampler_profile(model, settings))
     } else {
         None
     };
@@ -5754,7 +6307,7 @@ async fn generate_character_response(
         .as_ref()
         .and_then(|a| a.max_output_tokens)
         .unwrap_or(2048);
-    let context_length = resolve_context_length(model, &settings);
+    let context_length = resolve_context_length(model, settings);
     let reasoning_enabled = model
         .advanced_model_settings
         .as_ref()
@@ -5789,11 +6342,11 @@ async fn generate_character_response(
         .and_then(|s| s.prompt_caching_enabled)
         .unwrap_or(false);
     let extra_body_fields = if credential.provider_id == "llamacpp" {
-        build_llama_extra_fields(model, &settings)
+        build_llama_extra_fields(model, settings)
     } else if credential.provider_id == "ollama" {
         build_ollama_extra_fields(
             model,
-            &settings,
+            settings,
             context_length,
             max_tokens,
             temperature,
@@ -5991,6 +6544,8 @@ async fn generate_character_response(
         prompt_tokens: u.prompt_tokens.map(|v| v as i32),
         completion_tokens: u.completion_tokens.map(|v| v as i32),
         total_tokens: u.total_tokens.map(|v| v as i32),
+        first_token_ms: u.first_token_ms.map(|v| v as i64),
+        tokens_per_second: u.tokens_per_second,
     });
 
     record_group_usage(
@@ -6016,13 +6571,34 @@ async fn generate_character_response(
         ),
     );
 
+    let memory_refs: Vec<String> = retrieved_memories
+        .iter()
+        .map(|m| match m.match_score {
+            Some(score) => format!("{}::{}", score, m.text),
+            None => m.text.clone(),
+        })
+        .collect();
+
     Ok((
         text,
         reasoning,
         message_usage,
         model_id_to_return,
         used_lorebook_entries,
+        memory_refs,
     ))
+}
+
+#[tauri::command]
+pub fn group_chat_add_user_message(
+    session_id: String,
+    user_message: String,
+    pool: State<'_, SwappablePool>,
+) -> Result<String, String> {
+    let conn = pool.get_connection()?;
+    let message = save_user_message(&conn, &session_id, &user_message)?;
+    serde_json::to_string(&message)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))
 }
 
 #[tauri::command]
@@ -6084,7 +6660,7 @@ pub async fn group_chat_send(
                         );
                         return Err(crate::utils::err_msg(module_path!(), line!(), "Request aborted by user"));
                     }
-                    selection = select_speaker_via_llm(&app, &context, &settings) => selection,
+                    selection = select_speaker_via_llm(&app, &context, &settings, &req_id) => selection,
                 };
                 match selection_result {
                     Ok(selection) => {
@@ -6099,6 +6675,9 @@ pub async fn group_chat_send(
                         Ok((selection.character_id, selection.reasoning, false))
                     }
                     Err(err) => {
+                        if is_request_abort_error(&err) {
+                            return Err(err);
+                        }
                         log_error(
                             &app,
                             "group_chat_send",
@@ -6116,7 +6695,9 @@ pub async fn group_chat_send(
     {
         Ok(result) => result,
         Err(err) => {
-            emit_group_chat_error_status(&app, &session_id, &err);
+            if !is_request_abort_error(&err) {
+                emit_group_chat_error_status(&app, &session_id, &err);
+            }
             return Err(err);
         }
     };
@@ -6198,14 +6779,22 @@ pub async fn group_chat_send(
     )
     .await;
 
-    let (response_content, reasoning, message_usage, model_id_str, used_lorebook_entries) =
-        match response_result {
-            Ok(result) => result,
-            Err(err) => {
+    let (
+        response_content,
+        reasoning,
+        message_usage,
+        model_id_str,
+        used_lorebook_entries,
+        memory_refs,
+    ) = match response_result {
+        Ok(result) => result,
+        Err(err) => {
+            if !is_request_abort_error(&err) {
                 emit_group_chat_error_status(&app, &session_id, &err);
-                return Err(err);
             }
-        };
+            return Err(err);
+        }
+    };
 
     let conn = pool.get_connection()?;
 
@@ -6230,6 +6819,7 @@ pub async fn group_chat_send(
         message_usage.as_ref(),
         Some(&model_id_str),
         &used_lorebook_entries,
+        &memory_refs,
     )?;
 
     let participation_stats =
@@ -6302,7 +6892,7 @@ pub async fn group_chat_retry_dynamic_memory(
         log_info(
             &app,
             "group_chat_retry_dynamic_memory",
-            "session memory_type is not dynamic; skipping manual retry".to_string(),
+            "session memory_type is not dynamic; skipping manual retry",
         );
         return Ok(());
     }
@@ -6390,11 +6980,14 @@ pub async fn group_chat_regenerate(
                 );
                 return Err(crate::utils::err_msg(module_path!(), line!(), "Request aborted by user"));
             }
-            selection = select_speaker_via_llm(&app, &context, &settings) => selection,
+            selection = select_speaker_via_llm(&app, &context, &settings, &req_id) => selection,
         };
         match selection_result {
             Ok(selection) => Ok((selection.character_id, selection.reasoning, false)),
             Err(err) => {
+                if is_request_abort_error(&err) {
+                    return Err(err.to_string());
+                }
                 log_error(
                     &app,
                     "group_chat_regenerate",
@@ -6410,7 +7003,9 @@ pub async fn group_chat_regenerate(
         match selection_result {
             Ok(result) => result,
             Err(err) => {
-                emit_group_chat_error_status(&app, &session_id, &err);
+                if !is_request_abort_error(&err) {
+                    emit_group_chat_error_status(&app, &session_id, &err);
+                }
                 return Err(err);
             }
         };
@@ -6477,14 +7072,22 @@ pub async fn group_chat_regenerate(
     )
     .await;
 
-    let (response_content, reasoning, message_usage, model_id_str, used_lorebook_entries) =
-        match response_result {
-            Ok(result) => result,
-            Err(err) => {
+    let (
+        response_content,
+        reasoning,
+        message_usage,
+        model_id_str,
+        used_lorebook_entries,
+        _memory_refs,
+    ) = match response_result {
+        Ok(result) => result,
+        Err(err) => {
+            if !is_request_abort_error(&err) {
                 emit_group_chat_error_status(&app, &session_id, &err);
-                return Err(err);
             }
-        };
+            return Err(err);
+        }
+    };
 
     let conn = pool.get_connection()?;
     let now = now_ms();
@@ -6618,11 +7221,14 @@ pub async fn group_chat_continue(
                         );
                         return Err(crate::utils::err_msg(module_path!(), line!(), "Request aborted by user"));
                     }
-                    selection = select_speaker_via_llm(&app, &context, &settings) => selection,
+                    selection = select_speaker_via_llm(&app, &context, &settings, &req_id) => selection,
                 };
                 match selection_result {
                     Ok(selection) => Ok((selection.character_id, selection.reasoning, false)),
                     Err(err) => {
+                        if is_request_abort_error(&err) {
+                            return Err(err.to_string());
+                        }
                         log_error(
                             &app,
                             "group_chat_continue",
@@ -6640,7 +7246,9 @@ pub async fn group_chat_continue(
         match selection_result {
             Ok(result) => result,
             Err(err) => {
-                emit_group_chat_error_status(&app, &session_id, &err);
+                if !is_request_abort_error(&err) {
+                    emit_group_chat_error_status(&app, &session_id, &err);
+                }
                 return Err(err);
             }
         };
@@ -6707,14 +7315,22 @@ pub async fn group_chat_continue(
     )
     .await;
 
-    let (response_content, reasoning, message_usage, model_id_str, used_lorebook_entries) =
-        match response_result {
-            Ok(result) => result,
-            Err(err) => {
+    let (
+        response_content,
+        reasoning,
+        message_usage,
+        model_id_str,
+        used_lorebook_entries,
+        memory_refs,
+    ) = match response_result {
+        Ok(result) => result,
+        Err(err) => {
+            if !is_request_abort_error(&err) {
                 emit_group_chat_error_status(&app, &session_id, &err);
-                return Err(err);
             }
-        };
+            return Err(err);
+        }
+    };
 
     let conn = pool.get_connection()?;
     let message = save_assistant_message(
@@ -6728,6 +7344,7 @@ pub async fn group_chat_continue(
         message_usage.as_ref(),
         Some(&model_id_str),
         &used_lorebook_entries,
+        &memory_refs,
     )?;
 
     let participation_stats =
@@ -6888,9 +7505,26 @@ pub async fn group_chat_generate_user_reply(
         .and_then(|advanced| advanced.help_me_reply_streaming)
         .unwrap_or(true);
 
-    let base_prompt = prompts::get_help_me_reply_prompt(&app, reply_style);
+    let help_me_reply_prompt_template_id = settings
+        .advanced_settings
+        .as_ref()
+        .and_then(|advanced| {
+            if reply_style == "conversational" {
+                advanced
+                    .help_me_reply_conversational_prompt_template_id
+                    .as_deref()
+            } else {
+                advanced
+                    .help_me_reply_roleplay_prompt_template_id
+                    .as_deref()
+            }
+        })
+        .filter(|id| !id.trim().is_empty());
 
-    let persona_name = persona.map(|p| p.title.as_str()).unwrap_or("User");
+    let base_prompt =
+        prompts::get_help_me_reply_prompt(&app, reply_style, help_me_reply_prompt_template_id);
+
+    let persona_name = persona.map(|p| p.title.as_str()).unwrap_or("user");
     let persona_desc = persona.map(|p| p.description.as_str()).unwrap_or("");
 
     // Build character list for the prompt
@@ -7088,7 +7722,7 @@ pub async fn group_chat_generate_user_reply(
             &app,
             &usage,
             &session,
-            &first_char,
+            first_char,
             model,
             provider_cred,
             &api_key,

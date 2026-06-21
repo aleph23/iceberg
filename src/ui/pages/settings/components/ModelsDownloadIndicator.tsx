@@ -6,12 +6,15 @@ import { cn, interactive } from "../../../design-tokens";
 import { Routes } from "../../../navigation";
 import {
   useDownloadQueueOptional,
+  isCreateableModelDownload,
+  groupQueueDownloads,
   type QueuedDownload,
 } from "../../../../core/downloads/DownloadQueueContext";
+import { DownloadGroupCard } from "./DownloadGroupCard";
+import { useI18n } from "../../../../core/i18n/context";
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
+function formatBytes(bytes: number, units: string[]): string {
+  if (bytes === 0) return `0 ${units[0]}`;
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const value = bytes / Math.pow(1024, i);
   return `${value.toFixed(i > 1 ? 1 : 0)} ${units[i]}`;
@@ -41,10 +44,18 @@ function goToModel(navigate: ReturnType<typeof useNavigate>, modelId: string) {
 export function ModelsDownloadIndicator() {
   const ctx = useDownloadQueueOptional();
   const navigate = useNavigate();
+  const { t } = useI18n();
+  const sizeUnits = [
+    t("common.units.bytes"),
+    t("common.units.kb"),
+    t("common.units.mb"),
+    t("common.units.gb"),
+    t("common.units.tb"),
+  ];
 
   const createModel = useCallback(
     (item: QueuedDownload) => {
-      if (!item.resultPath || !ctx) return;
+      if (!item.resultPath || !ctx || !isCreateableModelDownload(item)) return;
       const displayName = extractShortName(item.modelId).replace(/-GGUF$/i, "");
       const params = new URLSearchParams();
       params.set("hfModelPath", item.resultPath);
@@ -59,10 +70,16 @@ export function ModelsDownloadIndicator() {
   if (!ctx || !ctx.hasItems) return null;
 
   const { queue, cancelItem, dismissItem } = ctx;
+  const visibleQueue = queue.filter((d) => d.queueKind !== "kokoro");
+  const { groups, singles } = groupQueueDownloads(visibleQueue);
+  const activeItems = singles.filter((d) => d.status === "downloading" || d.status === "queued");
+  const completedItems = singles.filter((d) => d.status === "complete");
+  const failedItems = singles.filter((d) => d.status === "error" || d.status === "cancelled");
+  const activeCount = visibleQueue.filter(
+    (d) => d.status === "downloading" || d.status === "queued",
+  ).length;
 
-  const activeItems = queue.filter((d) => d.status === "downloading" || d.status === "queued");
-  const completedItems = queue.filter((d) => d.status === "complete");
-  const failedItems = queue.filter((d) => d.status === "error" || d.status === "cancelled");
+  if (visibleQueue.length === 0) return null;
 
   return (
     <div className="space-y-2">
@@ -70,15 +87,33 @@ export function ModelsDownloadIndicator() {
       <div className="flex items-center gap-2 px-1">
         <Download size={12} className="text-accent/60" />
         <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-fg/40">
-          Downloads
-          {activeItems.length > 0 && (
-            <span className="ml-1.5 text-accent/70">({activeItems.length} active)</span>
+          {t("installedModels.downloads.heading")}
+          {activeCount > 0 && (
+            <span className="ml-1.5 text-accent/70">
+              {t("installedModels.downloads.activeCount", { count: activeCount })}
+            </span>
           )}
         </span>
         <div className="h-px flex-1 bg-fg/5" />
       </div>
 
       <AnimatePresence mode="popLayout">
+        {groups.map((group) => (
+          <motion.div
+            key={`grp-${group.installId}`}
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.15 }}
+            className="overflow-hidden"
+          >
+            <DownloadGroupCard
+              group={group}
+              onClick={() => goToModel(navigate, (group.model ?? group.items[0]).modelId)}
+            />
+          </motion.div>
+        ))}
+
         {/* Active downloads */}
         {activeItems.map((item) => (
           <motion.div
@@ -119,7 +154,7 @@ export function ModelsDownloadIndicator() {
                     interactive.transition.fast,
                     "hover:bg-fg/10 hover:text-danger/70 active:scale-90",
                   )}
-                  title="Cancel download"
+                  title={t("installedModels.downloads.cancelDownload")}
                 >
                   <X size={13} />
                 </button>
@@ -140,7 +175,8 @@ export function ModelsDownloadIndicator() {
                     {pct(item)}%
                     {item.total > 0 && (
                       <span className="ml-1 text-fg/25">
-                        {formatBytes(item.downloaded)}/{formatBytes(item.total)}
+                        {formatBytes(item.downloaded, sizeUnits)}/
+                        {formatBytes(item.total, sizeUnits)}
                       </span>
                     )}
                   </span>
@@ -148,7 +184,9 @@ export function ModelsDownloadIndicator() {
               )}
 
               {item.status === "queued" && (
-                <p className="mt-1.5 text-[10px] text-fg/30">Waiting in queue...</p>
+                <p className="mt-1.5 text-[10px] text-fg/30">
+                  {t("installedModels.downloads.waiting")}
+                </p>
               )}
             </div>
           </motion.div>
@@ -177,24 +215,26 @@ export function ModelsDownloadIndicator() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[12px] font-medium text-fg/80">{item.filename}</p>
                   <p className="text-[10px] text-emerald-400/60">
-                    {formatBytes(item.total)} — Ready to create
+                    {formatBytes(item.total, sizeUnits)} ({t("installedModels.downloads.readyToCreate")})
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-1.5">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      createModel(item);
-                    }}
-                    className={cn(
-                      "flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-semibold text-emerald-300",
-                      interactive.transition.fast,
-                      "hover:bg-emerald-500/25 active:scale-95",
-                    )}
-                  >
-                    <Cpu size={11} />
-                    Create
-                  </button>
+                  {isCreateableModelDownload(item) && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        createModel(item);
+                      }}
+                      className={cn(
+                        "flex items-center gap-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/15 px-3 py-1.5 text-[11px] font-semibold text-emerald-300",
+                        interactive.transition.fast,
+                        "hover:bg-emerald-500/25 active:scale-95",
+                      )}
+                    >
+                      <Cpu size={11} />
+                      {t("installedModels.downloads.create")}
+                    </button>
+                  )}
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
@@ -205,7 +245,7 @@ export function ModelsDownloadIndicator() {
                       interactive.transition.fast,
                       "hover:bg-fg/10 hover:text-fg/50 active:scale-90",
                     )}
-                    title="Dismiss"
+                    title={t("installedModels.downloads.dismiss")}
                   >
                     <X size={12} />
                   </button>
@@ -238,7 +278,9 @@ export function ModelsDownloadIndicator() {
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[11px] font-medium text-fg/60">{item.filename}</p>
                   <p className="truncate text-[10px] text-danger/50">
-                    {item.status === "cancelled" ? "Cancelled" : item.error || "Download failed"}
+                    {item.status === "cancelled"
+                      ? t("installedModels.downloads.cancelled")
+                      : item.error || t("installedModels.downloads.failed")}
                   </p>
                 </div>
                 <button
@@ -251,7 +293,7 @@ export function ModelsDownloadIndicator() {
                     interactive.transition.fast,
                     "hover:bg-fg/10 hover:text-fg/50 active:scale-90",
                   )}
-                  title="Dismiss"
+                  title={t("installedModels.downloads.dismiss")}
                 >
                   <X size={12} />
                 </button>
@@ -262,7 +304,7 @@ export function ModelsDownloadIndicator() {
       </AnimatePresence>
 
       {/* Browse more link */}
-      {activeItems.length > 0 && (
+      {activeCount > 0 && (
         <button
           onClick={() => navigate(Routes.settingsModelsBrowse)}
           className={cn(
@@ -271,7 +313,7 @@ export function ModelsDownloadIndicator() {
             "hover:text-accent/80 hover:bg-fg/3",
           )}
         >
-          View in browser
+          {t("installedModels.downloads.viewInBrowser")}
           <ChevronRight size={12} />
         </button>
       )}

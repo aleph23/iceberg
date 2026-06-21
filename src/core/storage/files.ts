@@ -95,6 +95,10 @@ export const storageBridge = {
       selectedSourceVersion?: string | null;
       availableVersions?: string[];
       maxTokens: number;
+      companionEmotionInstalled?: boolean;
+      companionNerInstalled?: boolean;
+      companionRouterInstalled?: boolean;
+      installBundleComplete?: boolean;
     }>("get_embedding_model_info"),
   startEmbeddingDownload: (version?: string) =>
     invoke("start_embedding_download", { version: version ?? null }) as Promise<void>,
@@ -133,53 +137,111 @@ export const storageBridge = {
     invoke<{
       success: boolean;
       message: string;
-      scores: Array<{
-        pairName: string;
-        textA: string;
-        textB: string;
-        similarityScore: number;
-        expected: string;
-        passed: boolean;
-        category: string;
-      }>;
       modelInfo: {
         version: string;
         maxTokens: number;
         embeddingDimensions: number;
       };
+      health: {
+        loadOk: boolean;
+        identityCosine: number;
+        passed: boolean;
+      };
+      retrieval: {
+        caseCount: number;
+        top1Rate: number;
+        top3Rate: number;
+        mrr: number;
+        passed: boolean;
+        cases: Array<{
+          name: string;
+          query: string;
+          expectedId: string;
+          expectedText: string;
+          rank: number;
+          correct: boolean;
+          topId: string;
+          topText: string;
+          topScore: number;
+          correctScore: number;
+        }>;
+      };
+      separation: {
+        relatedAvg: number;
+        unrelatedAvg: number;
+        margin: number;
+        passed: boolean;
+        relatedPairs: Array<{
+          name: string;
+          textA: string;
+          textB: string;
+          score: number;
+        }>;
+        unrelatedPairs: Array<{
+          name: string;
+          textA: string;
+          textB: string;
+          score: number;
+        }>;
+      };
     }>("run_embedding_test"),
   runEmbeddingDevBenchmark: () =>
     invoke<{
       maxTokensUsed: number;
-      v2: {
-        version: string;
-        sampleCount: number;
-        averageMs: number;
-        p95Ms: number;
-        minMs: number;
-        maxMs: number;
-      };
+      configuredV4Dimensions: number;
       v3: {
         version: string;
+        label: string;
+        embeddingDimensions: number;
         sampleCount: number;
         averageMs: number;
         p95Ms: number;
         minMs: number;
         maxMs: number;
+        relatedAverage: number;
+        unrelatedAverage: number;
+        separationMargin: number;
+        retrievalTop1: number;
+        retrievalMrr: number;
+        pairScores: Array<{
+          pairName: string;
+          category: string;
+          similarity: number;
+        }>;
       };
-      pairDeltas: Array<{
-        pairName: string;
-        v2Similarity: number;
-        v3Similarity: number;
-        delta: number;
-      }>;
-      averageSpeedupV3VsV2: number;
+      v4: {
+        version: string;
+        label: string;
+        embeddingDimensions: number;
+        sampleCount: number;
+        averageMs: number;
+        p95Ms: number;
+        minMs: number;
+        maxMs: number;
+        relatedAverage: number;
+        unrelatedAverage: number;
+        separationMargin: number;
+        retrievalTop1: number;
+        retrievalMrr: number;
+        pairScores: Array<{
+          pairName: string;
+          category: string;
+          similarity: number;
+        }>;
+      };
+      averageSpeedupV4VsV3: number;
     }>("run_embedding_dev_benchmark"),
   compareCustomTexts: (textA: string, textB: string) =>
     invoke<number>("compare_custom_texts", { textA, textB }),
   deleteEmbeddingModel: () => invoke("delete_embedding_model") as Promise<void>,
-  deleteEmbeddingModelVersion: (version: "v1" | "v2" | "v3") =>
+  deleteEmbeddingModelVersion: (version: "v1" | "v2" | "v3" | "v4") =>
     invoke("delete_embedding_model_version", { version }) as Promise<void>,
+
+  // Companion analysis models (emotion / NER / router) — installed individually
+  startCompanionDownload: (kind: "emotion" | "ner" | "router") =>
+    invoke("start_companion_download", { kind }) as Promise<void>,
+  deleteCompanionModel: (kind: "emotion" | "ner" | "router") =>
+    invoke("delete_companion_model", { kind }) as Promise<void>,
 
   providerUpsert: (cred: unknown) =>
     invoke<string>("provider_upsert", { credentialJson: JSON.stringify(cred) }).then((s) =>
@@ -193,11 +255,32 @@ export const storageBridge = {
 
   // Characters
   charactersList: () => invoke<string>("characters_list").then((s) => JSON.parse(s) as any[]),
+  characterGet: (id: string) => invoke<string>("character_get", { id }).then((s) => JSON.parse(s)),
   characterUpsert: (character: unknown) =>
     invoke<string>("character_upsert", { characterJson: JSON.stringify(character) }).then((s) =>
       JSON.parse(s),
     ),
+  characterUpdateChatAppearance: (id: string, chatAppearanceJson: string | null) =>
+    invoke<string>("character_update_chat_appearance", {
+      id,
+      chatAppearanceJson,
+    }).then((s) => JSON.parse(s)),
   characterDelete: (id: string) => invoke("character_delete", { id }) as Promise<void>,
+  characterCloneDeep: (id: string) =>
+    invoke<string>("character_clone_deep", { id }).then((s) => JSON.parse(s)),
+  companionScheduledNotesList: (characterId: string) =>
+    invoke<string>("companion_scheduled_notes_list", { characterId }).then((s) => JSON.parse(s)),
+  companionScheduledNotesUpsert: (note: unknown) =>
+    invoke<string>("companion_scheduled_notes_upsert", {
+      noteJson: JSON.stringify(note),
+    }).then((s) => JSON.parse(s)),
+  companionScheduledNotesDelete: (id: string) =>
+    invoke("companion_scheduled_notes_delete", { id }) as Promise<void>,
+  companionScheduledNotesPreviewActive: (characterId: string, asOfMs: number) =>
+    invoke<string>("companion_scheduled_notes_preview_active", {
+      characterId,
+      asOfMs,
+    }).then((s) => JSON.parse(s)),
   imageLibraryList: () => invoke<unknown[]>("storage_list_image_library"),
   imageLibraryDownloadToDownloads: (filePath: string, filename?: string | null) =>
     invoke<string>("storage_download_image_to_downloads", {
@@ -298,6 +381,11 @@ export const storageBridge = {
     ),
   sessionMessageCount: (sessionId: string) =>
     invoke<number>("session_message_count", { sessionId }),
+  messageCompanionEffect: (sessionId: string, assistantMessageId: string) =>
+    invoke<string | null>("get_message_companion_effect", {
+      sessionId,
+      assistantMessageId,
+    }).then((s) => (typeof s === "string" ? JSON.parse(s) : null)),
   sessionUpsert: (session: unknown) =>
     invoke("session_upsert", { sessionJson: JSON.stringify(session) }) as Promise<void>,
   sessionUpsertMeta: (session: unknown) =>
@@ -307,6 +395,8 @@ export const storageBridge = {
     invoke("session_archive", { id, archived }) as Promise<void>,
   sessionUpdateTitle: (id: string, title: string) =>
     invoke("session_update_title", { id, title }) as Promise<void>,
+  sessionUpdateAuthorNote: (id: string, authorNote: string | null) =>
+    invoke("session_update_author_note", { id, authorNote }) as Promise<void>,
   messageTogglePin: (sessionId: string, messageId: string) =>
     invoke<boolean | null>("message_toggle_pin_state", { sessionId, messageId }),
   sessionAddMemory: (sessionId: string, memory: string, memoryCategory?: string) =>
@@ -339,6 +429,16 @@ export const storageBridge = {
     invoke<string | null>("session_set_memory_cold_state", { sessionId, memoryIndex, isCold }).then(
       (s) => (typeof s === "string" ? JSON.parse(s) : null),
     ),
+  sessionSetMemoryObservedAt: (
+    sessionId: string,
+    memoryIndex: number,
+    observedAt: number | null,
+  ) =>
+    invoke<string | null>("session_set_memory_observed_at", {
+      sessionId,
+      memoryIndex,
+      observedAt,
+    }).then((s) => (typeof s === "string" ? JSON.parse(s) : null)),
 
   // Messages (paged)
   messagesList: (sessionId: string, limit: number, beforeCreatedAt?: number, beforeId?: string) =>
@@ -384,6 +484,22 @@ export const storageBridge = {
         role: string;
       }[]
     >("search_messages", { sessionId, query }),
+
+  groupSearchMessages: (
+    sessionId: string,
+    query: string,
+  ): Promise<
+    {
+      messageId: string;
+      content: string;
+      createdAt: number;
+      role: string;
+      speakerCharacterId: string | null;
+    }[]
+  > =>
+    invoke<string>("group_search_messages", { sessionId, query }).then(
+      (s) => JSON.parse(s),
+    ),
 
   chatGenerateUserReply: (
     sessionId: string,
@@ -475,32 +591,22 @@ export const storageBridge = {
     }),
   backupDisableDynamicMemory: () => invoke("backup_disable_dynamic_memory") as Promise<void>,
 
-  // Chat package (single/group chat export/import)
-  chatpkgExportSingleChat: (sessionId: string, includeCharacterId?: boolean) =>
-    invoke<string>("chatpkg_export_single_chat", {
-      sessionId,
-      includeCharacterId: includeCharacterId ?? true,
-    }),
-  chatpkgExportSingleChatSillyTavern: (sessionId: string) =>
-    invoke<string>("chatpkg_export_single_chat_sillytavern", {
-      sessionId,
-    }),
-  chatpkgExportGroupChat: (sessionId: string, includeCharacterSnapshots?: boolean) =>
-    invoke<string>("chatpkg_export_group_chat", {
-      sessionId,
-      includeCharacterSnapshots: includeCharacterSnapshots ?? false,
-    }),
-  chatpkgInspect: (packagePath: string) =>
-    invoke<string>("chatpkg_inspect", { packagePath }).then((s) => JSON.parse(s) as any),
-  chatpkgImport: (
-    packagePath: string,
+  // JSONL chat export/import (SillyTavern format)
+  jsonlExportSingleChat: (sessionId: string) =>
+    invoke<string>("jsonl_export_single_chat", { sessionId }),
+  jsonlExportGroupChat: (sessionId: string) =>
+    invoke<string>("jsonl_export_group_chat", { sessionId }),
+  jsonlInspect: (path: string) =>
+    invoke<string>("jsonl_inspect", { path }).then((s) => JSON.parse(s) as any),
+  jsonlImport: (
+    path: string,
     options?: {
       targetCharacterId?: string;
       participantCharacterMap?: Record<string, string>;
     },
   ) =>
-    invoke<string>("chatpkg_import", {
-      packagePath,
+    invoke<string>("jsonl_import", {
+      path,
       optionsJson: options ? JSON.stringify(options) : null,
     }).then((s) => JSON.parse(s) as any),
 
@@ -520,7 +626,7 @@ export const storageBridge = {
     chatType?: "conversation" | "roleplay",
     startingScene?: any | null,
     backgroundImagePath?: string | null,
-    speakerSelectionMethod?: "llm" | "heuristic" | "round_robin" | null,
+    speakerSelectionMethod?: "llm" | "heuristic" | "round_robin" | "director" | "director_action" | null,
   ) =>
     invoke<string>("group_create", {
       name,
@@ -543,7 +649,7 @@ export const storageBridge = {
     chatType?: "conversation" | "roleplay",
     startingScene?: any | null,
     backgroundImagePath?: string | null,
-    speakerSelectionMethod?: "llm" | "heuristic" | "round_robin" | null,
+    speakerSelectionMethod?: "llm" | "heuristic" | "round_robin" | "director" | "director_action" | null,
     mutedCharacterIds?: string[] | null,
   ) =>
     invoke<string>("group_update", {
@@ -564,7 +670,7 @@ export const storageBridge = {
     invoke("group_update_persona", { id, personaId }) as Promise<void>,
   groupUpdateSpeakerSelectionMethod: (
     id: string,
-    speakerSelectionMethod: "llm" | "heuristic" | "round_robin",
+    speakerSelectionMethod: "llm" | "heuristic" | "round_robin" | "director" | "director_action",
   ) =>
     invoke("group_update_speaker_selection_method", {
       id,
@@ -589,6 +695,11 @@ export const storageBridge = {
       id,
       startingSceneJson: startingScene ? JSON.stringify(startingScene) : null,
     }) as Promise<void>,
+  groupUpdateChatAppearance: (id: string, chatAppearanceJson: string | null) =>
+    invoke<string>("group_update_chat_appearance", {
+      id,
+      chatAppearanceJson,
+    }).then((s) => JSON.parse(s)),
   groupCreateSession: (groupId: string) =>
     invoke<string>("group_create_session", { groupId }).then((s) => JSON.parse(s)),
 
@@ -604,7 +715,7 @@ export const storageBridge = {
     chatType?: "conversation" | "roleplay",
     startingScene?: any | null,
     backgroundImagePath?: string | null,
-    speakerSelectionMethod?: "llm" | "heuristic" | "round_robin" | null,
+    speakerSelectionMethod?: "llm" | "heuristic" | "round_robin" | "director" | "director_action" | null,
   ) =>
     invoke<string>("group_session_create", {
       name,
@@ -687,7 +798,7 @@ export const storageBridge = {
     }).then((s) => JSON.parse(s)),
   groupSessionUpdateSpeakerSelectionMethod: (
     sessionId: string,
-    speakerSelectionMethod: "llm" | "heuristic" | "round_robin",
+    speakerSelectionMethod: "llm" | "heuristic" | "round_robin" | "director" | "director_action",
   ) =>
     invoke<string>("group_session_update_speaker_selection_method", {
       sessionId,
@@ -697,6 +808,11 @@ export const storageBridge = {
     invoke<string>("group_session_update_muted_character_ids", {
       sessionId,
       mutedCharacterIdsJson: JSON.stringify(mutedCharacterIds),
+    }).then((s) => JSON.parse(s)),
+  groupSessionUpdateAuthorNote: (sessionId: string, authorNote: string | null) =>
+    invoke<string>("group_session_update_author_note", {
+      sessionId,
+      authorNote,
     }).then((s) => JSON.parse(s)),
 
   // Group Participation
@@ -751,6 +867,11 @@ export const storageBridge = {
       userMessage,
       stream: stream ?? true,
       requestId: requestId ?? null,
+    }).then((s) => JSON.parse(s)),
+  groupChatAddUserMessage: (sessionId: string, userMessage: string) =>
+    invoke<string>("group_chat_add_user_message", {
+      sessionId,
+      userMessage,
     }).then((s) => JSON.parse(s)),
   groupChatRegenerate: (
     sessionId: string,
@@ -886,19 +1007,42 @@ export const storageBridge = {
     }
   },
 
-  chatpkgPickFile: async (): Promise<{ path: string; filename: string } | null> => {
+  jsonlPickFile: async (): Promise<{ path: string; filename: string } | null> => {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: "Chat Package", extensions: ["chatpkg", "json", "jsonl"] }],
+        filters: [{ name: "Chat Log", extensions: ["jsonl", "json"] }],
       });
 
       if (!selected || typeof selected !== "string") return null;
+
+      console.log("[jsonlPickFile] Selected file:", selected);
+
+      const isContentUri = selected.startsWith("content://");
+
+      let filename: string;
       const parts = selected.split("/");
-      const filename = parts[parts.length - 1] || "chat.chatpkg";
+      filename = parts[parts.length - 1] || "chat.jsonl";
+      if (filename.startsWith("content:") || filename.includes("%")) {
+        filename = "chat.jsonl";
+      }
+
+      if (!filename.endsWith(".jsonl") && !filename.endsWith(".json")) {
+        filename = filename + ".jsonl";
+      }
+
+      if (isContentUri) {
+        console.log(
+          "[jsonlPickFile] Android content URI detected, passing URI to backend:",
+          selected,
+        );
+      } else {
+        console.log("[jsonlPickFile] Desktop path, using directly:", selected);
+      }
+
       return { path: selected, filename };
     } catch (error) {
-      console.error("[chatpkgPickFile] Error:", error);
+      console.error("[jsonlPickFile] Error:", error);
       throw error;
     }
   },

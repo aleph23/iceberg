@@ -127,7 +127,11 @@ fn db_read_settings_json(app: &tauri::AppHandle) -> Result<Option<String>, Strin
         advanced_settings_json,
     )) = row
     else {
-        log_info(app, "settings", "settings row id=1 not found; returning None");
+        log_info(
+            app,
+            "settings",
+            "settings row id=1 not found; returning None",
+        );
         return Ok(None);
     };
 
@@ -183,7 +187,10 @@ fn db_read_settings_json(app: &tauri::AppHandle) -> Result<Option<String>, Strin
     log_info(
         app,
         "settings",
-        format!("loaded {} provider credentials from DB", provider_credentials.len()),
+        format!(
+            "loaded {} provider credentials from DB",
+            provider_credentials.len()
+        ),
     );
 
     // Models
@@ -318,10 +325,9 @@ fn db_read_settings_json(app: &tauri::AppHandle) -> Result<Option<String>, Strin
         ),
     );
 
-    Ok(Some(
-        serde_json::to_string(&root_value)
-            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?,
-    ))
+    Ok(Some(serde_json::to_string(&root_value).map_err(|e| {
+        crate::utils::err_to_string(module_path!(), line!(), e)
+    })?))
 }
 
 fn db_write_settings_json(app: &tauri::AppHandle, data: String) -> Result<(), String> {
@@ -419,7 +425,8 @@ fn db_write_settings_json(app: &tauri::AppHandle, data: String) -> Result<(), St
         format!("settings table upsert affected {} row(s)", settings_rows),
     );
 
-    let deleted_provider_rows = tx.execute("DELETE FROM provider_credentials", [])
+    let deleted_provider_rows = tx
+        .execute("DELETE FROM provider_credentials", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     log_info(
         app,
@@ -476,12 +483,16 @@ fn db_write_settings_json(app: &tauri::AppHandle, data: String) -> Result<(), St
         }
     }
 
-    let deleted_model_rows = tx.execute("DELETE FROM models", [])
+    let deleted_model_rows = tx
+        .execute("DELETE FROM models", [])
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     log_info(
         app,
         "settings",
-        format!("deleted {} existing model row(s) before rewrite", deleted_model_rows),
+        format!(
+            "deleted {} existing model row(s) before rewrite",
+            deleted_model_rows
+        ),
     );
     if let Some(models) = json.get("models").and_then(|v| v.as_array()) {
         log_info(
@@ -499,7 +510,7 @@ fn db_write_settings_json(app: &tauri::AppHandle, data: String) -> Result<(), St
                     }
                 }
             }
-            if !scopes.iter().any(|s| s.eq_ignore_ascii_case("text")) {
+            if scopes.is_empty() {
                 scopes.push("text".to_string());
             }
             scopes.sort_by_key(|s| {
@@ -590,7 +601,11 @@ fn db_write_settings_json(app: &tauri::AppHandle, data: String) -> Result<(), St
     }
     tx.commit()
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-    log_info(app, "settings", "settings DB transaction committed successfully");
+    log_info(
+        app,
+        "settings",
+        "settings DB transaction committed successfully",
+    );
     Ok(())
 }
 
@@ -660,7 +675,7 @@ pub fn settings_increment_app_active_usage_ms(
             .ok_or_else(|| "failed to initialize app_state object".to_string())?
     };
 
-    let now = now_ms() as u64;
+    let now = now_ms();
     let current_total = app_state_obj
         .get("appActiveUsageMs")
         .and_then(|v| v.as_u64())
@@ -939,4 +954,22 @@ pub fn settings_set_migration_version(app: tauri::AppHandle, version: i64) -> Re
     )
     .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     Ok(())
+}
+
+pub fn get_model_output_scopes(
+    app: &tauri::AppHandle,
+    model_name: &str,
+    provider_id: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let conn = open_db(app)?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT output_scopes FROM models WHERE name = ?1 AND provider_id = ?2 LIMIT 1",
+            params![model_name, provider_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+        .flatten();
+    Ok(raw.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok()))
 }

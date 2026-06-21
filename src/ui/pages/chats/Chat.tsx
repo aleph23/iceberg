@@ -7,19 +7,34 @@ import {
   useRef,
   useState,
 } from "react";
-import { useParams, useSearchParams, useNavigate } from "react-router-dom";
+import { useParams, useSearchParams, useNavigate, useLocation } from "react-router-dom";
+import { Routes } from "../../navigation";
+import {
+  buildAvatarLibrarySelectionKey,
+  type AvatarLibrarySelectionPayload,
+} from "../../components/AvatarPicker/librarySelection";
+import {
+  patchWidgetNode,
+  setLibraryImageOnNode,
+  setScratchPadContentOnNode,
+} from "./components/widgets/editor/widgetFactories";
+import type { WidgetNode } from "../../../core/storage/chatWidgetSchemas";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
-import { ArrowLeftRight, ChevronDown, User, X } from "lucide-react";
+import { ArrowLeftRight, ChevronDown, NotebookPen, User, X } from "lucide-react";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type {
   AccessibilitySettings,
   Character,
+  CompanionTimeOverride,
   Model,
   Persona,
   Scene,
   StoredMessage,
 } from "../../../core/storage/schemas";
-import { createDefaultAccessibilitySettings } from "../../../core/storage/schemas";
+import {
+  createDefaultAccessibilitySettings,
+  CompanionSessionStateSchema,
+} from "../../../core/storage/schemas";
 import {
   abortAudioPreview,
   generateTtsForMessage,
@@ -43,6 +58,7 @@ import {
   listPersonas,
   readSettings,
   saveSession,
+  updateSessionAuthorNote,
   SETTINGS_UPDATED_EVENT,
   SESSION_UPDATED_EVENT,
   updateSessionBackgroundImage,
@@ -60,7 +76,26 @@ import {
   LoadingSpinner,
   EmptyState,
   ChatSettingsDrawer,
+  AuthorNoteBottomMenu,
+  InlineAuthorNoteBar,
+  useAuthorNoteInlineEditor,
 } from "./components";
+import { ChatAppearanceDrawer } from "./components/appearance/ChatAppearanceDrawer";
+import { getChatColumnLayout } from "./utils/chatColumnLayout";
+import { getChatWidgetLayout, useViewportWidth } from "./utils/chatWidgetLayout";
+import { ChatWidgetArea } from "./components/ChatWidgetArea";
+import {
+  WidgetContextProvider,
+  WidgetEditProvider,
+  type WidgetActionContext,
+  type WidgetSlots,
+  type WidgetEditRestore,
+} from "./components/widgets";
+import {
+  getCharacter,
+  saveCharacter,
+  updateCharacterChatAppearance,
+} from "../../../core/storage";
 import { BottomMenu, GuidedTour, MenuButton, useGuidedTour } from "../../components";
 import { AvatarImage } from "../../components/AvatarImage";
 import { useAvatar } from "../../hooks/useAvatar";
@@ -69,8 +104,10 @@ import { radius, cn } from "../../design-tokens";
 import { useI18n } from "../../../core/i18n/context";
 import { PersonaSelector } from "../group-chats/components/settings";
 import { sanitizeAssistantSceneDirective } from "./hooks/sceneImageProtocol";
+import { useBeetrootRain } from "./components/BeetrootRain";
+import { useBeetrootEasterEgg } from "./hooks/useBeetrootEasterEgg";
 import { processBackgroundImage } from "../../../core/utils/image";
-import { convertToImageRef } from "../../../core/storage/images";
+import { convertFilePathToDataUrl, convertToImageRef } from "../../../core/storage/images";
 import { useImageData } from "../../hooks/useImageData";
 import { ImageLibraryPanel } from "../library/ImageLibraryPage";
 import type { ImageLibraryItem } from "../../../core/storage/repo";
@@ -78,6 +115,16 @@ import {
   SCENE_PROMPT_APPROVAL_EVENT,
   type ScenePromptApprovalDetail,
 } from "./hooks/useChatEnhancementsController";
+import {
+  asrCorrectionUpsert,
+  asrIgnoreSuggestion,
+  asrSuggestCorrectionsFromEdit,
+  asrWhisperListInstalledModels,
+  asrWhisperTranscribePcm,
+  micConstraintsWithStoredDevice,
+  type AsrInstalledWhisperModel,
+  type AsrLearnedSuggestion,
+} from "../../../core/asr";
 
 const LONG_PRESS_DELAY = 450;
 const SCROLL_THRESHOLD = 10; // pixels of movement to cancel long press
@@ -86,10 +133,33 @@ const STICKY_BOTTOM_THRESHOLD_PX = 80;
 const MAX_AUDIO_CACHE_ENTRIES = 50;
 const MOBILE_KEYBOARD_THRESHOLD_PX = 120;
 
+function mergeFloat32Chunks(chunks: Float32Array[]) {
+  const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const merged = new Float32Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+type FooterRecorderSession = {
+  stream: MediaStream;
+  audioContext: AudioContext;
+  source: MediaStreamAudioSourceNode;
+  processor: ScriptProcessorNode;
+  analyser: AnalyserNode;
+  chunks: Float32Array[];
+  sampleRate: number;
+  startedAt: number;
+};
+
 export function ChatConversationPage() {
   const { characterId } = useParams<{ characterId: string }>();
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { t } = useI18n();
   const { shouldShow: showChatDetailTour, dismiss: dismissChatDetailTour } =
     useGuidedTour("chatDetail");
@@ -100,10 +170,52 @@ export function ChatConversationPage() {
   } = useGuidedTour("postFirstMessage");
   const sessionId = searchParams.get("sessionId") || undefined;
   const jumpToMessageId = searchParams.get("jumpToMessage");
-  const { backgroundImageData, isBackgroundLight, theme, chatAppearance, chatController } =
-    useChatLayoutContext();
+  const {
+    character: layoutCharacter,
+    backgroundImageData,
+    backgroundImageLoading,
+    isBackgroundLight,
+    theme,
+    chatAppearance,
+    chatController,
+    setDraftAppearanceOverride,
+    reloadCharacter,
+    appearanceFieldUpdater,
+    registerAppearanceFieldUpdater,
+  } = useChatLayoutContext();
+  const [appearanceDrawerOpen, setAppearanceDrawerOpen] = useState(false);
+  const viewportWidth = useViewportWidth();
+  const widgetLayout = getChatWidgetLayout(chatAppearance, viewportWidth);
+  const widgetsOn = widgetLayout.enabled;
+  const [widgetEditNonce, setWidgetEditNonce] = useState(0);
+  const requestWidgetEdit = widgetsOn ? () => setWidgetEditNonce((n) => n + 1) : undefined;
+  const headerInside = widgetsOn && chatAppearance.chatHeaderMoves;
+  const footerInside = widgetsOn && chatAppearance.chatFooterMoves;
+  const applyHeaderColumnClass = !widgetsOn && chatAppearance.chatHeaderMoves;
+  const applyFooterColumnClass = !widgetsOn && chatAppearance.chatFooterMoves;
+  const widgetLeftNodes = widgetLayout.showLeft
+    ? widgetLayout.showRight
+      ? chatAppearance.chatWidgetSlots.left
+      : [...chatAppearance.chatWidgetSlots.left, ...chatAppearance.chatWidgetSlots.right]
+    : [];
+  const widgetRightNodes = widgetLayout.showRight
+    ? widgetLayout.showLeft
+      ? chatAppearance.chatWidgetSlots.right
+      : [...chatAppearance.chatWidgetSlots.right, ...chatAppearance.chatWidgetSlots.left]
+    : [];
 
   const scrollContainerRef = useRef<HTMLElement | null>(null);
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const [footerHeight, setFooterHeight] = useState(0);
+  useEffect(() => {
+    const el = footerRef.current;
+    if (!el) return;
+    const update = () => setFooterHeight(el.offsetHeight);
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  });
   const pressStartPosition = useRef<{ x: number; y: number } | null>(null);
   const [sessionForHeader, setSessionForHeader] = useState(chatController.session);
   const pendingScrollAdjustRef = useRef<{ prevScrollTop: number; prevScrollHeight: number } | null>(
@@ -159,10 +271,13 @@ export function ChatConversationPage() {
   const [showChoiceMenu, setShowChoiceMenu] = useState(false);
   const [showResultMenu, setShowResultMenu] = useState(false);
   const [showPersonaSelector, setShowPersonaSelector] = useState(false);
+  const [showAuthorNoteMenu, setShowAuthorNoteMenu] = useState(false);
+  const inlineAuthorNoteEnabled = useAuthorNoteInlineEditor();
   const [showBackgroundMenu, setShowBackgroundMenu] = useState(false);
   const [showBackgroundLibraryMenu, setShowBackgroundLibraryMenu] = useState(false);
   const [generatedReply, setGeneratedReply] = useState<string | null>(null);
   const [generatingReply, setGeneratingReply] = useState(false);
+  const [helpMeReplyReasoning, setHelpMeReplyReasoning] = useState(false);
   const [helpMeReplyError, setHelpMeReplyError] = useState<string | null>(null);
   const [showScenePromptModeMenu, setShowScenePromptModeMenu] = useState(false);
   const [showScenePromptEditorMenu, setShowScenePromptEditorMenu] = useState(false);
@@ -186,6 +301,17 @@ export function ChatConversationPage() {
   const isMobile = useMemo(() => getPlatform().type === "mobile", []);
   const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
   const footerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const footerRecorderRef = useRef<FooterRecorderSession | null>(null);
+  const footerRecordingTimerRef = useRef<number | null>(null);
+  const [footerAsrMode, setFooterAsrMode] = useState<"idle" | "recording" | "transcribing">("idle");
+  const [footerRecordingMs, setFooterRecordingMs] = useState(0);
+  const [footerAnalyser, setFooterAnalyser] = useState<AnalyserNode | null>(null);
+  const [footerAsrBusy, setFooterAsrBusy] = useState(false);
+  const [footerAsrRawText, setFooterAsrRawText] = useState("");
+  const [footerAsrBaseText, setFooterAsrBaseText] = useState("");
+  const [footerAsrSuggestions, setFooterAsrSuggestions] = useState<AsrLearnedSuggestion[]>([]);
+  const [footerAsrLearning, setFooterAsrLearning] = useState(false);
+  const [installedWhisperModels, setInstalledWhisperModels] = useState<AsrInstalledWhisperModel[]>([]);
   const shouldRestoreFooterFocusRef = useRef(false);
   const previousSettingsDrawerOpenRef = useRef(false);
   const helpMeReplyRequestIdRef = useRef<string | null>(null);
@@ -194,9 +320,17 @@ export function ChatConversationPage() {
   const sessionBackgroundInputRef = useRef<HTMLInputElement | null>(null);
   const backgroundLibraryScrollRef = useRef<HTMLDivElement | null>(null);
 
+  const selectedScene =
+    chatController.character?.scenes.find(
+      (scene) =>
+        scene.id ===
+        (chatController.session?.selectedSceneId ?? chatController.character?.defaultSceneId),
+    ) ?? null;
   const sessionBackgroundPreview = useImageData(chatController.session?.backgroundImagePath);
+  const sceneBackgroundPreview = useImageData(selectedScene?.backgroundImagePath);
   const characterBackgroundPreview = useImageData(chatController.character?.backgroundImagePath);
   const hasSessionBackgroundOverride = !!chatController.session?.backgroundImagePath;
+  const hasSceneBackgroundDefault = !!selectedScene?.backgroundImagePath;
   const hasCharacterBackgroundDefault = !!chatController.character?.backgroundImagePath;
 
   const handleImageClick = useCallback((src: string, alt: string) => {
@@ -210,6 +344,12 @@ export function ChatConversationPage() {
     },
     [chatController.session?.id],
   );
+
+  const handleOpenAuthorNoteMenu = useCallback(() => {
+    setShowPlusMenu(false);
+    setSettingsDrawerOpen(false);
+    setShowAuthorNoteMenu(true);
+  }, []);
 
   const handleSessionBackgroundUpload = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -339,6 +479,31 @@ export function ChatConversationPage() {
   }, [chatController.session]);
 
   useEffect(() => {
+    void asrWhisperListInstalledModels()
+      .then(setInstalledWhisperModels)
+      .catch((error) => {
+        console.error("Failed to load installed Whisper models for chat footer:", error);
+      });
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const session = footerRecorderRef.current;
+      if (session) {
+        session.processor.disconnect();
+        session.source.disconnect();
+        session.stream.getTracks().forEach((track) => track.stop());
+        void session.audioContext.close();
+        footerRecorderRef.current = null;
+      }
+      if (footerRecordingTimerRef.current != null) {
+        window.clearInterval(footerRecordingTimerRef.current);
+        footerRecordingTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     const wasOpen = previousSettingsDrawerOpenRef.current;
     previousSettingsDrawerOpenRef.current = settingsDrawerOpen;
     if (!wasOpen || settingsDrawerOpen || !shouldRestoreFooterFocusRef.current) {
@@ -381,6 +546,7 @@ export function ChatConversationPage() {
     addPendingAttachment,
     removePendingAttachment,
     handleSend,
+    handleSendSystemMessage,
     handleContinue,
     handleRegenerate,
     handleAbort,
@@ -395,9 +561,363 @@ export function ChatConversationPage() {
     initializeLongPressTimer,
     isStartingSceneMessage,
     streamingReasoning,
+    scenePromptStreaming,
     generateAiScenePrompt,
     applySceneImagePrompt,
   } = chatController;
+
+  const [widgetPersonas, setWidgetPersonas] = useState<Persona[]>([]);
+  const [widgetModels, setWidgetModels] = useState<Model[]>([]);
+  const resolveModelName = useCallback(
+    (modelId?: string | null): string | undefined => {
+      if (!modelId) return undefined;
+      return widgetModels.find((m) => m.id === modelId)?.displayName ?? modelId;
+    },
+    [widgetModels],
+  );
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([listPersonas(), readSettings()]).then(([ps, s]) => {
+      if (cancelled) return;
+      setWidgetPersonas(ps);
+      setWidgetModels(s.models ?? []);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [character?.id]);
+
+  const widgetCtxValue: WidgetActionContext = useMemo(() => {
+    const lastAssistantMessage = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && !m.id.startsWith("placeholder"));
+    return {
+      character,
+      persona: chatController.persona,
+      session: chatController.session,
+      hasBackground: !!backgroundImageData,
+      messageCount: messages.filter((m) => !m.id.startsWith("placeholder")).length,
+      sceneName: selectedScene?.direction?.trim() || (selectedScene ? t("chats.message.sceneLabel") : null),
+      memories: chatController.session?.memories ?? [],
+      personas: widgetPersonas,
+      models: widgetModels,
+      currentModelId: character?.defaultModelId ?? null,
+      fallbackModelId: character?.fallbackModelId ?? null,
+      swapPlacesActive: swapPlaces,
+      voiceAutoplayActive:
+        chatController.session?.voiceAutoplay ?? character?.voiceAutoplay ?? false,
+      canRegenerate: !!lastAssistantMessage && !chatController.sending,
+      canContinue: messages.length > 0 && !chatController.sending,
+      isGenerating: chatController.sending,
+      onSelectPersona: async (personaId) => {
+        const current = chatController.session;
+        if (!current) return;
+        await saveSession({
+          ...current,
+          personaId: personaId ?? null,
+          updatedAt: Date.now(),
+        });
+      },
+      onSelectModel: async (modelId) => {
+        if (!character) return;
+        await saveCharacter({ id: character.id, defaultModelId: modelId ?? null });
+        reloadCharacter();
+      },
+      onSelectFallbackModel: async (modelId) => {
+        if (!character) return;
+        await saveCharacter({ id: character.id, fallbackModelId: modelId });
+        reloadCharacter();
+      },
+      onAuthorNoteSaved: (next) => {
+        if (next) setSessionForHeader(next);
+      },
+      onRegenerate: async () => {
+        if (lastAssistantMessage) {
+          await chatController.handleRegenerate(lastAssistantMessage, { swapPlaces });
+        }
+      },
+      onToggleSwapPlaces: () => setSwapPlaces((s) => !s),
+      onNewSession: () => {
+        if (!characterId) return;
+        navigate(`/chat/${characterId}`);
+      },
+      onContinue: async () => {
+        await chatController.handleContinue({ swapPlaces });
+      },
+      onAbort: async () => {
+        await chatController.handleAbort();
+      },
+      onViewHistory: () => {
+        if (!characterId) return;
+        navigate(`/chat/${characterId}/history`);
+      },
+      onOpenMemories: () => {
+        if (!characterId) return;
+        const sid = chatController.session?.id;
+        navigate(
+          character?.mode === "companion"
+            ? Routes.chatCompanionMemories(characterId, sid)
+            : Routes.chatMemories(characterId, sid),
+        );
+      },
+      onOpenSearch: () => {
+        if (!characterId) return;
+        navigate(Routes.chatSearch(characterId, chatController.session?.id));
+      },
+      onToggleVoiceAutoplay: async () => {
+        const current = chatController.session;
+        if (!current) return;
+        const active = current.voiceAutoplay ?? character?.voiceAutoplay ?? false;
+        const next = { ...current, voiceAutoplay: !active, updatedAt: Date.now() };
+        await saveSession(next);
+        setSessionForHeader(next);
+      },
+      onUpdateScratchPad: async (nodeId, content) => {
+        const target = character;
+        if (!target) return;
+        const fresh = await getCharacter(target.id);
+        const existing = (fresh?.chatAppearance ?? target.chatAppearance ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const slots = (existing.chatWidgetSlots as WidgetSlots | undefined) ?? {
+          left: [],
+          right: [],
+        };
+        await updateCharacterChatAppearance(target.id, {
+          ...existing,
+          chatWidgetSlots: {
+            left: setScratchPadContentOnNode(slots.left, nodeId, content),
+            right: setScratchPadContentOnNode(slots.right, nodeId, content),
+          },
+        });
+        reloadCharacter();
+      },
+      onUpdateAuthorNote: async (content) => {
+        const current = chatController.session;
+        if (!current) return;
+        const trimmed = content.trim();
+        const nextNote = trimmed.length > 0 ? trimmed : null;
+        await updateSessionAuthorNote(current.id, nextNote);
+        const next = { ...current, authorNote: nextNote, updatedAt: Date.now() };
+        setSessionForHeader(next);
+      },
+      onUpdateNode: async (nodeId, patch) => {
+        const target = character;
+        if (!target) return;
+        const fresh = await getCharacter(target.id);
+        const existing = (fresh?.chatAppearance ?? target.chatAppearance ?? {}) as Record<
+          string,
+          unknown
+        >;
+        const slots = (existing.chatWidgetSlots as WidgetSlots | undefined) ?? {
+          left: [],
+          right: [],
+        };
+        await updateCharacterChatAppearance(target.id, {
+          ...existing,
+          chatWidgetSlots: {
+            left: patchWidgetNode(slots.left, nodeId, patch as Partial<WidgetNode>),
+            right: patchWidgetNode(slots.right, nodeId, patch as Partial<WidgetNode>),
+          },
+        });
+        reloadCharacter();
+      },
+      onUpdateCompanionTimeOverride: async (override: CompanionTimeOverride | null) => {
+        const current = chatController.session;
+        if (!current) return;
+        const nextCompanionState = CompanionSessionStateSchema.parse({
+          ...(current.companionState ?? {}),
+          preferences: {
+            ...(current.companionState?.preferences ?? {}),
+            timeOverride: override ?? undefined,
+          },
+          updatedAt: Date.now(),
+        });
+        const next = {
+          ...current,
+          companionState: nextCompanionState,
+          updatedAt: Date.now(),
+        };
+        await saveSession(next);
+        setSessionForHeader(next);
+      },
+      onInsertText: (text) => {
+        const trimmed = draft.trimEnd();
+        setDraft(trimmed ? `${trimmed} ${text}` : text);
+      },
+    };
+  }, [
+    character,
+    chatController,
+    widgetPersonas,
+    widgetModels,
+    swapPlaces,
+    messages,
+    characterId,
+    navigate,
+    reloadCharacter,
+    backgroundImageData,
+    selectedScene,
+    setDraft,
+    draft,
+  ]);
+
+  const persistWidgetSlots = useCallback(
+    async (slots: WidgetSlots) => {
+      const target = layoutCharacter ?? character;
+      if (!target) return;
+      const fresh = await getCharacter(target.id);
+      const existing = (fresh?.chatAppearance ?? target.chatAppearance ?? {}) as Record<
+        string,
+        unknown
+      >;
+      await updateCharacterChatAppearance(target.id, {
+        ...existing,
+        chatWidgetSlots: slots,
+      });
+      reloadCharacter();
+    },
+    [layoutCharacter, character, reloadCharacter],
+  );
+
+  const persistColumnWidthPx = useCallback(
+    async (px: number) => {
+      const target = layoutCharacter ?? character;
+      if (!target) return;
+      const fresh = await getCharacter(target.id);
+      const existing = (fresh?.chatAppearance ?? target.chatAppearance ?? {}) as Record<
+        string,
+        unknown
+      >;
+      await updateCharacterChatAppearance(target.id, {
+        ...existing,
+        chatColumnWidth: "custom",
+        chatColumnWidthPx: px,
+      });
+      reloadCharacter();
+    },
+    [layoutCharacter, character, reloadCharacter],
+  );
+
+  const returnPathRef = useRef(`${location.pathname}${location.search}`);
+  returnPathRef.current = `${location.pathname}${location.search}`;
+  const widgetImageSelectionKey = characterId ? `widget-image:${characterId}` : null;
+  const widgetImageHandledRef = useRef(false);
+  const [widgetEditRestore, setWidgetEditRestore] = useState<WidgetEditRestore | null>(null);
+  const beginLibraryImagePick = useCallback(
+    (nodeId: string) => {
+      if (!widgetImageSelectionKey) return;
+      sessionStorage.setItem(
+        `widget-image-target:${widgetImageSelectionKey}`,
+        JSON.stringify({ nodeId }),
+      );
+      navigate("/library/images/pick", {
+        state: {
+          returnPath: returnPathRef.current,
+          selectionStorageKey: widgetImageSelectionKey,
+          selectionKind: "avatar",
+        },
+      });
+    },
+    [navigate, widgetImageSelectionKey],
+  );
+
+  useEffect(() => {
+    const target = layoutCharacter ?? character;
+    if (!target || !widgetImageSelectionKey) return;
+    if (widgetImageHandledRef.current) return;
+    const selectionKey = buildAvatarLibrarySelectionKey(widgetImageSelectionKey);
+    const targetKey = `widget-image-target:${widgetImageSelectionKey}`;
+    const rawSelection = sessionStorage.getItem(selectionKey);
+    const rawTarget = sessionStorage.getItem(targetKey);
+    if (!rawSelection || !rawTarget) return;
+
+    let filePath: string | undefined;
+    let nodeId: string | undefined;
+    try {
+      filePath = (JSON.parse(rawSelection) as AvatarLibrarySelectionPayload).filePath;
+      nodeId = (JSON.parse(rawTarget) as { nodeId: string }).nodeId;
+    } catch (err) {
+      console.error("Failed to parse widget library selection:", err);
+    }
+    widgetImageHandledRef.current = true;
+    sessionStorage.removeItem(selectionKey);
+    sessionStorage.removeItem(targetKey);
+    if (!filePath || !nodeId) return;
+    const resolvedNodeId = nodeId;
+
+    void (async () => {
+      const dataUrl = await convertFilePathToDataUrl(filePath!);
+      if (!dataUrl) return;
+      const imageId = await convertToImageRef(dataUrl);
+      if (!imageId) return;
+      const fresh = await getCharacter(target.id);
+      const existing = (fresh?.chatAppearance ?? target.chatAppearance ?? {}) as Record<
+        string,
+        unknown
+      >;
+      const slots = (existing.chatWidgetSlots as WidgetSlots | undefined) ?? {
+        left: [],
+        right: [],
+      };
+      const nextSlots: WidgetSlots = {
+        left: setLibraryImageOnNode(slots.left, resolvedNodeId, imageId),
+        right: setLibraryImageOnNode(slots.right, resolvedNodeId, imageId),
+      };
+      await updateCharacterChatAppearance(target.id, {
+        ...existing,
+        chatWidgetSlots: nextSlots,
+      });
+      reloadCharacter();
+      setWidgetEditRestore({ slots: nextSlots, openNodeId: resolvedNodeId });
+    })();
+  }, [widgetImageSelectionKey, layoutCharacter, character, reloadCharacter]);
+
+  const beetrootRain = useBeetrootRain();
+  useBeetrootEasterEgg({ messages, fire: beetrootRain.fire });
+
+  useEffect(() => {
+    if (!footerAsrRawText.trim() || !draft.trim() || draft.trim() === footerAsrBaseText.trim()) {
+      setFooterAsrSuggestions([]);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      void asrSuggestCorrectionsFromEdit({
+        before: footerAsrRawText,
+        after: draft,
+        language: null,
+        scope: "conversation",
+      })
+        .then((next) => {
+          setFooterAsrSuggestions((prev) => {
+            const seen = new Set<string>();
+            const merged: AsrLearnedSuggestion[] = [];
+            const key = (s: AsrLearnedSuggestion) =>
+              `${s.normalizedWrong} ${s.normalizedCorrect}`;
+            for (const s of prev) {
+              if (next.some((n) => key(n) === key(s))) {
+                seen.add(key(s));
+                merged.push(s);
+              }
+            }
+            for (const s of next) {
+              if (!seen.has(key(s))) {
+                seen.add(key(s));
+                merged.push(s);
+              }
+            }
+            return merged;
+          });
+        })
+        .catch((error) => {
+          console.error("Failed to suggest ASR corrections from footer edit:", error);
+        });
+    }, 250);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [draft, footerAsrRawText, footerAsrBaseText]);
 
   const resolveSceneAttachment = useCallback((message: StoredMessage | null | undefined) => {
     if (!message) return null;
@@ -452,17 +972,15 @@ export function ChatConversationPage() {
     try {
       const sourceSession = await getSession(session.id);
       if (!sourceSession) {
-        throw new Error("Failed to load source session.");
+        throw new Error(t("chats.errors.loadSourceSessionFailed"));
       }
 
       if (!sourceSession.messages.some((msg) => msg.id === messageToBranch.id)) {
-        throw new Error("Selected message was not found in the session.");
+        throw new Error(t("chats.errors.messageNotInSession"));
       }
 
-      const selectedSceneId =
-        sourceSession.selectedSceneId || character.defaultSceneId || character.scenes[0]?.id;
-      const ownerScene =
-        character.scenes.find((scene) => scene.id === selectedSceneId) || character.scenes[0];
+      const selectedSceneId = sourceSession.selectedSceneId ?? character.defaultSceneId;
+      const ownerScene = character.scenes.find((scene) => scene.id === selectedSceneId);
       const ownerSceneContent = ownerScene ? resolveSceneContent(ownerScene).trim() : "";
       const startingScene = ownerSceneContent
         ? {
@@ -479,7 +997,11 @@ export function ChatConversationPage() {
         ownerCharacterId: character.id,
         personaId: sourceSession.personaDisabled ? null : (sourceSession.personaId ?? null),
         startingScene,
-        backgroundImagePath: character.backgroundImagePath ?? null,
+        backgroundImagePath:
+          sourceSession.backgroundImagePath ??
+          ownerScene?.backgroundImagePath ??
+          character.backgroundImagePath ??
+          null,
       });
 
       setShowGroupCharacterSelector(false);
@@ -505,8 +1027,12 @@ export function ChatConversationPage() {
     navigate,
   ]);
 
+  const visibleMessages = useMemo(
+    () => messages.filter((message) => message.role !== "system" || message.visibleInChat),
+    [messages],
+  );
   const isGenerating = sending || regeneratingMessageId !== null;
-  const lastMessageContentLength = messages[messages.length - 1]?.content.length ?? 0;
+  const lastMessageContentLength = visibleMessages[visibleMessages.length - 1]?.content.length ?? 0;
 
   useEffect(() => {
     const checkModelCapabilities = async () => {
@@ -753,11 +1279,11 @@ export function ChatConversationPage() {
           voice = voices.find((v) => v.id === character.voiceConfig?.userVoiceId);
         }
         if (!voice) {
-          throw new Error("Assigned voice not found.");
+          throw new Error(t("chats.errors.assignedVoiceNotFound"));
         }
         const provider = providers.find((p) => p.id === voice.providerId);
         if (!provider) {
-          throw new Error("Assigned provider not found.");
+          throw new Error(t("chats.errors.assignedProviderNotFound"));
         }
 
         const cacheKey = buildAudioCacheKey({
@@ -823,20 +1349,24 @@ export function ChatConversationPage() {
         const providerId = character.voiceConfig.providerId;
         const voiceId = character.voiceConfig.voiceId;
         if (!providerId || !voiceId) {
-          throw new Error("Voice assignment is missing provider details.");
+          throw new Error(t("chats.errors.voiceMissingProviderDetails"));
         }
         const provider = providers.find((p) => p.id === providerId);
         if (!provider) {
-          throw new Error("Assigned provider not found.");
+          throw new Error(t("chats.errors.assignedProviderNotFound"));
         }
 
         let modelId = character.voiceConfig.modelId;
         if (!modelId) {
-          const models = await ensureAudioModels(provider.providerType as AudioProviderType);
-          modelId = models[0]?.id;
+          if (provider.providerType === "kokoro" && provider.kokoroVariant) {
+            modelId = provider.kokoroVariant;
+          } else {
+            const models = await ensureAudioModels(provider.providerType as AudioProviderType);
+            modelId = models[0]?.id;
+          }
         }
         if (!modelId) {
-          throw new Error("No audio models available for this provider.");
+          throw new Error(t("chats.errors.noAudioModelsForProvider"));
         }
 
         const cacheKey = buildAudioCacheKey({
@@ -1052,6 +1582,7 @@ export function ChatConversationPage() {
     const requestId = helpMeReplyRequestIdRef.current;
     clearHelpMeReplyRuntime();
     setGeneratingReply(false);
+    setHelpMeReplyReasoning(false);
     if (!requestId) return;
     try {
       await invoke("abort_request", { requestId });
@@ -1064,6 +1595,7 @@ export function ChatConversationPage() {
     setShowResultMenu(false);
     setGeneratedReply(null);
     setHelpMeReplyError(null);
+    setHelpMeReplyReasoning(false);
     void cancelHelpMeReplyGeneration();
   }, [cancelHelpMeReplyGeneration]);
 
@@ -1075,6 +1607,7 @@ export function ChatConversationPage() {
       setShowPlusMenu(false);
       setGeneratedReply(null);
       setHelpMeReplyError(null);
+      setHelpMeReplyReasoning(false);
       setGeneratingReply(true);
       setShowResultMenu(true);
 
@@ -1083,10 +1616,10 @@ export function ChatConversationPage() {
       let streamingText = "";
       let hasStartedStreaming = false;
 
-      // Timeout to clear loading state if streaming doesn't start within 5 seconds
+      // Some reasoning models can spend several seconds thinking before sending reply text.
       helpMeReplyLoadingTimeoutRef.current = window.setTimeout(() => {
         if (!hasStartedStreaming) {
-          setGeneratingReply(false);
+          setHelpMeReplyReasoning(true);
         }
       }, 5000);
 
@@ -1103,6 +1636,7 @@ export function ChatConversationPage() {
               if (!hasStartedStreaming) {
                 hasStartedStreaming = true;
                 setGeneratingReply(false);
+                setHelpMeReplyReasoning(false);
                 if (helpMeReplyLoadingTimeoutRef.current !== null) {
                   window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
                   helpMeReplyLoadingTimeoutRef.current = null;
@@ -1110,14 +1644,25 @@ export function ChatConversationPage() {
               }
               streamingText += String(payload.data.text);
               setGeneratedReply(streamingText);
+            } else if (payload && payload.type === "reasoning" && payload.data?.text) {
+              if (!hasStartedStreaming) {
+                hasStartedStreaming = true;
+                if (helpMeReplyLoadingTimeoutRef.current !== null) {
+                  window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
+                  helpMeReplyLoadingTimeoutRef.current = null;
+                }
+              }
+              setGeneratingReply(true);
+              setHelpMeReplyReasoning(true);
             } else if (payload && payload.type === "error") {
               const message =
                 payload.data?.message ||
                 payload.data?.error ||
                 payload.message ||
-                "Help Me Reply failed.";
+                t("chats.errors.helpMeReplyFailed");
               setHelpMeReplyError(String(message));
               setGeneratingReply(false);
+              setHelpMeReplyReasoning(false);
               if (helpMeReplyLoadingTimeoutRef.current !== null) {
                 window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
                 helpMeReplyLoadingTimeoutRef.current = null;
@@ -1137,25 +1682,26 @@ export function ChatConversationPage() {
           if (result?.trim()) {
             setGeneratedReply(result);
           } else {
-            setHelpMeReplyError("Help Me Reply failed to generate a reply.");
+            setHelpMeReplyError(t("chats.errors.helpMeReplyNoReply"));
           }
         }
 
-        // Clear loading state once API call completes (for non-streaming case)
-        if (!hasStartedStreaming) {
-          setGeneratingReply(false);
-          if (helpMeReplyLoadingTimeoutRef.current !== null) {
-            window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
-            helpMeReplyLoadingTimeoutRef.current = null;
-          }
+        setGeneratingReply(false);
+        setHelpMeReplyReasoning(false);
+        if (helpMeReplyLoadingTimeoutRef.current !== null) {
+          window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
+          helpMeReplyLoadingTimeoutRef.current = null;
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setHelpMeReplyError(message);
+        setGeneratingReply(false);
+        setHelpMeReplyReasoning(false);
       } finally {
         // Only clear loading if streaming hasn't started yet
         if (!hasStartedStreaming) {
           setGeneratingReply(false);
+          setHelpMeReplyReasoning(false);
         }
         if (helpMeReplyRequestIdRef.current === requestId) {
           clearHelpMeReplyRuntime();
@@ -1172,6 +1718,7 @@ export function ChatConversationPage() {
     setShowResultMenu(false);
     setGeneratedReply(null);
     setHelpMeReplyError(null);
+    setHelpMeReplyReasoning(false);
   }, [generatedReply, setDraft]);
 
   const handlePlusMenuImageUpload = useCallback(() => {
@@ -1432,6 +1979,209 @@ export function ChatConversationPage() {
     [actionBusy, messageAction?.mode, resetMessageActions],
   );
 
+  const stopFooterRecordingVisuals = useCallback(() => {
+    if (footerRecordingTimerRef.current != null) {
+      window.clearInterval(footerRecordingTimerRef.current);
+      footerRecordingTimerRef.current = null;
+    }
+    setFooterRecordingMs(0);
+    setFooterAnalyser(null);
+  }, []);
+
+  const stopFooterRecording = useCallback(async () => {
+    const session = footerRecorderRef.current;
+    if (!session) return;
+
+    footerRecorderRef.current = null;
+    setFooterAsrMode("transcribing");
+    setFooterAsrBusy(true);
+
+    session.processor.disconnect();
+    session.source.disconnect();
+    session.stream.getTracks().forEach((track) => track.stop());
+    await session.audioContext.close();
+
+    try {
+      const merged = mergeFloat32Chunks(session.chunks);
+      if (merged.length === 0) {
+        stopFooterRecordingVisuals();
+        setFooterAsrMode("idle");
+        setFooterAsrBusy(false);
+        setError(t("chats.asr.noAudioCaptured"));
+        return;
+      }
+
+      const modelPath = installedWhisperModels[0]?.path;
+      if (!modelPath) {
+        stopFooterRecordingVisuals();
+        setFooterAsrMode("idle");
+        setFooterAsrBusy(false);
+        setError(t("chats.asr.noModelInstalled"));
+        return;
+      }
+
+      const pcmBytes = new Uint8Array(merged.buffer, merged.byteOffset, merged.byteLength);
+      const result = await asrWhisperTranscribePcm({
+        modelPath,
+        pcmBytes,
+        sampleRateHz: session.sampleRate,
+        channels: 1,
+        scopes: ["conversation", "global"],
+        useGpu: true,
+        forceCpu: false,
+        keepModelLoaded: true,
+      });
+
+      const nextDraft = result.correctedText?.trim() || result.rawText?.trim();
+      setFooterAsrRawText(result.rawText || "");
+      setFooterAsrBaseText(nextDraft || "");
+      setDraft(nextDraft || "");
+      setFooterAsrSuggestions([]);
+      setFooterAsrMode("idle");
+    } catch (error) {
+      console.error("Failed to transcribe footer recording:", error);
+      setFooterAsrMode("idle");
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      stopFooterRecordingVisuals();
+      setFooterAsrBusy(false);
+    }
+  }, [installedWhisperModels, setDraft, setError, stopFooterRecordingVisuals]);
+
+  const handleFooterMicClick = useCallback(async () => {
+    if (sending || footerAsrBusy) return;
+
+    if (footerAsrMode === "recording") {
+      await stopFooterRecording();
+      return;
+    }
+
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: micConstraintsWithStoredDevice({
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }),
+      });
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.4;
+      const chunks: Float32Array[] = [];
+      processor.onaudioprocess = (event) => {
+        chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+      };
+      source.connect(analyser);
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+
+      footerRecorderRef.current = {
+        stream,
+        audioContext,
+        source,
+        processor,
+        analyser,
+        chunks,
+        sampleRate: audioContext.sampleRate,
+        startedAt: Date.now(),
+      };
+      setFooterAnalyser(analyser);
+      setFooterAsrRawText("");
+      setFooterAsrBaseText("");
+      setFooterAsrSuggestions([]);
+      setFooterAsrMode("recording");
+      setFooterRecordingMs(0);
+      footerRecordingTimerRef.current = window.setInterval(() => {
+        const startedAt = footerRecorderRef.current?.startedAt;
+        if (startedAt) setFooterRecordingMs(Date.now() - startedAt);
+      }, 200);
+    } catch (error) {
+      console.error("Failed to start footer recording:", error);
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  }, [footerAsrBusy, footerAsrMode, sending, setError, stopFooterRecording]);
+
+  const handleLearnFooterSuggestion = useCallback(
+    async (suggestion: AsrLearnedSuggestion) => {
+      if (footerAsrLearning) return;
+      setFooterAsrLearning(true);
+      try {
+        await asrCorrectionUpsert({
+          wrong: suggestion.wrong,
+          correct: suggestion.correct,
+          confidence: suggestion.confidence,
+          language: suggestion.language ?? null,
+          scope: suggestion.scope,
+          userApproved: true,
+        });
+        setFooterAsrSuggestions((prev) =>
+          prev.filter(
+            (item) =>
+              !(
+                item.normalizedWrong === suggestion.normalizedWrong &&
+                item.normalizedCorrect === suggestion.normalizedCorrect
+              ),
+          ),
+        );
+      } catch (error) {
+        console.error("Failed to learn footer ASR correction:", error);
+        setError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setFooterAsrLearning(false);
+      }
+    },
+    [footerAsrLearning, setError],
+  );
+
+  const handleIgnoreFooterSuggestion = useCallback(
+    async (suggestion: AsrLearnedSuggestion) => {
+      if (footerAsrLearning) return;
+      setFooterAsrLearning(true);
+      try {
+        await asrIgnoreSuggestion(suggestion);
+        setFooterAsrSuggestions((prev) =>
+          prev.filter(
+            (item) =>
+              !(
+                item.normalizedWrong === suggestion.normalizedWrong &&
+                item.normalizedCorrect === suggestion.normalizedCorrect
+              ),
+          ),
+        );
+      } catch (error) {
+        console.error("Failed to ignore footer ASR suggestion:", error);
+        setError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setFooterAsrLearning(false);
+      }
+    },
+    [footerAsrLearning, setError],
+  );
+
+  const cancelFooterRecording = useCallback(() => {
+    const session = footerRecorderRef.current;
+    if (!session) return;
+    footerRecorderRef.current = null;
+    stopFooterRecordingVisuals();
+    try {
+      session.processor.disconnect();
+      session.source.disconnect();
+      session.stream.getTracks().forEach((track) => track.stop());
+      void session.audioContext.close();
+    } catch (err) {
+      console.warn("Failed to cleanly cancel footer recording:", err);
+    }
+    setFooterAsrMode("idle");
+    setFooterAsrRawText("");
+    setFooterAsrBaseText("");
+    setFooterAsrSuggestions([]);
+  }, [stopFooterRecordingVisuals]);
+
   const handleSendMessage = useCallback(async () => {
     if (sending) return;
     setError(null);
@@ -1442,6 +2192,10 @@ export function ChatConversationPage() {
       const content = draft.trim();
       playAccessibilitySound("send", accessibilitySettings);
       await handleSend(content, undefined, { swapPlaces });
+      setFooterAsrMode("idle");
+      setFooterAsrRawText("");
+      setFooterAsrBaseText("");
+      setFooterAsrSuggestions([]);
     } else {
       playAccessibilitySound("send", accessibilitySettings);
       await handleContinue({ swapPlaces });
@@ -1456,6 +2210,24 @@ export function ChatConversationPage() {
     pendingAttachments,
     accessibilitySettings,
     swapPlaces,
+    setFooterAsrMode,
+  ]);
+
+  const handleSendVisibleSystemMessage = useCallback(async () => {
+    if (sending) return;
+    setError(null);
+    playAccessibilitySound("send", accessibilitySettings);
+    await handleSendSystemMessage(draft, undefined);
+    setFooterAsrMode("idle");
+    setFooterAsrRawText("");
+    setFooterAsrBaseText("");
+    setFooterAsrSuggestions([]);
+  }, [
+    accessibilitySettings,
+    draft,
+    handleSendSystemMessage,
+    sending,
+    setError,
   ]);
 
   const captureFooterFocusForDrawer = useCallback(() => {
@@ -1463,11 +2235,56 @@ export function ChatConversationPage() {
   }, []);
 
   const handleRegenerateMessage = useCallback(
-    async (message: StoredMessage) => {
-      await handleRegenerate(message, { swapPlaces });
+    async (message: StoredMessage, options?: { guidance?: string }) => {
+      await handleRegenerate(message, { swapPlaces, guidance: options?.guidance });
     },
     [handleRegenerate, swapPlaces],
   );
+
+  const footerInlinePanel =
+    footerAsrSuggestions.length === 0 ? undefined : (
+      <div className="space-y-1.5 px-4 py-2">
+        {footerAsrSuggestions.map((suggestion, idx) => (
+          <div
+            key={`${suggestion.normalizedWrong}-${suggestion.normalizedCorrect}-${idx}`}
+            className="flex flex-wrap items-center justify-between gap-2"
+          >
+            <div className="min-w-0 text-xs text-fg/65">
+              {t("chats.asr.learnCorrection")}{" "}
+              <span className="text-danger/80 line-through decoration-danger/40">
+                {suggestion.wrong}
+              </span>
+              <span className="mx-1.5 text-fg/40">→</span>
+              <span className="font-medium text-fg">{suggestion.correct}</span>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => void handleLearnFooterSuggestion(suggestion)}
+                disabled={footerAsrLearning}
+                className={cn(
+                  "rounded-full border border-accent/30 bg-accent/15 px-3 py-1 text-xs font-medium text-accent",
+                  "hover:border-accent/50 hover:bg-accent/20 disabled:opacity-50",
+                )}
+              >
+                {footerAsrLearning ? t("chats.asr.learning") : t("chats.asr.learn")}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleIgnoreFooterSuggestion(suggestion)}
+                disabled={footerAsrLearning}
+                className={cn(
+                  "rounded-full border border-fg/15 bg-fg/8 px-3 py-1 text-xs font-medium text-fg/70",
+                  "hover:border-fg/25 hover:bg-fg/12 disabled:opacity-50",
+                )}
+              >
+                {t("chats.asr.ignore")}
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
 
   useLayoutEffect(() => {
     const container = scrollContainerRef.current;
@@ -1483,7 +2300,7 @@ export function ChatConversationPage() {
     });
 
     return () => window.cancelAnimationFrame(frame);
-  }, [messages.length, lastMessageContentLength, isGenerating, updateIsAtBottom]);
+  }, [visibleMessages.length, lastMessageContentLength, isGenerating, updateIsAtBottom]);
 
   useEffect(() => {
     if (sending && !sendingPrevRef.current) {
@@ -1653,17 +2470,45 @@ export function ChatConversationPage() {
     return <LoadingSpinner />;
   }
 
+  if (backgroundImageLoading && !backgroundImageData) {
+    return <LoadingSpinner />;
+  }
+
   if (!character || !session) {
     return <EmptyState title={t("chats.characterNotFound")} />;
   }
 
   const footerBottomOffset = `calc(env(safe-area-inset-bottom) + ${keyboardInset}px)`;
-  const scrollButtonBottomOffset = `calc(env(safe-area-inset-bottom) + ${keyboardInset}px + 88px)`;
+  const scrollButtonBottomOffset =
+    footerHeight > 0
+      ? `${footerHeight + 12}px`
+      : `calc(env(safe-area-inset-bottom) + ${keyboardInset}px + 88px)`;
 
   return (
     <div
-      className={cn("flex h-screen flex-col overflow-hidden", !backgroundImageData && "bg-surface")}
+      className={cn(
+        "relative flex h-full flex-col overflow-hidden",
+        !backgroundImageData && !backgroundImageLoading && "bg-surface",
+      )}
     >
+      {backgroundImageData && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+          style={{
+            backgroundImage: `url(${backgroundImageData})`,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            backgroundRepeat: "no-repeat",
+            filter:
+              chatAppearance.backgroundBlur > 0
+                ? `blur(${chatAppearance.backgroundBlur}px)`
+                : undefined,
+            transform: chatAppearance.backgroundBlur > 0 ? "scale(1.06)" : undefined,
+          }}
+        />
+      )}
+      {beetrootRain.overlay}
       <AnimatePresence>
         {swapPlaces && (
           <motion.div
@@ -1678,7 +2523,53 @@ export function ChatConversationPage() {
         )}
       </AnimatePresence>
 
-      {/* Header */}
+      {!headerInside && (
+      <div
+        className={`relative z-20 ${applyHeaderColumnClass ? getChatColumnLayout(chatAppearance).className : ""}`}
+        style={applyHeaderColumnClass ? getChatColumnLayout(chatAppearance).style : undefined}
+      >
+        <ChatHeader
+          character={character}
+          persona={persona}
+          swapPlaces={swapPlaces}
+          sessionId={sessionId}
+          session={sessionForHeader}
+          hasBackgroundImage={!!backgroundImageData}
+          headerOverlayClassName={theme.headerOverlay}
+          transparentHeader={chatAppearance.transparentHeader}
+          onSessionUpdate={handleSessionUpdate}
+          onBeforeSettingsOpen={!isMobile ? captureFooterFocusForDrawer : undefined}
+          onSettingsOpen={!isMobile ? () => setSettingsDrawerOpen(true) : undefined}
+          onAppearanceOpen={!isMobile ? () => setAppearanceDrawerOpen(true) : undefined}
+          onEditWidgets={!isMobile ? requestWidgetEdit : undefined}
+        />
+      </div>
+      )}
+
+      <WidgetContextProvider value={widgetCtxValue}>
+      <WidgetEditProvider
+        slots={chatAppearance.chatWidgetSlots}
+        onPersist={persistWidgetSlots}
+        onChooseLibraryImage={beginLibraryImagePick}
+        restore={widgetEditRestore}
+        onRestoreConsumed={() => setWidgetEditRestore(null)}
+        editRequestNonce={widgetEditNonce}
+      >
+      <ChatWidgetArea
+        widgetLayout={widgetLayout}
+        leftNodes={widgetLeftNodes}
+        rightNodes={widgetRightNodes}
+        resizable={chatAppearance.chatColumnWidth === "custom" && appearanceDrawerOpen}
+        viewportWidth={viewportWidth}
+        onResizeColumn={(px) => {
+          if (appearanceFieldUpdater) {
+            appearanceFieldUpdater("chatColumnWidthPx", px);
+          } else {
+            void persistColumnWidthPx(px);
+          }
+        }}
+      >
+      {headerInside && (
       <div className="relative z-20">
         <ChatHeader
           character={character}
@@ -1688,11 +2579,15 @@ export function ChatConversationPage() {
           session={sessionForHeader}
           hasBackgroundImage={!!backgroundImageData}
           headerOverlayClassName={theme.headerOverlay}
+          transparentHeader={chatAppearance.transparentHeader}
           onSessionUpdate={handleSessionUpdate}
           onBeforeSettingsOpen={!isMobile ? captureFooterFocusForDrawer : undefined}
           onSettingsOpen={!isMobile ? () => setSettingsDrawerOpen(true) : undefined}
+          onAppearanceOpen={!isMobile ? () => setAppearanceDrawerOpen(true) : undefined}
+          onEditWidgets={!isMobile ? requestWidgetEdit : undefined}
         />
       </div>
+      )}
 
       <AnimatePresence>
         {swapPlaces && (
@@ -1710,7 +2605,7 @@ export function ChatConversationPage() {
                 radius.full,
               )}
             >
-              <span className="text-sm">Swap places is active</span>
+              <span className="text-sm">{t("chats.swap.bannerActive")}</span>
               <button
                 type="button"
                 onClick={handleDisableSwapPlaces}
@@ -1718,7 +2613,7 @@ export function ChatConversationPage() {
                   "rounded-full border border-emerald-200/40 px-3 py-1 text-xs font-medium text-emerald-50 hover:bg-emerald-100/10",
                 )}
               >
-                End swap
+                {t("chats.swap.endSwap")}
               </button>
             </div>
           </motion.div>
@@ -1732,8 +2627,9 @@ export function ChatConversationPage() {
         onScroll={handleScroll}
       >
         <div
-          className={`${chatAppearance.messageGap === "tight" ? "space-y-2" : chatAppearance.messageGap === "relaxed" ? "space-y-6" : "space-y-4"} px-3 pb-8 pt-4`}
+          className={`${getChatColumnLayout(chatAppearance).className} ${chatAppearance.messageGap === "tight" ? "space-y-2" : chatAppearance.messageGap === "relaxed" ? "space-y-6" : "space-y-4"} px-3 pb-8 pt-4`}
           style={{
+            ...getChatColumnLayout(chatAppearance).style,
             backgroundColor: backgroundImageData
               ? swapPlaces
                 ? isBackgroundLight
@@ -1753,13 +2649,13 @@ export function ChatConversationPage() {
                   radius.full,
                 )}
               >
-                Load earlier messages
+                {t("chats.loadEarlierMessages")}
               </button>
             </div>
           )}
 
           <LayoutGroup id="swap-message-layout">
-            {messages.map((message, index) => {
+            {visibleMessages.map((message, index) => {
               const isSceneMessage = isStartingSceneMessage(message);
               const sourceContent = message.content;
               const renderedMessage =
@@ -1776,8 +2672,11 @@ export function ChatConversationPage() {
                     };
               const isAssistant = renderedMessage.role === "assistant";
               const isUser = renderedMessage.role === "user";
+              const isVisibleSystem =
+                renderedMessage.role === "system" && Boolean(renderedMessage.visibleInChat);
               const actionable =
-                (isAssistant || isUser || isSceneMessage) && !message.id.startsWith("placeholder");
+                (isAssistant || isUser || isSceneMessage || isVisibleSystem) &&
+                !message.id.startsWith("placeholder");
               // Replace placeholders for display only
               const charName = swapPlaces
                 ? (chatController.persona?.title ?? "")
@@ -1820,7 +2719,7 @@ export function ChatConversationPage() {
                     key={message.id}
                     message={renderedMessage}
                     index={index}
-                    messagesLength={messages.length}
+                    messagesLength={visibleMessages.length}
                     heldMessageId={heldMessageId}
                     regeneratingMessageId={regeneratingMessageId}
                     sending={sending}
@@ -1841,6 +2740,12 @@ export function ChatConversationPage() {
                     onImageClick={handleImageClick}
                     reasoning={streamingReasoning[message.id] || combinedReasoning || undefined}
                     swapPlaces={swapPlaces}
+                    modelName={resolveModelName(message.modelId)}
+                    scenePromptStreaming={
+                      scenePromptStreaming &&
+                      message.role === "assistant" &&
+                      index === visibleMessages.length - 1
+                    }
                   />
                 </motion.div>
               );
@@ -1860,7 +2765,7 @@ export function ChatConversationPage() {
             exit={{ opacity: 0, y: 10, scale: 0.98 }}
             transition={{ duration: 0.18, ease: "easeOut" }}
             className={cn(
-              "fixed right-3 z-30 flex h-11 w-11 items-center justify-center",
+              "absolute right-3 z-30 flex h-11 w-11 items-center justify-center",
               "border border-white/15 bg-black/40 text-white/80 shadow-lg backdrop-blur-sm",
               "hover:bg-black/55 active:scale-95",
               radius.full,
@@ -1872,27 +2777,119 @@ export function ChatConversationPage() {
         )}
       </AnimatePresence>
 
-      {/* Footer */}
-      <div className="relative z-10" style={{ paddingBottom: footerBottomOffset }}>
+      {footerInside && (
+      <div
+        ref={footerRef}
+        className="relative z-10"
+        style={{ paddingBottom: footerBottomOffset }}
+      >
         <ChatFooter
+          inlinePanel={footerInlinePanel}
+          topSlot={
+            inlineAuthorNoteEnabled && (sessionForHeader?.id ?? chatController.session?.id) ? (
+              <InlineAuthorNoteBar
+                session={sessionForHeader ?? chatController.session}
+                onSaved={setSessionForHeader}
+              />
+            ) : undefined
+          }
           draft={draft}
           setDraft={setDraft}
           error={error}
           sending={sending}
           character={character}
           onSendMessage={handleSendMessage}
+          onSendSystemMessage={handleSendVisibleSystemMessage}
           onAbort={handleAbortWithFlag}
           hasBackgroundImage={!!backgroundImageData}
           footerOverlayClassName={theme.footerOverlay}
+          footerOverlayColor={theme.footerOverlayColor}
+          footerFgColor={theme.footerFgColor}
+          footerFgMutedColor={theme.footerFgMutedColor}
           pendingAttachments={pendingAttachments}
           onAddAttachment={supportsImageInput ? addPendingAttachment : undefined}
           onRemoveAttachment={supportsImageInput ? removePendingAttachment : undefined}
           onOpenPlusMenu={handleOpenPlusMenu}
+          onMicClick={
+            installedWhisperModels.length === 0
+              ? undefined
+              : () => {
+                  void handleFooterMicClick();
+                }
+          }
+          micActive={footerAsrMode === "recording" || footerAsrMode === "transcribing"}
+          micDisabled={footerAsrBusy}
+          recordingElapsedMs={footerRecordingMs}
+          recordingAnalyser={footerAnalyser}
+          recordingTranscribing={footerAsrMode === "transcribing"}
+          onMicCancel={cancelFooterRecording}
+          composerDisabled={footerAsrMode !== "idle"}
           triggerFileInput={shouldTriggerFileInput}
           onFileInputTriggered={() => setShouldTriggerFileInput(false)}
           textareaRef={footerTextareaRef}
         />
       </div>
+      )}
+      </ChatWidgetArea>
+      </WidgetEditProvider>
+      </WidgetContextProvider>
+
+      {!footerInside && (
+      <div
+        ref={footerRef}
+        className={`relative z-10 ${applyFooterColumnClass ? getChatColumnLayout(chatAppearance).className : ""}`}
+        style={{
+          paddingBottom: footerBottomOffset,
+          ...(applyFooterColumnClass ? getChatColumnLayout(chatAppearance).style : {}),
+        }}
+      >
+        <ChatFooter
+          inlinePanel={footerInlinePanel}
+          topSlot={
+            inlineAuthorNoteEnabled && (sessionForHeader?.id ?? chatController.session?.id) ? (
+              <InlineAuthorNoteBar
+                session={sessionForHeader ?? chatController.session}
+                onSaved={setSessionForHeader}
+              />
+            ) : undefined
+          }
+          draft={draft}
+          setDraft={setDraft}
+          error={error}
+          sending={sending}
+          character={character}
+          onSendMessage={handleSendMessage}
+          onSendSystemMessage={handleSendVisibleSystemMessage}
+          onAbort={handleAbortWithFlag}
+          hasBackgroundImage={!!backgroundImageData}
+          footerOverlayClassName={theme.footerOverlay}
+          footerOverlayColor={theme.footerOverlayColor}
+          footerFgColor={theme.footerFgColor}
+          footerFgMutedColor={theme.footerFgMutedColor}
+          pendingAttachments={pendingAttachments}
+          onAddAttachment={supportsImageInput ? addPendingAttachment : undefined}
+          onRemoveAttachment={supportsImageInput ? removePendingAttachment : undefined}
+          onOpenPlusMenu={handleOpenPlusMenu}
+          onMicClick={
+            installedWhisperModels.length === 0
+              ? undefined
+              : () => {
+                  void handleFooterMicClick();
+                }
+          }
+          micActive={footerAsrMode === "recording" || footerAsrMode === "transcribing"}
+          micDisabled={footerAsrBusy}
+          recordingElapsedMs={footerRecordingMs}
+          recordingAnalyser={footerAnalyser}
+          recordingTranscribing={footerAsrMode === "transcribing"}
+          onMicCancel={cancelFooterRecording}
+          composerDisabled={footerAsrMode !== "idle"}
+          triggerFileInput={shouldTriggerFileInput}
+          onFileInputTriggered={() => setShouldTriggerFileInput(false)}
+          textareaRef={footerTextareaRef}
+        />
+      </div>
+      )}
 
       <MessageActionsBottomSheet
         messageAction={messageAction}
@@ -1928,12 +2925,14 @@ export function ChatConversationPage() {
         handleTogglePin={chatController.handleTogglePin}
         setMessageAction={setMessageAction}
         onOpenSceneImageFlow={handleOpenSceneImageFlow}
+        onOpenChatAppearance={!isMobile ? () => setAppearanceDrawerOpen(true) : undefined}
         hasSceneImage={Boolean(resolveSceneAttachment(messageAction?.message))}
         sceneGenerationEnabled={sceneGenerationEnabled}
         characterMemoryType={character?.memoryType}
         characterDefaultModelId={character?.defaultModelId ?? null}
         characterId={characterId}
         sessionId={session?.id ?? null}
+        isCompanionChat={(session?.mode ?? character?.mode) === "companion"}
       />
 
       {/* Character Selection for Branch */}
@@ -1947,7 +2946,7 @@ export function ChatConversationPage() {
       >
         <div className="space-y-2 max-h-[60vh] overflow-y-auto">
           <p className="text-sm text-white/50 mb-4">
-            Choose a character to continue this conversation with:
+            {t("chats.branch.chooseCharacterPrompt")}
           </p>
           {availableCharacters
             .filter((c) => c.id !== characterId)
@@ -1971,7 +2970,7 @@ export function ChatConversationPage() {
             ))}
           {availableCharacters.filter((c) => c.id !== characterId).length === 0 && (
             <p className="text-center text-white/40 py-8">
-              No other characters available. Create more characters first.
+              {t("chats.branch.noOtherCharacters")}
             </p>
           )}
         </div>
@@ -1990,7 +2989,7 @@ export function ChatConversationPage() {
       >
         <div className="space-y-3">
           <p className="text-sm text-white/50">
-            Branch owner is locked. Choose additional characters, then create.
+            {t("chats.branch.groupOwnerLocked")}
           </p>
 
           {groupBranchError && (
@@ -2028,7 +3027,7 @@ export function ChatConversationPage() {
               "disabled:cursor-not-allowed disabled:opacity-55",
             )}
           >
-            {groupBranchCreating ? "Creating..." : "Create Group Branch"}
+            {groupBranchCreating ? t("common.buttons.creating") : t("chats.branch.createGroupBranch")}
           </button>
         </div>
       </BottomMenu>
@@ -2043,20 +3042,32 @@ export function ChatConversationPage() {
           <MenuButton
             icon={User}
             title={t("chats.settings.persona")}
-            description={persona?.title ?? "No persona"}
+            description={persona?.title ?? t("chats.settings.noPersona")}
             onClick={() => {
               void handleOpenPersonaSelector();
             }}
           />
           <MenuButton
-            icon={Image}
-            title="Chat Background"
+            icon={NotebookPen}
+            title={t("chats.authorNote.title")}
             description={
+              (sessionForHeader?.authorNote ?? chatController.session?.authorNote)?.trim()
+                ? t("chats.plusMenu.authorNoteActive")
+                : t("chats.plusMenu.authorNoteInactive")
+            }
+            onClick={handleOpenAuthorNoteMenu}
+          />
+          <MenuButton
+            icon={Image}
+            title={t("chats.chatBackground")}
+              description={
               hasSessionBackgroundOverride
-                ? "Session override active"
+                ? t("chats.settings.sessionOverrideActive")
+                : hasSceneBackgroundDefault
+                  ? t("chats.background.usingScene")
                 : hasCharacterBackgroundDefault
-                  ? "Using character default background"
-                  : "No background selected"
+                  ? t("chats.background.usingCharacterDefault")
+                  : t("chats.background.noneSelected")
             }
             onClick={() => {
               setShowPlusMenu(false);
@@ -2068,8 +3079,8 @@ export function ChatConversationPage() {
             title={swapPlaces ? t("chats.swapPlacesOn") : t("chats.swapPlaces")}
             description={
               swapPlaces
-                ? "You are chatting as the character. Tap top banner to end."
-                : "Temporarily chat as the character and let AI reply as your persona."
+                ? t("chats.swap.activeDesc")
+                : t("chats.swap.inactiveDesc")
             }
             onClick={
               swapPlaces
@@ -2091,12 +3102,19 @@ export function ChatConversationPage() {
             <MenuButton
               icon={Sparkles}
               title={t("chats.helpMeReply")}
-              description="Let AI suggest what to say"
+              description={t("chats.helpMeReplyDesc")}
               onClick={handlePlusMenuHelpMeReply}
             />
           )}
         </div>
       </BottomMenu>
+
+      <AuthorNoteBottomMenu
+        isOpen={showAuthorNoteMenu}
+        onClose={() => setShowAuthorNoteMenu(false)}
+        session={sessionForHeader ?? chatController.session}
+        onSaved={setSessionForHeader}
+      />
 
       <PersonaSelector
         isOpen={showPersonaSelector}
@@ -2109,7 +3127,7 @@ export function ChatConversationPage() {
       <BottomMenu
         isOpen={showBackgroundMenu}
         onClose={() => !savingSessionBackground && setShowBackgroundMenu(false)}
-        title="Chat Background"
+        title={t("chats.chatBackground")}
       >
         <div className="space-y-4">
           <input
@@ -2122,34 +3140,55 @@ export function ChatConversationPage() {
             }}
           />
 
-          {(backgroundImageData || characterBackgroundPreview || sessionBackgroundPreview) && (
+          {(backgroundImageData ||
+            sceneBackgroundPreview ||
+            characterBackgroundPreview ||
+            sessionBackgroundPreview) && (
             <div className="space-y-3">
               {backgroundImageData && (
-                <div className="overflow-hidden rounded-2xl border border-fg/10 bg-fg/[0.04]">
+                <div className="overflow-hidden rounded-2xl border border-fg/10 bg-fg/4">
                   <img
                     src={backgroundImageData}
-                    alt="Current chat background"
+                    alt={t("chats.background.currentAlt")}
                     className="h-32 w-full object-cover"
                   />
                   <div className="border-t border-fg/10 px-4 py-3 text-sm text-fg/70">
                     {hasSessionBackgroundOverride
-                      ? "Current session background"
-                      : "Current character default background"}
+                      ? t("chats.background.currentSession")
+                      : hasSceneBackgroundDefault
+                        ? t("chats.background.currentScene")
+                        : t("chats.background.currentCharacterDefault")}
                   </div>
                 </div>
               )}
 
               {hasSessionBackgroundOverride &&
-                characterBackgroundPreview &&
-                characterBackgroundPreview !== sessionBackgroundPreview && (
-                  <div className="overflow-hidden rounded-2xl border border-fg/10 bg-fg/[0.04]">
+                sceneBackgroundPreview &&
+                sceneBackgroundPreview !== sessionBackgroundPreview && (
+                  <div className="overflow-hidden rounded-2xl border border-fg/10 bg-fg/4">
                     <img
-                      src={characterBackgroundPreview}
-                      alt="Character default background"
+                      src={sceneBackgroundPreview}
+                      alt={t("chats.background.sceneAlt")}
                       className="h-24 w-full object-cover"
                     />
                     <div className="border-t border-fg/10 px-4 py-3 text-sm text-fg/55">
-                      Character default background
+                      {t("chats.background.sceneAlt")}
+                    </div>
+                  </div>
+                )}
+
+              {hasSessionBackgroundOverride &&
+                characterBackgroundPreview &&
+                characterBackgroundPreview !== sessionBackgroundPreview &&
+                characterBackgroundPreview !== sceneBackgroundPreview && (
+                  <div className="overflow-hidden rounded-2xl border border-fg/10 bg-fg/4">
+                    <img
+                      src={characterBackgroundPreview}
+                      alt={t("chats.background.characterDefaultAlt")}
+                      className="h-24 w-full object-cover"
+                    />
+                    <div className="border-t border-fg/10 px-4 py-3 text-sm text-fg/55">
+                      {t("chats.background.characterDefaultAlt")}
                     </div>
                   </div>
                 )}
@@ -2159,26 +3198,36 @@ export function ChatConversationPage() {
           <div className="space-y-2">
             <MenuButton
               icon={Image}
-              title={hasSessionBackgroundOverride ? "Replace Session Background" : "Upload Session Background"}
-              description="Only changes this chat session"
+              title={hasSessionBackgroundOverride ? t("chats.background.replaceSession") : t("chats.background.uploadSession")}
+              description={t("chats.background.onlyThisSession")}
               loading={savingSessionBackground}
               onClick={() => sessionBackgroundInputRef.current?.click()}
             />
             <MenuButton
               icon={Image}
-              title="Choose from Library"
-              description="Pick an existing image library item for this chat session"
+              title={t("chats.background.chooseFromLibrary")}
+              description={t("chats.background.chooseFromLibraryDesc")}
               loading={savingSessionBackground}
               onClick={() => setShowBackgroundLibraryMenu(true)}
             />
-            {(hasSessionBackgroundOverride || hasCharacterBackgroundDefault) && (
+            {(hasSessionBackgroundOverride ||
+              hasSceneBackgroundDefault ||
+              hasCharacterBackgroundDefault) && (
               <MenuButton
                 icon={X}
-                title={hasCharacterBackgroundDefault ? "Use Character Default" : "Remove Background"}
+                title={
+                  hasSceneBackgroundDefault
+                    ? t("chats.background.useSceneDefault")
+                    : hasCharacterBackgroundDefault
+                      ? t("chats.background.useCharacterDefault")
+                      : t("chats.background.removeBackground")
+                }
                 description={
-                  hasCharacterBackgroundDefault
-                    ? "Clear the session override and return to the character background"
-                    : "Remove the session background override"
+                  hasSceneBackgroundDefault
+                    ? t("chats.background.clearToSceneDesc")
+                    : hasCharacterBackgroundDefault
+                      ? t("chats.background.clearToCharacterDesc")
+                    : t("chats.background.removeOverrideDesc")
                 }
                 loading={savingSessionBackground}
                 onClick={() => {
@@ -2193,7 +3242,7 @@ export function ChatConversationPage() {
       <BottomMenu
         isOpen={showBackgroundLibraryMenu}
         onClose={() => !savingSessionBackground && setShowBackgroundLibraryMenu(false)}
-        title="Choose Background"
+        title={t("chats.background.chooseBackground")}
       >
         <div ref={backgroundLibraryScrollRef} className="max-h-[60vh] overflow-y-auto">
           <ImageLibraryPanel
@@ -2216,18 +3265,18 @@ export function ChatConversationPage() {
       >
         <div className="space-y-2">
           <p className="text-sm text-white/60 mb-4">
-            You have a draft message. How would you like to proceed?
+            {t("chats.helpMeReplyDraftPrompt")}
           </p>
           <MenuButton
             icon={PenLine}
             title={t("chats.useMyTextAsBase")}
-            description="Expand and improve your draft"
+            description={t("chats.useMyTextAsBaseDesc")}
             onClick={() => handleHelpMeReply("enrich")}
           />
           <MenuButton
             icon={Sparkles}
             title={t("chats.writeNewReply")}
-            description="Generate a fresh reply"
+            description={t("chats.writeNewReplyDesc")}
             onClick={() => handleHelpMeReply("new")}
           />
         </div>
@@ -2245,8 +3294,13 @@ export function ChatConversationPage() {
               <p className="text-red-400 text-sm">{helpMeReplyError}</p>
             </div>
           ) : generatingReply && !generatedReply ? (
-            <div className="flex items-center justify-center py-8">
+            <div className="flex flex-col items-center justify-center gap-3 py-8" role="status">
               <LoadingSpinner />
+              <p className="text-center text-sm text-white/60">
+                {helpMeReplyReasoning
+                  ? t("chats.helpMeReplyReasoning")
+                  : t("chats.helpMeReplyWriting")}
+              </p>
             </div>
           ) : generatedReply ? (
             <div
@@ -2273,7 +3327,7 @@ export function ChatConversationPage() {
               )}
             >
               <RefreshCw size={18} />
-              <span>Regenerate</span>
+              <span>{t("chats.sceneImage.regeneratePrompt")}</span>
             </button>
             <button
               onClick={handleUseReply}
@@ -2286,7 +3340,7 @@ export function ChatConversationPage() {
               )}
             >
               <Check size={18} />
-              <span>Use This</span>
+              <span>{t("chats.useThisReply")}</span>
             </button>
           </div>
         </div>
@@ -2338,7 +3392,7 @@ export function ChatConversationPage() {
               onChange={(event) => setScenePromptDraft(event.target.value)}
               rows={8}
               className={cn(
-                "min-h-[180px] w-full resize-none bg-transparent text-sm leading-relaxed text-white placeholder-white/30 outline-none",
+                "min-h-45 w-full resize-none bg-transparent text-sm leading-relaxed text-white placeholder-white/30 outline-none",
               )}
               placeholder={t("chats.sceneImage.promptPlaceholder")}
               disabled={applyingSceneImage}
@@ -2398,11 +3452,23 @@ export function ChatConversationPage() {
             </div>
           ) : generatedScenePrompt ? (
             <div className={cn("border border-white/10 bg-white/5 p-4", radius.lg)}>
-              <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">
-                {t("chats.sceneImage.suggestedPrompt")}
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">
+                  {t("chats.sceneImage.suggestedPrompt")}
+                </div>
+                <div className="text-[11px] text-white/35">
+                  {t("chats.sceneImage.charCount", {
+                    count: generatedScenePrompt.length.toLocaleString(),
+                  })}
+                </div>
               </div>
-              <p className="max-h-[36vh] overflow-y-auto whitespace-pre-wrap pr-1 text-sm leading-relaxed text-white/90">
+              <p className="line-clamp-6 whitespace-pre-wrap text-sm leading-relaxed text-white/82">
                 {generatedScenePrompt}
+              </p>
+              <p className="mt-3 text-xs text-white/45">
+                {t("chats.sceneImage.editPromptHint", {
+                  action: t("chats.sceneImage.editPrompt").toLowerCase(),
+                })}
               </p>
             </div>
           ) : null}
@@ -2539,12 +3605,12 @@ export function ChatConversationPage() {
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0, x: -8 }}
                   transition={{ duration: 0.18, delay: 0.04 }}
-                  className="hidden w-full max-w-3xl rounded-[32px] border border-white/12 bg-white/[0.045] p-3 backdrop-blur-xl lg:order-none lg:flex lg:h-full lg:max-w-none lg:flex-col lg:rounded-[38px] lg:border-white/10 lg:bg-white/[0.03] lg:p-4"
+                  className="hidden w-full max-w-3xl rounded-4xl border border-white/12 bg-white/4.5 p-3 backdrop-blur-xl lg:order-0 lg:flex lg:h-full lg:max-w-none lg:flex-col lg:rounded-[38px] lg:border-white/10 lg:bg-white/3 lg:p-4"
                 >
-                  <div className="rounded-[18px] border border-white/10 bg-black/35 px-4 py-3 lg:flex lg:h-full lg:flex-col lg:rounded-[24px] lg:border-white/8 lg:bg-black/30 lg:px-5 lg:py-5">
+                  <div className="rounded-[18px] border border-white/10 bg-black/35 px-4 py-3 lg:flex lg:h-full lg:flex-col lg:rounded-3xl lg:border-white/8 lg:bg-black/30 lg:px-5 lg:py-5">
                     <div className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45 lg:mb-4 lg:text-[10px] lg:tracking-[0.28em]">
                       <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-300/80" />
-                      Image Prompt
+                      {t("chats.imagePrompt")}
                     </div>
                     <p className="max-h-[52vh] overflow-y-auto pr-1 text-sm leading-relaxed text-white/82 lg:max-h-[72vh] lg:pr-2 lg:text-[15px] lg:leading-7">
                       {selectedImagePrompt}
@@ -2569,7 +3635,7 @@ export function ChatConversationPage() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 8 }}
                   transition={{ duration: 0.18, delay: 0.04 }}
-                  className="w-full max-w-3xl rounded-[24px] border border-white/12 bg-white/[0.045] p-3 backdrop-blur-xl lg:hidden"
+                  className="w-full max-w-3xl rounded-3xl border border-white/12 bg-white/4.5 p-3 backdrop-blur-xl lg:hidden"
                 >
                   <button
                     type="button"
@@ -2578,7 +3644,7 @@ export function ChatConversationPage() {
                   >
                     <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.22em] text-white/45">
                       <span className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-300/80" />
-                      Image Prompt
+                      {t("chats.imagePrompt")}
                     </div>
                     <ChevronDown
                       size={18}
@@ -2619,6 +3685,19 @@ export function ChatConversationPage() {
           isOpen={settingsDrawerOpen}
           onClose={() => setSettingsDrawerOpen(false)}
           character={character}
+          onOpenAuthorNote={handleOpenAuthorNoteMenu}
+        />
+      )}
+
+      {/* Desktop Appearance Drawer */}
+      {!isMobile && (layoutCharacter ?? character) && (
+        <ChatAppearanceDrawer
+          open={appearanceDrawerOpen}
+          onClose={() => setAppearanceDrawerOpen(false)}
+          character={(layoutCharacter ?? character)!}
+          onCharacterUpdate={() => reloadCharacter()}
+          setDraftOverride={setDraftAppearanceOverride}
+          registerFieldUpdater={registerAppearanceFieldUpdater}
         />
       )}
 
@@ -2655,6 +3734,7 @@ function CharacterOption({
   selected?: boolean;
   locked?: boolean;
 }) {
+  const { t } = useI18n();
   const avatarUrl = useAvatar("character", character.id, character.avatarPath, "round");
 
   return (
@@ -2681,7 +3761,7 @@ function CharacterOption({
       <div className="flex-1 min-w-0">
         <h3 className="text-sm font-medium text-white truncate">{character.name}</h3>
         <p className="text-xs text-white/50 truncate">
-          {character.description || character.definition || "No description"}
+          {character.description || character.definition || t("common.labels.noDescriptionYet")}
         </p>
       </div>
       {selected && (

@@ -15,8 +15,9 @@ import {
   MessageSquare,
   ChevronDown,
   SlidersHorizontal,
+  BookOpen,
 } from "lucide-react";
-import { listCharacters, saveCharacter } from "../../../core/storage/repo";
+import { listCharacters, listLorebooks, saveCharacter } from "../../../core/storage/repo";
 import { listPromptTemplates } from "../../../core/prompts/service";
 import { useI18n } from "../../../core/i18n/context";
 import {
@@ -31,6 +32,7 @@ import type {
   ChatTemplateMessage,
   SystemPromptTemplate,
   StoredMessage,
+  Lorebook,
 } from "../../../core/storage/schemas";
 import { ChatMessage } from "../chats/components/ChatMessage";
 import { getDefaultThemeSync } from "../../../core/utils/imageAnalysis";
@@ -50,6 +52,12 @@ function formatSceneLabel(
   const raw = (scene.content || scene.direction || "").trim();
   if (!raw) return untitledLabel;
   return raw.replace(/\s+/g, " ").replace(/^[*\-+#>\s]+/, "");
+}
+
+function truncateLabel(value: string, maxLength = 72): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 3)}...`;
 }
 
 /* ─── Convert template message to StoredMessage for ChatMessage ───── */
@@ -179,7 +187,7 @@ function EditingForm({
           className="flex items-center gap-1.5 rounded-lg border border-fg/10 bg-fg/5 px-2.5 py-1 text-xs font-medium text-fg/60 transition active:bg-fg/10"
         >
           {msg.role === "user" ? <User className="h-3 w-3" /> : <Bot className="h-3 w-3" />}
-          {msg.role === "user" ? "You" : characterName}
+          {msg.role === "user" ? t("characters.templateEditor.you") : characterName}
         </button>
       </div>
       <textarea
@@ -197,7 +205,7 @@ function EditingForm({
           className="flex items-center gap-1 rounded-lg bg-accent/20 px-3 py-1.5 text-xs font-medium text-accent transition active:bg-accent/30"
         >
           <Check className="h-3 w-3" />
-          Done
+          {t("characters.templateEditor.done")}
         </button>
         <button
           type="button"
@@ -205,7 +213,7 @@ function EditingForm({
           className="flex items-center gap-1 rounded-lg bg-fg/5 px-3 py-1.5 text-xs font-medium text-fg/50 transition active:bg-fg/10"
         >
           <X className="h-3 w-3" />
-          Cancel
+          {t("characters.templateEditor.cancel")}
         </button>
       </div>
     </motion.div>
@@ -234,10 +242,13 @@ export default function ChatTemplateEditorPage() {
   // Scene selector
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
   const [showSceneMenu, setShowSceneMenu] = useState(false);
-  const [_showMobileOptionsMenu, setShowMobileOptionsMenu] = useState(false);
+  const [showMobileOptionsMenu, setShowMobileOptionsMenu] = useState(false);
   const [showPromptTemplateMenu, setShowPromptTemplateMenu] = useState(false);
+  const [showLorebookMenu, setShowLorebookMenu] = useState(false);
   const [promptTemplates, setPromptTemplates] = useState<SystemPromptTemplate[]>([]);
   const [selectedPromptTemplateId, setSelectedPromptTemplateId] = useState<string | null>(null);
+  const [lorebooks, setLorebooks] = useState<Lorebook[]>([]);
+  const [lorebookIdsOverride, setLorebookIdsOverride] = useState<string[] | null>(null);
 
   // Inline editing
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -251,6 +262,7 @@ export default function ChatTemplateEditorPage() {
     messages: string;
     selectedSceneId: string | null;
     selectedPromptTemplateId: string | null;
+    lorebookIdsOverride: string;
   } | null>(null);
 
   const loadCharacter = useCallback(async () => {
@@ -258,9 +270,15 @@ export default function ChatTemplateEditorPage() {
     try {
       const chars = await listCharacters();
       const templates = await listPromptTemplates();
+      const allLorebooks = await listLorebooks();
+      setLorebooks(allLorebooks);
       setPromptTemplates(
         templates.filter(
           (template) =>
+            (template.promptType === "undefined" ||
+              template.promptType === "directChat" ||
+              template.promptType === "groupChatConversational" ||
+              template.promptType === "groupChatRoleplay") &&
             template.id !== APP_DYNAMIC_SUMMARY_TEMPLATE_ID &&
             template.id !== APP_DYNAMIC_MEMORY_TEMPLATE_ID &&
             template.id !== APP_HELP_ME_REPLY_TEMPLATE_ID &&
@@ -282,11 +300,16 @@ export default function ChatTemplateEditorPage() {
             setSelectedSceneId(sceneId);
             const promptTemplateId = existing.promptTemplateId ?? null;
             setSelectedPromptTemplateId(promptTemplateId);
+            const templateLorebookIdsOverride = Array.isArray(existing.lorebookIdsOverride)
+              ? existing.lorebookIdsOverride
+              : null;
+            setLorebookIdsOverride(templateLorebookIdsOverride);
             initialStateRef.current = {
               name: existing.name,
               messages: JSON.stringify(existing.messages),
               selectedSceneId: sceneId,
               selectedPromptTemplateId: promptTemplateId,
+              lorebookIdsOverride: JSON.stringify(templateLorebookIdsOverride),
             };
           }
         } else {
@@ -295,11 +318,13 @@ export default function ChatTemplateEditorPage() {
           setSelectedSceneId(sceneId);
           const promptTemplateId = c.promptTemplateId ?? null;
           setSelectedPromptTemplateId(promptTemplateId);
+          setLorebookIdsOverride(null);
           initialStateRef.current = {
             name: "",
             messages: "[]",
             selectedSceneId: sceneId,
             selectedPromptTemplateId: promptTemplateId,
+            lorebookIdsOverride: "null",
           };
         }
       }
@@ -401,6 +426,7 @@ export default function ChatTemplateEditorPage() {
           : (character.chatTemplates?.find((t) => t.id === templateId)?.createdAt ?? now),
         sceneId: selectedSceneId,
         promptTemplateId: selectedPromptTemplateId,
+        lorebookIdsOverride,
       };
 
       const existingTemplates = character.chatTemplates ?? [];
@@ -423,6 +449,7 @@ export default function ChatTemplateEditorPage() {
     navigate,
     selectedSceneId,
     selectedPromptTemplateId,
+    lorebookIdsOverride,
   ]);
 
   // Change detection: only enable save when something actually changed
@@ -439,9 +466,18 @@ export default function ChatTemplateEditorPage() {
       name !== initial.name ||
       JSON.stringify(messages) !== initial.messages ||
       selectedSceneId !== initial.selectedSceneId ||
-      selectedPromptTemplateId !== initial.selectedPromptTemplateId
+      selectedPromptTemplateId !== initial.selectedPromptTemplateId ||
+      JSON.stringify(lorebookIdsOverride) !== initial.lorebookIdsOverride
     );
-  }, [name, messages, saving, isNew, selectedSceneId, selectedPromptTemplateId]);
+  }, [
+    name,
+    messages,
+    saving,
+    isNew,
+    selectedSceneId,
+    selectedPromptTemplateId,
+    lorebookIdsOverride,
+  ]);
 
   // Wire up save button to global TopNav
   useEffect(() => {
@@ -482,6 +518,17 @@ export default function ChatTemplateEditorPage() {
   const selectedPromptTemplate = promptTemplates.find(
     (template) => template.id === selectedPromptTemplateId,
   );
+  const selectedPromptTemplateLabel =
+    selectedPromptTemplate?.name ?? t("characters.templateEditor.characterDefault");
+  const selectedLorebooks = Array.isArray(lorebookIdsOverride)
+    ? lorebooks.filter((lorebook) => lorebookIdsOverride.includes(lorebook.id))
+    : [];
+  const lorebookLabel =
+    lorebookIdsOverride === null
+      ? t("characters.templateEditor.characterDefault")
+      : selectedLorebooks.length > 0
+        ? selectedLorebooks.map((lorebook) => lorebook.name).join(", ")
+        : t("characters.templateEditor.noLorebooks");
 
   // Build scene message for display
   const sceneStoredMessage: StoredMessage | null = selectedScene
@@ -587,7 +634,7 @@ export default function ChatTemplateEditorPage() {
             ) : (
               <Bot className="h-3.5 w-3.5" />
             )}
-            {nextRole === "user" ? "You" : character.name}
+            {nextRole === "user" ? t("characters.templateEditor.you") : character.name}
           </button>
           <motion.button
             whileTap={{ scale: 0.97 }}
@@ -658,6 +705,22 @@ export default function ChatTemplateEditorPage() {
         </button>
       </div>
 
+      <div>
+        <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-fg/40">
+          {t("characters.templateEditor.activeLorebooks")}
+        </label>
+        <button
+          type="button"
+          onClick={() => setShowLorebookMenu(true)}
+          className="flex w-full items-center justify-between rounded-lg border border-fg/10 bg-fg/5 px-3 py-2 text-left text-sm text-fg transition hover:bg-fg/10"
+        >
+          <span className={lorebookIdsOverride === null ? "text-fg/40" : "text-fg"}>
+            {lorebookLabel}
+          </span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-fg/40" />
+        </button>
+      </div>
+
       {/* Next role selector */}
       <div>
         <label className="mb-1.5 block text-[11px] font-semibold uppercase tracking-wider text-fg/40">
@@ -686,7 +749,7 @@ export default function ChatTemplateEditorPage() {
             }`}
           >
             <User className="h-3.5 w-3.5" />
-            You
+            {t("characters.templateEditor.you")}
           </button>
         </div>
       </div>
@@ -703,7 +766,7 @@ export default function ChatTemplateEditorPage() {
               <span>{t("characters.templateEditor.roles")}</span>
               <span className="font-medium text-fg/70">
                 {messages.filter((m) => m.role === "assistant").length} {character.name},{" "}
-                {messages.filter((m) => m.role === "user").length} You
+                {messages.filter((m) => m.role === "user").length} {t("characters.templateEditor.you")}
               </span>
             </div>
           )}
@@ -749,7 +812,7 @@ export default function ChatTemplateEditorPage() {
                 className="flex h-9 shrink-0 items-center gap-1.5 rounded-lg border border-fg/10 bg-fg/5 px-3 text-xs font-medium text-fg/70 transition active:bg-fg/10"
               >
                 <SlidersHorizontal className="h-3.5 w-3.5" />
-                Options
+                {t("characters.templateEditor.options")}
               </button>
             </div>
           </div>
@@ -757,6 +820,45 @@ export default function ChatTemplateEditorPage() {
           {chatPreview}
         </div>
       </div>
+
+      <BottomMenu
+        isOpen={showMobileOptionsMenu}
+        onClose={() => setShowMobileOptionsMenu(false)}
+        title={t("characters.templateEditor.templateOptions")}
+      >
+        <MenuButtonGroup>
+          <MenuButton
+            icon={<MessageSquare className="h-4 w-4" />}
+            title={t("characters.templateEditor.scene")}
+            description={truncateLabel(selectedSceneLabel)}
+            color="from-blue-500 to-cyan-600"
+            onClick={() => {
+              setShowMobileOptionsMenu(false);
+              setShowSceneMenu(true);
+            }}
+          />
+          <MenuButton
+            icon={<SlidersHorizontal className="h-4 w-4" />}
+            title={t("characters.templateEditor.systemPrompt")}
+            description={truncateLabel(selectedPromptTemplateLabel)}
+            color="from-indigo-500 to-blue-600"
+            onClick={() => {
+              setShowMobileOptionsMenu(false);
+              setShowPromptTemplateMenu(true);
+            }}
+          />
+          <MenuButton
+            icon={<BookOpen className="h-4 w-4" />}
+            title={t("characters.templateEditor.lorebooks")}
+            description={lorebookLabel}
+            color="from-amber-500 to-orange-600"
+            onClick={() => {
+              setShowMobileOptionsMenu(false);
+              setShowLorebookMenu(true);
+            }}
+          />
+        </MenuButtonGroup>
+      </BottomMenu>
 
       {/* Scene selector bottom menu */}
       <BottomMenu
@@ -845,6 +947,73 @@ export default function ChatTemplateEditorPage() {
               }}
             />
           ))}
+        </MenuButtonGroup>
+      </BottomMenu>
+
+      <BottomMenu
+        isOpen={showLorebookMenu}
+        onClose={() => setShowLorebookMenu(false)}
+        title={t("characters.templateEditor.activeLorebooks")}
+      >
+        <MenuButtonGroup>
+          <MenuButton
+            icon={<BookOpen className="h-4 w-4" />}
+            title={t("characters.templateEditor.useCharacterDefault")}
+            description={t("characters.templateEditor.useCharacterDefaultDesc")}
+            color="from-blue-500 to-cyan-600"
+            rightElement={
+              lorebookIdsOverride === null ? (
+                <Check className="h-4 w-4 text-emerald-300" />
+              ) : undefined
+            }
+            onClick={() => {
+              setLorebookIdsOverride(null);
+              setShowLorebookMenu(false);
+            }}
+          />
+          <MenuButton
+            icon={<X className="h-4 w-4" />}
+            title={t("characters.templateEditor.noLorebooks")}
+            description={t("characters.templateEditor.noLorebooksDesc")}
+            color="from-blue-500 to-cyan-600"
+            rightElement={
+              Array.isArray(lorebookIdsOverride) && lorebookIdsOverride.length === 0 ? (
+                <Check className="h-4 w-4 text-emerald-300" />
+              ) : undefined
+            }
+            onClick={() => setLorebookIdsOverride([])}
+          />
+          {lorebooks.map((lorebook) => {
+            const selected =
+              Array.isArray(lorebookIdsOverride) && lorebookIdsOverride.includes(lorebook.id);
+            return (
+              <MenuButton
+                key={lorebook.id}
+                icon={<BookOpen className="h-4 w-4" />}
+                title={lorebook.name}
+                description={
+                  selected
+                    ? t("characters.templateEditor.lorebookEnabled")
+                    : t("characters.templateEditor.lorebookTapToggle")
+                }
+                color="from-blue-500 to-cyan-600"
+                rightElement={
+                  selected ? <Check className="h-4 w-4 text-emerald-300" /> : undefined
+                }
+                onClick={() => {
+                  setLorebookIdsOverride((current) => {
+                    const next = new Set(Array.isArray(current) ? current : []);
+                    if (next.has(lorebook.id)) {
+                      next.delete(lorebook.id);
+                    } else {
+                      next.add(lorebook.id);
+                    }
+                    return Array.from(next);
+                  });
+                }}
+              />
+            );
+          })}
         </MenuButtonGroup>
       </BottomMenu>
     </>

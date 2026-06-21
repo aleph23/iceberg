@@ -11,6 +11,7 @@ use tauri::Emitter;
 
 #[derive(Clone)]
 pub(super) struct LoadedEngine {
+    pub(super) model_reloaded: bool,
     pub(super) backend: Arc<LlamaBackend>,
     pub(super) model: Arc<LlamaModel>,
     pub(super) backend_path_used: Option<String>,
@@ -21,6 +22,7 @@ pub(super) struct LoadedEngine {
     pub(super) compiled_gpu_backends: Vec<String>,
     pub(super) supports_gpu_offload: bool,
     pub(super) mtmd_ctx: Option<Arc<MtmdContext>>,
+    pub(super) mtp_model: Option<Arc<LlamaModel>>,
 }
 
 pub(super) struct LlamaState {
@@ -37,6 +39,8 @@ pub(super) struct LlamaState {
     pub(super) supports_gpu_offload: bool,
     pub(super) mtmd_ctx: Option<Arc<MtmdContext>>,
     pub(super) mmproj_path: Option<String>,
+    pub(super) mtp_model: Option<Arc<LlamaModel>>,
+    pub(super) mtp_model_path: Option<String>,
     pub(super) kqv_fallback_toast_shown: bool,
 }
 
@@ -308,6 +312,7 @@ pub(super) fn load_engine(
     auto_gpu_layer_candidates: Option<&[u32]>,
     strict_mode: bool,
     mmproj_path: Option<&str>,
+    mtp_model_path: Option<&str>,
 ) -> Result<LoadedEngine, String> {
     let engine = ENGINE.get_or_init(|| {
         Mutex::new(LlamaState {
@@ -324,6 +329,8 @@ pub(super) fn load_engine(
             supports_gpu_offload: false,
             mtmd_ctx: None,
             mmproj_path: None,
+            mtp_model: None,
+            mtp_model_path: None,
             kqv_fallback_toast_shown: false,
         })
     });
@@ -381,8 +388,13 @@ pub(super) fn load_engine(
             );
         }
     }
-    let requested_gpu_layers_key = if auto_gpu_layer_candidates.is_some() {
-        "smart:auto".to_string()
+    let requested_gpu_layers_key = if let Some(candidates) = auto_gpu_layer_candidates {
+        let candidate_key = candidates
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("smart:{candidate_key}")
     } else {
         requested_gpu_layers
             .map(|v| v.to_string())
@@ -392,9 +404,29 @@ pub(super) fn load_engine(
         "requested_gpu_layers={requested_gpu_layers_key};strict_mode={}",
         strict_mode
     );
-    let should_reload = guard.model.is_none()
+    let mut should_reload = guard.model.is_none()
         || guard.model_path.as_deref() != Some(model_path)
         || guard.model_params_key.as_deref() != Some(&model_params_key);
+    let reusing_loaded_smart_gpu_model = should_reload
+        && auto_gpu_layer_candidates.is_some()
+        && guard.model.is_some()
+        && guard.model_path.as_deref() == Some(model_path)
+        && guard.backend_path_used.as_deref() == Some("gpu_offload")
+        && guard.actual_gpu_layers_used.unwrap_or(0) > 0;
+    if reusing_loaded_smart_gpu_model {
+        should_reload = false;
+        guard.model_params_key = Some(model_params_key.clone());
+        if let Some(app) = app {
+            log_info(
+                app,
+                "llama_cpp",
+                format!(
+                    "Reusing loaded smart-offload GPU model despite candidate change: model_path={} actual_gpu_layers_used={:?} requested_candidates={:?}",
+                    model_path, guard.actual_gpu_layers_used, auto_gpu_layer_candidates
+                ),
+            );
+        }
+    }
     if !should_reload {
         if let Some(app) = app {
             log_info(
@@ -410,6 +442,28 @@ pub(super) fn load_engine(
         }
     }
     if should_reload {
+        if guard.model.is_some() {
+            guard.model = None;
+            guard.model_path = None;
+            guard.model_params_key = None;
+            guard.backend_path_used = None;
+            guard.actual_gpu_layers_used = None;
+            guard.gpu_load_fallback_activated = false;
+            guard.gpu_load_fallback_reason = None;
+            guard.smart_gpu_layer_fallback_activated = false;
+            guard.mtmd_ctx = None;
+            guard.mmproj_path = None;
+            guard.mtp_model = None;
+            guard.mtp_model_path = None;
+            if let Some(app) = app {
+                log_info(
+                    app,
+                    "llama_cpp",
+                    "Dropped previously loaded model before reload to free VRAM",
+                );
+            }
+        }
+
         let mut backend_path_used = "cpu".to_string();
         let mut actual_gpu_layers_used = None;
         let mut gpu_load_fallback_activated = false;
@@ -552,7 +606,7 @@ pub(super) fn load_engine(
                                 MODEL_LOAD_STAGE_CPU
                             },
                         )
-                        .map_err(|err| {
+                        .inspect_err(|_err| {
                             if let Some(app) = app {
                                 emit_model_load_progress(
                                     app,
@@ -568,7 +622,6 @@ pub(super) fn load_engine(
                                     0.0,
                                 );
                             }
-                            err
                         })?,
                     )
                 }
@@ -662,7 +715,7 @@ pub(super) fn load_engine(
                                 "cpu",
                                 MODEL_LOAD_STAGE_CPU_FALLBACK,
                             )
-                            .map_err(|err| {
+                            .inspect_err(|_err| {
                                 if let Some(app) = app {
                                     emit_model_load_progress(
                                         app,
@@ -674,7 +727,6 @@ pub(super) fn load_engine(
                                         0.0,
                                     );
                                 }
-                                err
                             })?,
                         )
                     }
@@ -691,7 +743,7 @@ pub(super) fn load_engine(
                     "cpu",
                     MODEL_LOAD_STAGE_CPU,
                 )
-                .map_err(|err| {
+                .inspect_err(|_err| {
                     if let Some(app) = app {
                         emit_model_load_progress(
                             app,
@@ -703,7 +755,6 @@ pub(super) fn load_engine(
                             0.0,
                         );
                     }
-                    err
                 })?,
             )
         };
@@ -772,7 +823,54 @@ pub(super) fn load_engine(
         }
     }
 
+    let mtp_changed = should_reload
+        || guard.mtp_model_path.as_deref() != mtp_model_path
+        || (mtp_model_path.is_some() && guard.mtp_model.is_none());
+    if mtp_changed {
+        guard.mtp_model = None;
+        guard.mtp_model_path = None;
+
+        if let Some(mtp_path) = mtp_model_path {
+            if !Path::new(mtp_path).exists() {
+                return Err(crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("MTP draft model file not found: {}", mtp_path),
+                ));
+            }
+
+            let drafter_gpu_layers = if guard.backend_path_used.as_deref() == Some("gpu_offload") {
+                Some(1000)
+            } else {
+                Some(0)
+            };
+            let drafter = load_model_with_progress(
+                None,
+                None,
+                mtp_path,
+                drafter_gpu_layers,
+                guard.backend_path_used.as_deref().unwrap_or("cpu"),
+                MODEL_LOAD_STAGE_FINALIZING,
+            )?;
+
+            if let Some(app) = app {
+                log_info(
+                    app,
+                    "llama_cpp",
+                    format!(
+                        "MTP draft model loaded: path={} gpu_layers={:?}",
+                        mtp_path, drafter_gpu_layers
+                    ),
+                );
+            }
+
+            guard.mtp_model = Some(Arc::new(drafter));
+            guard.mtp_model_path = Some(mtp_path.to_string());
+        }
+    }
+
     Ok(LoadedEngine {
+        model_reloaded: should_reload,
         backend: guard
             .backend
             .clone()
@@ -789,6 +887,7 @@ pub(super) fn load_engine(
         compiled_gpu_backends: guard.compiled_gpu_backends.clone(),
         supports_gpu_offload: guard.supports_gpu_offload,
         mtmd_ctx: guard.mtmd_ctx.clone(),
+        mtp_model: guard.mtp_model.clone(),
     })
 }
 
@@ -808,6 +907,8 @@ pub(crate) fn unload_engine(app: &AppHandle) -> Result<(), String> {
             supports_gpu_offload: false,
             mtmd_ctx: None,
             mmproj_path: None,
+            mtp_model: None,
+            mtp_model_path: None,
             kqv_fallback_toast_shown: false,
         })
     });
@@ -827,6 +928,8 @@ pub(crate) fn unload_engine(app: &AppHandle) -> Result<(), String> {
         guard.smart_gpu_layer_fallback_activated = false;
         guard.mtmd_ctx = None;
         guard.mmproj_path = None;
+        guard.mtp_model = None;
+        guard.mtp_model_path = None;
         guard.kqv_fallback_toast_shown = false;
         log_info(app, "llama_cpp", "unloaded llama.cpp model");
     }
@@ -853,6 +956,8 @@ pub(crate) fn consume_kqv_fallback_toast(
             supports_gpu_offload: false,
             mtmd_ctx: None,
             mmproj_path: None,
+            mtp_model: None,
+            mtp_model_path: None,
             kqv_fallback_toast_shown: false,
         })
     });

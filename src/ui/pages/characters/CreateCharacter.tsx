@@ -8,6 +8,7 @@ import { useCharacterForm, Step } from "./hooks/useCharacterForm";
 import { IdentityStep } from "./components/IdentityStep";
 import { StartingSceneStep } from "./components/StartingSceneStep";
 import { DescriptionStep } from "./components/DescriptionStep";
+import { CompanionSoulStep } from "./components/CompanionSoulStep";
 import { ExtrasStep } from "./components/ExtrasStep";
 import { TopNav } from "../../components/App";
 import {
@@ -25,8 +26,61 @@ import {
   buildCharacterCreateLibraryReturnKey,
   type BackgroundLibrarySelectionPayload,
 } from "../../components/AvatarPicker/librarySelection";
+import { listCharacters, createSession } from "../../../core/storage/repo";
 
 const CREATE_CHARACTER_DRAFT_KEY = "create-character-draft";
+const MAX_DRAFT_INLINE_IMAGE_LENGTH = 200_000;
+
+function isInlineImageData(value: string | null | undefined): value is string {
+  return typeof value === "string" && value.startsWith("data:image");
+}
+
+function keepDraftInlineImage(value: string | null | undefined): string {
+  if (!isInlineImageData(value)) {
+    return typeof value === "string" ? value : "";
+  }
+
+  return value.length <= MAX_DRAFT_INLINE_IMAGE_LENGTH ? value : "";
+}
+
+function buildCompactCreateCharacterDraft(draft: Record<string, unknown>): Record<string, unknown> {
+  const avatarPath = typeof draft.avatarPath === "string" ? draft.avatarPath : "";
+  const avatarRoundPath =
+    typeof draft.avatarRoundPath === "string" ? draft.avatarRoundPath : null;
+  const avatarBannerPath =
+    typeof draft.avatarBannerPath === "string" ? draft.avatarBannerPath : null;
+  const backgroundImagePath =
+    typeof draft.backgroundImagePath === "string" ? draft.backgroundImagePath : "";
+
+  const safeAvatarRoundPath = keepDraftInlineImage(avatarRoundPath);
+  const safeAvatarBannerPath = keepDraftInlineImage(avatarBannerPath);
+  const safeAvatarPath = keepDraftInlineImage(avatarPath);
+  const safeBackgroundImagePath = keepDraftInlineImage(backgroundImagePath);
+
+  return {
+    ...draft,
+    avatarPath: safeAvatarRoundPath || safeAvatarPath,
+    avatarRoundPath: safeAvatarRoundPath || null,
+    avatarBannerPath: safeAvatarBannerPath || null,
+    backgroundImagePath: safeBackgroundImagePath,
+  };
+}
+
+function persistCreateCharacterDraft(draft: Record<string, unknown>) {
+  const writeDraft = (value: Record<string, unknown>) => {
+    sessionStorage.setItem(CREATE_CHARACTER_DRAFT_KEY, JSON.stringify(value));
+  };
+
+  const compactDraft = buildCompactCreateCharacterDraft(draft);
+
+  try {
+    writeDraft(compactDraft);
+    return;
+  } catch (error) {
+    console.warn("Failed to persist create character draft, clearing saved draft.", error);
+    sessionStorage.removeItem(CREATE_CHARACTER_DRAFT_KEY);
+  }
+}
 
 function loadCreateCharacterDraft(locationState: unknown, returnPath: string) {
   if (
@@ -97,7 +151,10 @@ export function CreateCharacterPage() {
       await Promise.all(
         providers.map(async (provider) => {
           try {
-            if (provider.providerType === "elevenlabs" && provider.apiKey) {
+            if (
+              (provider.providerType === "elevenlabs" || provider.providerType === "fish_tts") &&
+              provider.apiKey
+            ) {
               voicesByProvider[provider.id] = await refreshProviderVoices(provider.id);
             } else {
               voicesByProvider[provider.id] = await getProviderVoices(provider.id);
@@ -117,11 +174,11 @@ export function CreateCharacterPage() {
       setHasLoadedVoices(true);
     } catch (err) {
       console.error("Failed to load voices:", err);
-      setVoiceError("Failed to load voices");
+      setVoiceError(t("characters.voiceLoading.failed"));
     } finally {
       setLoadingVoices(false);
     }
-  }, []);
+  }, [t]);
 
   React.useEffect(() => {
     if (state.step !== Step.Description || hasLoadedVoices) return;
@@ -132,6 +189,9 @@ export function CreateCharacterPage() {
     if (typeof window === "undefined") {
       return;
     }
+    if (state.loadingModels || state.loadingTemplates) {
+      return;
+    }
 
     const draft = {
       step: state.step,
@@ -139,9 +199,14 @@ export function CreateCharacterPage() {
       avatarPath: state.avatarPath,
       avatarCrop: state.avatarCrop,
       avatarRoundPath: state.avatarRoundPath,
+      avatarBannerPath: state.avatarBannerPath,
+      bannerCrop: state.bannerCrop,
+      cardType: state.cardType,
       backgroundImagePath: state.backgroundImagePath,
       definition: state.definition,
       description: state.description,
+      designDescription: state.designDescription,
+      designReferenceImageIds: state.designReferenceImageIds,
       nickname: state.nickname,
       creator: state.creator,
       creatorNotes: state.creatorNotes,
@@ -162,6 +227,18 @@ export function CreateCharacterPage() {
       defaultModelId: state.selectedModelId,
       fallbackModelId: state.selectedFallbackModelId,
       promptTemplateId: state.systemPromptTemplateId,
+      companion:
+        state.mode === "companion"
+          ? {
+              ...(state.companion ?? {}),
+              prompting: {
+                ...(state.companion?.prompting ?? {}),
+                promptTemplateId: state.companionPromptTemplateId,
+              },
+            }
+          : undefined,
+      mode: state.mode,
+      activeLorebookIds: state.activeLorebookIds,
       memoryType: state.memoryType,
       disableAvatarGradient: state.disableAvatarGradient,
       voiceConfig: state.voiceConfig,
@@ -170,16 +247,23 @@ export function CreateCharacterPage() {
       defaultSceneId: state.defaultSceneId,
     };
 
-    sessionStorage.setItem(CREATE_CHARACTER_DRAFT_KEY, JSON.stringify(draft));
+    persistCreateCharacterDraft(draft);
   }, [
+    state.loadingModels,
+    state.loadingTemplates,
     state.step,
     state.name,
     state.avatarPath,
     state.avatarCrop,
     state.avatarRoundPath,
+    state.avatarBannerPath,
+    state.bannerCrop,
+    state.cardType,
     state.backgroundImagePath,
     state.definition,
     state.description,
+    state.designDescription,
+    state.designReferenceImageIds,
     state.nickname,
     state.creator,
     state.creatorNotes,
@@ -189,6 +273,10 @@ export function CreateCharacterPage() {
     state.selectedModelId,
     state.selectedFallbackModelId,
     state.systemPromptTemplateId,
+    state.companionPromptTemplateId,
+    state.companion,
+    state.mode,
+    state.activeLorebookIds,
     state.memoryType,
     state.disableAvatarGradient,
     state.voiceConfig,
@@ -253,6 +341,8 @@ export function CreateCharacterPage() {
 
   const handleBack = () => {
     if (state.step === Step.Extras) {
+      actions.setStep(state.mode === "companion" ? Step.CompanionSoul : Step.StartingScene);
+    } else if (state.step === Step.CompanionSoul) {
       actions.setStep(Step.StartingScene);
     } else if (state.step === Step.StartingScene) {
       actions.setStep(Step.Description);
@@ -263,14 +353,47 @@ export function CreateCharacterPage() {
     }
   };
 
-  const handleSave = async () => {
+  const autoSaveAndChat = Boolean(
+    (location.state as { autoSaveAndChat?: boolean } | null)?.autoSaveAndChat,
+  );
+  const autoSaveTriggeredRef = React.useRef(false);
+
+  const handleSave = async (options?: { thenChat?: boolean }) => {
     const success = await actions.handleSave();
     if (success) {
       sessionStorage.removeItem(CREATE_CHARACTER_DRAFT_KEY);
       sessionStorage.removeItem(buildCharacterCreateLibraryReturnKey(returnPath));
+      if (options?.thenChat) {
+        try {
+          const characters = await listCharacters();
+          const target = [...characters]
+            .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
+            .find((c) => c.name?.trim() === state.name.trim());
+          if (target) {
+            const newSession = await createSession(
+              target.id,
+              `Chat with ${target.name}`,
+            );
+            navigate(`/chat/${target.id}?sessionId=${newSession.id}`);
+            return success;
+          }
+        } catch (err) {
+          console.warn("[CreateCharacter] Save & Chat: lookup failed:", err);
+        }
+      }
       navigate("/chat");
     }
+    return success;
   };
+
+  React.useEffect(() => {
+    if (!autoSaveAndChat) return;
+    if (autoSaveTriggeredRef.current) return;
+    if (!state.name.trim() || !state.definition.trim()) return;
+    autoSaveTriggeredRef.current = true;
+    void handleSave({ thenChat: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSaveAndChat, state.name, state.definition]);
 
   //const stepLabel =
   //  state.step === Step.Identity ? "Identity" :
@@ -300,6 +423,12 @@ export function CreateCharacterPage() {
               onAvatarCropChange={actions.setAvatarCrop}
               avatarRoundPath={state.avatarRoundPath}
               onAvatarRoundChange={actions.setAvatarRoundPath}
+              bannerPath={state.avatarBannerPath}
+              onBannerChange={actions.setAvatarBannerPath}
+              bannerCrop={state.bannerCrop}
+              onBannerCropChange={actions.setBannerCrop}
+              cardType={state.cardType}
+              onCardTypeChange={actions.setCardType}
               backgroundImagePath={state.backgroundImagePath}
               onBackgroundImageChange={actions.setBackgroundImagePath}
               onBackgroundImageUpload={actions.handleBackgroundImageUpload}
@@ -315,10 +444,18 @@ export function CreateCharacterPage() {
           ) : state.step === Step.Description ? (
             <DescriptionStep
               key="description"
+              name={state.name}
+              avatarPath={state.avatarPath}
               definition={state.definition}
               onDefinitionChange={actions.setDefinition}
               description={state.description}
               onDescriptionChange={actions.setDescription}
+              designDescription={state.designDescription}
+              onDesignDescriptionChange={actions.setDesignDescription}
+              designReferenceImageIds={state.designReferenceImageIds}
+              onDesignReferenceImageIdsChange={actions.setDesignReferenceImageIds}
+              mode={state.mode}
+              onModeChange={actions.setMode}
               models={state.models}
               loadingModels={state.loadingModels}
               selectedModelId={state.selectedModelId}
@@ -332,6 +469,8 @@ export function CreateCharacterPage() {
               loadingTemplates={state.loadingTemplates}
               systemPromptTemplateId={state.systemPromptTemplateId}
               onSelectSystemPrompt={actions.setSystemPromptTemplateId}
+              companionPromptTemplateId={state.companionPromptTemplateId}
+              onSelectCompanionPrompt={actions.setCompanionPromptTemplateId}
               groupChatPromptTemplateId={state.groupChatPromptTemplateId}
               onSelectGroupChatPrompt={actions.setGroupChatPromptTemplateId}
               groupChatRoleplayPromptTemplateId={state.groupChatRoleplayPromptTemplateId}
@@ -358,8 +497,25 @@ export function CreateCharacterPage() {
               onScenesChange={actions.setScenes}
               defaultSceneId={state.defaultSceneId}
               onDefaultSceneIdChange={actions.setDefaultSceneId}
-              onContinue={() => actions.setStep(Step.Extras)}
+              mode={state.mode}
+              onContinue={() =>
+                actions.setStep(state.mode === "companion" ? Step.CompanionSoul : Step.Extras)
+              }
               canContinue={computed.canContinueStartingScene}
+            />
+          ) : state.step === Step.CompanionSoul ? (
+            <CompanionSoulStep
+              key="companion-soul"
+              name={state.name}
+              definition={state.definition}
+              description={state.description}
+              scenes={state.scenes}
+              companion={state.companion}
+              selectedModelId={state.selectedModelId}
+              models={state.models}
+              onCompanionChange={actions.setCompanionConfig}
+              onBack={() => actions.setStep(Step.StartingScene)}
+              onContinue={() => actions.setStep(Step.Extras)}
             />
           ) : (
             <ExtrasStep
@@ -374,6 +530,8 @@ export function CreateCharacterPage() {
               onCreatorNotesMultilingualTextChange={actions.setCreatorNotesMultilingualText}
               tagsText={state.tagsText}
               onTagsTextChange={actions.setTagsText}
+              activeLorebookIds={state.activeLorebookIds}
+              onActiveLorebookIdsChange={actions.setActiveLorebookIds}
               onSave={handleSave}
               saving={state.saving}
               error={state.error}

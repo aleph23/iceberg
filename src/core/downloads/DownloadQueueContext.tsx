@@ -18,11 +18,21 @@ export interface QueuedDownload {
   resultPath: string | null;
   createModelWhenFinished: boolean;
   mmprojFile: string | false;
+  mtpFile: string | false;
+  mtpBundled?: boolean;
   installId: string | null;
   displayName: string | null;
   contextLength: number | null;
   kvType: string | null;
-  downloadRole: "model" | "mmproj" | null;
+  llamaOffloadKqv: boolean | null;
+  llamaGpuLayers: number | null;
+  llamaModelOffloadMode: "auto" | "cpu" | "gpu" | "mixed" | null;
+  downloadRole: "model" | "mmproj" | "mtp" | null;
+  queueKind?: string | null;
+  assetRoot?: string | null;
+  installKind?: string | null;
+  variant?: string | null;
+  voiceId?: string | null;
 }
 
 interface DownloadQueueContextValue {
@@ -64,8 +74,106 @@ function extractShortName(modelId: string): string {
   return parts[parts.length - 1] || modelId;
 }
 
-function isMmprojFilename(filename: string): boolean {
+export function isMmprojDownloadFilename(filename: string): boolean {
   return filename.toLowerCase().includes("mmproj");
+}
+
+export function isMtpDownloadFilename(filename: string): boolean {
+  const base = filename.toLowerCase().split("/").pop() ?? "";
+  return base.startsWith("mtp-") || base.includes("-mtp.") || base.includes("_mtp.");
+}
+
+export function isSidecarDownload(item: QueuedDownload): boolean {
+  return (
+    item.downloadRole === "mmproj" ||
+    item.downloadRole === "mtp" ||
+    isMmprojDownloadFilename(item.filename) ||
+    isMtpDownloadFilename(item.filename)
+  );
+}
+
+export function isCreateableModelDownload(item: QueuedDownload): boolean {
+  return (
+    item.queueKind !== "kokoro" &&
+    item.queueKind !== "whisper" &&
+    item.queueKind !== "sd" &&
+    item.queueKind !== "sdcpp" &&
+    !isSidecarDownload(item)
+  );
+}
+
+export interface DownloadGroup {
+  installId: string;
+  model: QueuedDownload | null;
+  items: QueuedDownload[];
+}
+
+export function groupQueueDownloads(queue: QueuedDownload[]): {
+  groups: DownloadGroup[];
+  singles: QueuedDownload[];
+} {
+  const byInstall = new Map<string, QueuedDownload[]>();
+  const singles: QueuedDownload[] = [];
+  for (const item of queue) {
+    if (item.installId) {
+      const list = byInstall.get(item.installId) ?? [];
+      list.push(item);
+      byInstall.set(item.installId, list);
+    } else {
+      singles.push(item);
+    }
+  }
+  const groups: DownloadGroup[] = [];
+  for (const [installId, items] of byInstall) {
+    if (items.length < 2) {
+      singles.push(...items);
+      continue;
+    }
+    const model =
+      items.find((item) => item.downloadRole === "model") ??
+      items.find((item) => !isSidecarDownload(item)) ??
+      null;
+    groups.push({ installId, model, items });
+  }
+  return { groups, singles };
+}
+
+const registeredSdDownloads = new Set<string>();
+
+async function registerCompletedSdDownload(item: QueuedDownload): Promise<void> {
+  if (item.queueKind !== "sd" || !item.resultPath || registeredSdDownloads.has(item.id)) {
+    return;
+  }
+  registeredSdDownloads.add(item.id);
+  const [family, role] = (item.variant ?? "").split(":");
+  if (!family || !role) return;
+  try {
+    const { sdEnsureModelRow, sdRegisterHfModel } = await import("../local-diffusion");
+    type SdRegisterArgs = Parameters<typeof sdRegisterHfModel>;
+    const entry = await sdRegisterHfModel(
+      item.modelId,
+      item.resultPath,
+      role as SdRegisterArgs[2],
+      family as SdRegisterArgs[3],
+      item.displayName,
+    );
+    if (entry.complete) {
+      await sdEnsureModelRow(entry);
+      toast.success("Image model ready", `${entry.name} is available for image generation.`);
+    } else {
+      toast.success(
+        "Model file registered",
+        `${entry.name} has no main model file yet. Download the diffusion model from the same repo or attach files in Settings.`,
+        { duration: 10000 },
+      );
+    }
+  } catch (err: any) {
+    registeredSdDownloads.delete(item.id);
+    toast.error(
+      "Model registration failed",
+      typeof err === "string" ? err : err?.message || "Unknown error",
+    );
+  }
 }
 
 export function DownloadQueueProvider({ children }: { children: ReactNode }) {
@@ -115,13 +223,16 @@ export function DownloadQueueProvider({ children }: { children: ReactNode }) {
 
       // Download just completed
       if (prevItem.status !== "complete" && item.status === "complete") {
-        if (!isOnHfPage) {
-          const displayName = extractShortName(item.modelId).replace(/-GGUF$/i, "");
+        void registerCompletedSdDownload(item);
+        if (!isOnHfPage && item.queueKind !== "sd" && item.queueKind !== "sdcpp") {
+          const displayName =
+            item.queueKind === "kokoro"
+              ? item.displayName || item.filename
+              : extractShortName(item.modelId).replace(/-GGUF$/i, "");
           toast.success("Download complete", `${displayName} — ${item.filename}`, {
-            actionLabel: isMmprojFilename(item.filename) ? undefined : "Create Model",
-            onAction: isMmprojFilename(item.filename)
-              ? undefined
-              : () => {
+            actionLabel: isCreateableModelDownload(item) ? "Create Model" : undefined,
+            onAction: isCreateableModelDownload(item)
+              ? () => {
                   if (!item.resultPath) return;
                   const cleanName = extractShortName(item.modelId).replace(/-GGUF$/i, "");
                   const params = new URLSearchParams();
@@ -131,7 +242,8 @@ export function DownloadQueueProvider({ children }: { children: ReactNode }) {
                   navigate(`${Routes.settingsModelsNew}?${params.toString()}`);
                   // Dismiss the item after navigating
                   invoke("hf_dismiss_queue_item", { queueId: item.id }).catch(() => {});
-                },
+                }
+              : undefined,
             id: `dl-complete-${item.id}`,
             duration: 10000,
           });

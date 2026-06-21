@@ -7,12 +7,10 @@ import {
   PenLine,
   Brain,
   Cpu,
-  Info,
+  Heart,
   MessageSquare,
   Zap,
-  DollarSign,
-  AlertTriangle,
-  Loader2,
+  BookOpen,
   Network,
 } from "lucide-react";
 import {
@@ -21,14 +19,13 @@ import {
   checkEmbeddingModel,
   getHostApiStatus,
 } from "../../../core/storage/repo";
-import { invoke } from "@tauri-apps/api/core";
 import type { Settings } from "../../../core/storage/schemas";
-import { cn, typography, spacing, interactive, colors } from "../../design-tokens";
+import { cn, typography, spacing, interactive } from "../../design-tokens";
 import { EmbeddingDownloadPrompt } from "../../components/EmbeddingDownloadPrompt";
-import { BottomMenu } from "../../components/BottomMenu";
 import { openDocs, DOCS } from "../../../core/utils/docs";
 import { useI18n } from "../../../core/i18n/context";
 import { Switch } from "../../components/Switch";
+import { NumberInput } from "../../components/NumberInput";
 
 type DocsKey = keyof typeof DOCS;
 
@@ -304,12 +301,6 @@ export function AdvancedPage() {
   const [hostApiEnabled, setHostApiEnabled] = useState(false);
   const [hostApiRunning, setHostApiRunning] = useState(false);
 
-  // Usage recalculation state
-  const [showRecalculateWarning, setShowRecalculateWarning] = useState(false);
-  const [recalculating, setRecalculating] = useState(false);
-  const [recalculateResult, setRecalculateResult] = useState<string | null>(null);
-  const [openRouterApiKey, setOpenRouterApiKey] = useState<string>("");
-
   const getAdvancedSettings = (settings: Settings) => {
     const advanced = settings.advancedSettings ?? {
       creationHelperEnabled: false,
@@ -335,12 +326,6 @@ export function AdvancedPage() {
         setHelpMeReplyEnabled(settings.advancedSettings?.helpMeReplyEnabled ?? true);
         setManualWindow(settings.advancedSettings?.manualModeContextWindow ?? 50);
         setHostApiEnabled(settings.advancedSettings?.hostApi?.enabled ?? false);
-
-        // Get OpenRouter API key for recalculation
-        const openRouterCred = settings.providerCredentials?.find(
-          (c) => c.providerId === "openrouter",
-        );
-        setOpenRouterApiKey(openRouterCred?.apiKey ?? "");
 
         try {
           const status = await getHostApiStatus();
@@ -446,28 +431,6 @@ export function AdvancedPage() {
     }
   };
 
-  const handleRecalculateCosts = async () => {
-    if (!openRouterApiKey) {
-      setRecalculateResult(
-        "Error: No OpenRouter API key found. Please configure it in Settings > Providers.",
-      );
-      return;
-    }
-
-    setRecalculating(true);
-    setRecalculateResult(null);
-
-    try {
-      const result = await invoke<string>("usage_recalculate_costs", {
-        apiKey: openRouterApiKey,
-      });
-      setRecalculateResult(result);
-    } catch (err) {
-      setRecalculateResult(`Error: ${err}`);
-    } finally {
-      setRecalculating(false);
-    }
-  };
 
   const handleToggleHelpMeReply = async () => {
     const newValue = !helpMeReplyEnabled;
@@ -516,8 +479,8 @@ export function AdvancedPage() {
   }
 
   return (
-    <div className="flex h-full flex-col pb-16">
-      <section className={cn("flex-1 overflow-y-auto px-3 pt-3", spacing.section)}>
+    <div className="flex h-full flex-col">
+      <section className={cn("flex-1 overflow-y-auto px-3 pt-3 pb-6", spacing.section)}>
         {/* AI Features Section */}
         <SettingsSection title={t("advanced.sectionTitles.aiFeatures")} icon={<Zap size={12} />}>
           <FeatureCard
@@ -542,6 +505,46 @@ export function AdvancedPage() {
             onNavigate={() => navigate("/settings/advanced/help-me-reply")}
             colorScheme="emerald"
           />
+
+          <button
+            type="button"
+            onClick={() => navigate("/settings/advanced/lorebooks")}
+            className={cn(
+              "group w-full text-left",
+              "relative overflow-hidden rounded-xl border border-fg/10 bg-fg/5 px-4 py-3.5",
+              "transition-all duration-300 hover:border-fg/20",
+              interactive.active.scale,
+              interactive.focus.ring,
+            )}
+          >
+            <div className="relative flex items-start gap-3">
+              <div
+                className={cn(
+                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border",
+                  "border-accent/30 bg-accent/10 text-accent/90",
+                )}
+              >
+                <BookOpen className="h-4 w-4" />
+              </div>
+
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex-1">
+                    <span className={cn(typography.body.size, "font-medium text-fg")}>
+                      Lorebooks
+                    </span>
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-fg/50">
+                      Configure the full lorebook generator pipeline and the entry generator that
+                      drafts single entries and keywords from chat messages.
+                    </p>
+                  </div>
+
+                  <ChevronRight className="h-4 w-4 shrink-0 text-fg/25 transition-colors group-hover:text-fg/50" />
+                </div>
+              </div>
+            </div>
+          </button>
+
         </SettingsSection>
 
         {/* Memory System Section */}
@@ -586,15 +589,11 @@ export function AdvancedPage() {
                       {t("advanced.dynamicMemory.contextWindowDesc")}
                     </p>
                   </div>
-                  <input
-                    type="number"
+                  <NumberInput
                     min={1}
                     max={1000}
                     value={manualWindow ?? 50}
-                    onChange={(e) => {
-                      const val = parseInt(e.target.value);
-                      handleManualWindowChange(isNaN(val) ? null : val);
-                    }}
+                    onChange={(next) => handleManualWindowChange(next)}
                     className={cn(
                       "w-20 rounded-lg border border-fg/15 bg-surface-el/30 px-3 py-1.5",
                       "text-center font-mono text-sm text-fg",
@@ -608,76 +607,46 @@ export function AdvancedPage() {
           </div>
         </SettingsSection>
 
-        {/* Usage Analytics Section */}
-        <SettingsSection
-          title={t("advanced.sectionTitles.usageAnalytics")}
-          icon={<DollarSign size={12} />}
-        >
-          <div className={cn("rounded-xl border px-4 py-4", "border-fg/10 bg-fg/5")}>
-            <div className="flex items-start gap-3">
+        {/* Companions Section */}
+        <SettingsSection title="Companions" icon={<Heart size={12} />}>
+          <button
+            type="button"
+            onClick={() => navigate("/settings/advanced/companions")}
+            className={cn(
+              "group w-full text-left",
+              "relative overflow-hidden rounded-xl border border-fg/10 bg-fg/5 px-4 py-3.5",
+              "transition-all duration-300 hover:border-fg/20",
+              interactive.active.scale,
+              interactive.focus.ring,
+            )}
+          >
+            <div className="relative flex items-start gap-3">
               <div
                 className={cn(
                   "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border",
-                  "border-warning/20 bg-warning/10",
+                  "border-rose-400/30 bg-rose-400/10 text-rose-300",
                 )}
               >
-                <DollarSign className="h-4 w-4 text-warning" />
+                <Heart className="h-4 w-4" />
               </div>
 
               <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex-1">
                     <span className={cn(typography.body.size, "font-medium text-fg")}>
-                      {t("advanced.usageAnalytics.recalculateTitle")}
+                      Companions
                     </span>
-                    <p className="mt-0.5 text-[11px] text-fg/45">
-                      {t("advanced.usageAnalytics.recalculateDesc")}
+                    <p className="mt-0.5 text-[11px] leading-relaxed text-fg/50">
+                      Manage local analysis models for emotion, entity, and memory routing, and
+                      configure the Companion Soul Writer that drafts persona souls.
                     </p>
                   </div>
+
+                  <ChevronRight className="h-4 w-4 shrink-0 text-fg/25 transition-colors group-hover:text-fg/50" />
                 </div>
-
-                <button
-                  onClick={() => setShowRecalculateWarning(true)}
-                  disabled={recalculating || !openRouterApiKey}
-                  className={cn(
-                    "w-full rounded-lg border px-4 py-2.5 text-sm font-medium",
-                    "transition-all",
-                    recalculating || !openRouterApiKey
-                      ? "border-fg/10 bg-fg/5 text-fg/30 cursor-not-allowed"
-                      : "border-warning/30 bg-warning/10 text-warning/90 hover:bg-warning/20 hover:border-warning/40",
-                  )}
-                >
-                  {recalculating ? (
-                    <span className="flex items-center justify-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      {t("advanced.usageAnalytics.recalculating")}
-                    </span>
-                  ) : (
-                    t("advanced.usageAnalytics.recalculateButton")
-                  )}
-                </button>
-
-                {!openRouterApiKey && (
-                  <p className="mt-2 text-[11px] text-danger/70">
-                    {t("advanced.usageAnalytics.openRouterApiKeyRequired")}
-                  </p>
-                )}
-
-                {recalculateResult && (
-                  <div
-                    className={cn(
-                      "mt-3 rounded-lg border px-3 py-2 text-[11px]",
-                      recalculateResult.startsWith("Error")
-                        ? "border-danger/30 bg-danger/10 text-danger/80"
-                        : "border-accent/30 bg-accent/10 text-accent/80",
-                    )}
-                  >
-                    {recalculateResult}
-                  </div>
-                )}
               </div>
             </div>
-          </div>
+          </button>
         </SettingsSection>
 
         {/* Network Section */}
@@ -694,104 +663,12 @@ export function AdvancedPage() {
           />
         </SettingsSection>
 
-        {/* Info Card */}
-        <div
-          className={cn(
-            "rounded-xl border px-4 py-3.5",
-            colors.glass.subtle,
-            "flex items-start gap-3",
-          )}
-        >
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-fg/30" />
-          <div className="text-[11px] leading-relaxed text-fg/45">
-            <p>
-              <strong className="text-fg/60">{t("advanced.dynamicMemory.title")}</strong>{" "}
-              {t("advanced.dynamicMemory.infoText")}
-            </p>
-            <p className="mt-2">{t("advanced.dynamicMemory.disabledText")}</p>
-          </div>
-        </div>
       </section>
 
       <EmbeddingDownloadPrompt
         isOpen={showDownloadPrompt}
         onClose={() => setShowDownloadPrompt(false)}
       />
-
-      {/* Recalculate Warning Bottom Menu */}
-      <BottomMenu
-        isOpen={showRecalculateWarning}
-        onClose={() => setShowRecalculateWarning(false)}
-        title="Recalculate Usage Costs?"
-        includeExitIcon={false}
-      >
-        <div className="space-y-4 pb-4">
-          <div className="flex items-start gap-3">
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-warning/30 bg-warning/20">
-              <AlertTriangle className="h-5 w-5 text-warning" />
-            </div>
-            <div className="flex-1">
-              <p className="text-sm text-fg/80 leading-relaxed">
-                This will update all historical OpenRouter usage records with current pricing from
-                the OpenRouter API.
-              </p>
-            </div>
-          </div>
-
-          <div className={cn("rounded-xl border border-fg/10 bg-fg/5 p-3")}>
-            <p className="text-xs font-medium text-fg/70 mb-2">
-              {t("advanced.usageAnalytics.importantLabel")}
-            </p>
-            <ul className="space-y-1.5 text-xs text-fg/60">
-              <li className="flex items-start gap-2">
-                <span className="text-warning mt-0.5">•</span>
-                <span>{t("advanced.usageAnalytics.warningCannotUndo")}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-warning mt-0.5">•</span>
-                <span>{t("advanced.usageAnalytics.warningMayTakeTime")}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-warning mt-0.5">•</span>
-                <span>{t("advanced.usageAnalytics.warningOnlyOpenRouter")}</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="text-warning mt-0.5">•</span>
-                <span>{t("advanced.usageAnalytics.warningExistingValues")}</span>
-              </li>
-            </ul>
-          </div>
-
-          <div className="flex gap-2 pt-2">
-            <button
-              onClick={() => {
-                setShowRecalculateWarning(false);
-                setRecalculateResult(null);
-              }}
-              className={cn(
-                "flex-1 rounded-xl border border-fg/10 bg-fg/5 px-4 py-2.5",
-                "text-sm font-medium text-fg/60",
-                "hover:bg-fg/10 hover:text-fg transition-all",
-              )}
-            >
-              {t("common.buttons.cancel")}
-            </button>
-            <button
-              onClick={() => {
-                setShowRecalculateWarning(false);
-                handleRecalculateCosts();
-              }}
-              className={cn(
-                "flex-1 rounded-xl border border-warning/30 bg-warning/20 px-4 py-2.5",
-                "text-sm font-medium text-warning/90",
-                "hover:bg-warning/30 hover:border-warning/40 transition-all",
-              )}
-            >
-              {t("common.buttons.proceed")}
-            </button>
-          </div>
-        </div>
-      </BottomMenu>
     </div>
   );
 }

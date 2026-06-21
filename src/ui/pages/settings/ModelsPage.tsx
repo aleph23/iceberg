@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   Check,
   ChevronRight,
+  Cpu,
   EthernetPort,
   Edit3,
   Trash2,
@@ -30,6 +31,7 @@ import {
   serializeModelExport,
 } from "../../../core/storage/modelTransfer";
 import { addOrUpdateModel } from "../../../core/storage/repo";
+import { getModelUsage, describeUsage } from "../../../core/storage/usage";
 import type { Model } from "../../../core/storage/schemas";
 import type { ModelExportFormat } from "../../components/ModelExportMenu";
 
@@ -70,7 +72,10 @@ function buildBalancedColumns(groups: ModelGroup[], columnCount: number): ModelG
   return columns;
 }
 
-function getLlamaRuntimeAlert(model: Model): { tone: string; title: string } | null {
+function getLlamaRuntimeAlert(
+  model: Model,
+  t: ReturnType<typeof useI18n>["t"],
+): { tone: string; title: string } | null {
   if (model.providerId !== "llamacpp") {
     return null;
   }
@@ -78,13 +83,13 @@ function getLlamaRuntimeAlert(model: Model): { tone: string; title: string } | n
   if (status === "cpuFallbackSucceeded") {
     return {
       tone: "text-warning/75",
-      title: "This model fell back to CPU on its last run.",
+      title: t("models.extra.cpuFallbackSucceeded"),
     };
   }
   if (status === "cpuFallbackFailed" || status === "failed") {
     return {
       tone: "text-danger/75",
-      title: "This model failed on its last run.",
+      title: t("models.extra.cpuFallbackFailed"),
     };
   }
   return null;
@@ -213,7 +218,7 @@ export function ModelsPage() {
       setExportTarget(null);
     } catch (error) {
       console.error("Failed to export model:", error);
-      toast.error("Export failed", String(error));
+      toast.error(t("models.toasts.exportFailed"), String(error));
     } finally {
       setExporting(false);
     }
@@ -224,10 +229,15 @@ export function ModelsPage() {
       const raw = await readFileAsText(file);
       const importedModel = importModel(raw);
       await addOrUpdateModel(importedModel);
-      toast.success("Imported successfully", `Model "${importedModel.displayName}" was imported.`);
+      toast.success(
+        t("models.toasts.importSuccessTitle"),
+        t("models.toasts.importSuccessDescription", {
+          name: importedModel.displayName,
+        }),
+      );
     } catch (error) {
       console.error("Failed to import model:", error);
-      toast.error("Import failed", String(error));
+      toast.error(t("models.toasts.importFailed"), String(error));
     } finally {
       if (importInputRef.current) {
         importInputRef.current.value = "";
@@ -284,7 +294,7 @@ export function ModelsPage() {
   const renderModelCard = (model: Model, compact = false) => {
     const isDefault = model.id === defaultModelId;
     const providerLabel = getProviderLabel(model);
-    const runtimeAlert = getLlamaRuntimeAlert(model);
+    const runtimeAlert = getLlamaRuntimeAlert(model, t);
     return (
       <button
         key={model.id}
@@ -314,7 +324,7 @@ export function ModelsPage() {
               {isDefault && (
                 <span className="inline-flex items-center gap-1 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent/80">
                   <Check className="h-2.5 w-2.5" />
-                  Default
+                  {t("common.labels.default")}
                 </span>
               )}
             </div>
@@ -326,14 +336,14 @@ export function ModelsPage() {
               {(model.inputScopes?.includes("image") || model.outputScopes?.includes("image")) && (
                 <>
                   <span className="opacity-40">•</span>
-                  <span className="text-info/80">Vision</span>
+                  <span className="text-info/80">{t("models.labels.vision")}</span>
                 </>
               )}
 
               {(model.inputScopes?.includes("audio") || model.outputScopes?.includes("audio")) && (
                 <>
                   <span className="opacity-40">•</span>
-                  <span className="text-secondary/80">Audio</span>
+                  <span className="text-secondary/80">{t("models.labels.audio")}</span>
                 </>
               )}
             </div>
@@ -365,26 +375,48 @@ export function ModelsPage() {
         {/* Active/completed downloads from HuggingFace browser */}
         <ModelsDownloadIndicator />
 
-        {/* Browse GGUF Models button */}
+        {/* Browse GGUF Models + Runtime Defaults */}
         {models.length > 0 && (
-          <button
-            onClick={() => navigate(Routes.settingsModelsBrowse)}
-            className={cn(
-              "group hidden w-full rounded-xl border border-dashed border-fg/15 bg-fg/2 px-4 py-3 text-left transition md:block",
-              "hover:border-fg/25 hover:bg-fg/5 active:scale-[0.995]",
-            )}
-          >
-            <div className="flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-fg/10 bg-fg/5">
-                <Download size={14} className="text-fg/50" />
+          <div className="hidden gap-3 md:grid md:grid-cols-2">
+            <button
+              onClick={() => navigate(Routes.settingsModelsBrowse)}
+              className={cn(
+                "group w-full rounded-xl border border-dashed border-fg/15 bg-fg/2 px-4 py-3 text-left transition",
+                "hover:border-fg/25 hover:bg-fg/5 active:scale-[0.995]",
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-fg/10 bg-fg/5">
+                  <Download size={14} className="text-fg/50" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-medium text-fg/70">{t("hfBrowser.title")}</span>
+                  <p className="text-[11px] text-fg/40">{t("hfBrowser.browseOnHuggingFace")}</p>
+                </div>
+                <ChevronRight size={14} className="text-fg/25 group-hover:text-fg/50 transition" />
               </div>
-              <div className="min-w-0 flex-1">
-                <span className="text-sm font-medium text-fg/70">{t("hfBrowser.title")}</span>
-                <p className="text-[11px] text-fg/40">{t("hfBrowser.browseOnHuggingFace")}</p>
+            </button>
+            <button
+              onClick={() => navigate(Routes.settingsModelsRuntimeDefaults)}
+              className={cn(
+                "group w-full rounded-xl border border-dashed border-fg/15 bg-fg/2 px-4 py-3 text-left transition",
+                "hover:border-fg/25 hover:bg-fg/5 active:scale-[0.995]",
+              )}
+            >
+              <div className="flex items-center gap-3">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-fg/10 bg-fg/5">
+                  <Cpu size={14} className="text-fg/50" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-medium text-fg/70">
+                    {t("runtimeDefaults.title")}
+                  </span>
+                  <p className="text-[11px] text-fg/40">{t("runtimeDefaults.subtitle")}</p>
+                </div>
+                <ChevronRight size={14} className="text-fg/25 group-hover:text-fg/50 transition" />
               </div>
-              <ChevronRight size={14} className="text-fg/25 group-hover:text-fg/50 transition" />
-            </div>
-          </button>
+            </button>
+          </div>
         )}
 
         {/* Model Cards */}
@@ -464,7 +496,7 @@ export function ModelsPage() {
       <BottomMenu
         isOpen={!!selectedModel}
         onClose={() => setSelectedModel(null)}
-        title={selectedModel?.displayName || selectedModel?.name || "Model"}
+        title={selectedModel?.displayName || selectedModel?.name || t("models.labels.model")}
       >
         {selectedModel && (
           <div className="space-y-4">
@@ -475,7 +507,7 @@ export function ModelsPage() {
                 </span>
                 {selectedModel.id === defaultModelId && (
                   <span className="inline-flex items-center gap-1 rounded-md bg-accent/20 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-accent/80">
-                    Default
+                    {t("common.labels.default")}
                   </span>
                 )}
               </div>
@@ -484,8 +516,8 @@ export function ModelsPage() {
 
             <MenuButton
               icon={Edit3}
-              title="Edit"
-              description="Configure model parameters"
+              title={t("common.buttons.edit")}
+              description={t("models.menu.editDescription")}
               onClick={() => {
                 toEditModel(selectedModel.id);
                 setSelectedModel(null);
@@ -495,8 +527,12 @@ export function ModelsPage() {
 
             <MenuButton
               icon={selectedModel.id === defaultModelId ? StarOff : Star}
-              title={selectedModel.id === defaultModelId ? "Already Default" : "Set as Default"}
-              description="Make this your primary model"
+              title={
+                selectedModel.id === defaultModelId
+                  ? t("models.menu.alreadyDefault")
+                  : t("models.menu.setAsDefault")
+              }
+              description={t("models.menu.setAsDefaultDescription")}
               disabled={selectedModel.id === defaultModelId}
               onClick={() => {
                 void handleSetDefault(selectedModel.id);
@@ -507,8 +543,8 @@ export function ModelsPage() {
 
             <MenuButton
               icon={Download}
-              title="Export"
-              description="Save this model profile"
+              title={t("common.buttons.export")}
+              description={t("models.menu.exportDescription")}
               onClick={() => {
                 setExportTarget(selectedModel);
                 setSelectedModel(null);
@@ -519,13 +555,17 @@ export function ModelsPage() {
 
             <MenuButton
               icon={Trash2}
-              title="Delete"
-              description="Remove this model permanently"
+              title={t("common.buttons.delete")}
+              description={t("models.menu.deleteDescription")}
               onClick={async () => {
+                const name = selectedModel.displayName || selectedModel.name;
+                const usage = await getModelUsage(selectedModel.id).catch(() => null);
+                const warning = usage ? describeUsage(usage, "model") : null;
                 const confirmed = await confirmBottomMenu({
-                  title: "Delete model?",
-                  message: `Are you sure you want to delete ${selectedModel.displayName || selectedModel.name}?`,
-                  confirmLabel: "Delete",
+                  title: t("models.menu.deleteTitle"),
+                  message: t("models.menu.deleteMessage", { name }),
+                  warning: warning ?? undefined,
+                  confirmLabel: t("common.buttons.delete"),
                   destructive: true,
                 });
                 if (!confirmed) return;
@@ -551,12 +591,16 @@ export function ModelsPage() {
         exporting={exporting}
       />
 
-      <BottomMenu isOpen={showSortMenu} onClose={() => setShowSortMenu(false)} title="Sort Models">
+      <BottomMenu
+        isOpen={showSortMenu}
+        onClose={() => setShowSortMenu(false)}
+        title={t("models.sort.title")}
+      >
         <div className="space-y-3">
           <MenuButton
             icon={sortMode === "alphabetical" ? Check : StarOff}
             title={t("models.sort.alphabetical")}
-            description="Sort by model name"
+            description={t("models.sort.alphabeticalDescription")}
             onClick={() => {
               setSortMode("alphabetical");
               setShowSortMenu(false);
@@ -566,7 +610,7 @@ export function ModelsPage() {
           <MenuButton
             icon={sortMode === "provider" ? Check : StarOff}
             title={t("models.sort.byProvider")}
-            description="Group models by provider"
+            description={t("models.sort.byProviderDescription")}
             onClick={() => {
               setSortMode("provider");
               setShowSortMenu(false);

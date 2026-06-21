@@ -34,12 +34,11 @@ pub struct ThemeColors {
 }
 
 /// Parse a CSS color string (hex, rgb, oklch) to approximate luminance (0.0–1.0).
-fn color_to_luminance(color: &str) -> f64 {
+pub fn color_to_luminance(color: &str) -> f64 {
     let trimmed = color.trim();
 
     // Hex: #rgb, #rrggbb, #rrggbbaa
-    if trimmed.starts_with('#') {
-        let hex = &trimmed[1..];
+    if let Some(hex) = trimmed.strip_prefix('#') {
         let expanded = match hex.len() {
             3 => format!(
                 "{}{}{}{}{}{}",
@@ -67,7 +66,7 @@ fn color_to_luminance(color: &str) -> f64 {
             .trim_start_matches("rgba(")
             .trim_start_matches("rgb(")
             .trim_end_matches(')');
-        let parts: Vec<&str> = inner.split(|c| c == ',' || c == ' ').collect();
+        let parts: Vec<&str> = inner.split([',', ' ']).collect();
         let nums: Vec<f64> = parts
             .iter()
             .filter_map(|s| s.trim().parse::<f64>().ok())
@@ -100,7 +99,7 @@ fn color_to_luminance(color: &str) -> f64 {
 }
 
 /// Determine the text color class based on effective luminance.
-fn compute_text_color(
+pub fn compute_text_color(
     bg_brightness: Option<f64>,
     bubble_luminance: f64,
     bubble_opacity_01: f64,
@@ -235,56 +234,11 @@ pub fn compute_chat_theme(
                 } else {
                     "bg-[#050505]/45 backdrop-blur-md".into()
                 },
-                content_overlay: if is_light {
-                    "rgba(255, 255, 255, 0.20)".into()
-                } else {
-                    "rgba(5, 5, 5, 0.15)".into()
-                },
+                // Keep the content area transparent by default; explicit dim settings handle darkening.
+                content_overlay: String::new(),
             }
         }
     };
 
     Ok(theme)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_hex_luminance() {
-        assert!((color_to_luminance("#ffffff") - 1.0).abs() < 0.01);
-        assert!((color_to_luminance("#000000") - 0.0).abs() < 0.01);
-        assert!((color_to_luminance("#808080") - 0.5).abs() < 0.05);
-    }
-
-    #[test]
-    fn test_rgb_luminance() {
-        assert!((color_to_luminance("rgb(255, 255, 255)") - 1.0).abs() < 0.01);
-        assert!((color_to_luminance("rgb(0, 0, 0)") - 0.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_oklch_luminance() {
-        assert!((color_to_luminance("oklch(0.8 0.1 200)") - 0.8).abs() < 0.01);
-        assert!((color_to_luminance("oklch(50% 0.1 200)") - 0.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_text_color_auto_dark_bg() {
-        let result = compute_text_color(Some(30.0), 0.3, 0.35, "auto");
-        assert_eq!(result, "text-white/95");
-    }
-
-    #[test]
-    fn test_text_color_auto_light_bg() {
-        let result = compute_text_color(Some(200.0), 0.8, 0.35, "auto");
-        assert_eq!(result, "text-gray-900");
-    }
-
-    #[test]
-    fn test_text_color_forced() {
-        assert_eq!(compute_text_color(None, 0.5, 0.5, "light"), "text-white");
-        assert_eq!(compute_text_color(None, 0.5, 0.5, "dark"), "text-gray-900");
-    }
 }

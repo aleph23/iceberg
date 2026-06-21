@@ -28,6 +28,8 @@ import {
   type ModelEditorState,
 } from "./modelEditorReducer";
 import { Routes, useNavigationManager } from "../../../navigation";
+import { getPlatform } from "../../../../core/utils/platform";
+import { useI18n } from "../../../../core/i18n/context";
 
 type ControllerReturn = {
   state: ModelEditorState;
@@ -58,15 +60,25 @@ type ControllerReturn = {
   handleLlamaBatchSizeChange: (value: number | null) => void;
   handleLlamaKvTypeChange: (value: AdvancedModelSettings["llamaKvType"]) => void;
   handleLlamaFlashAttentionChange: (value: AdvancedModelSettings["llamaFlashAttention"]) => void;
+  handleLlamaSwaFullChange: (value: boolean | null) => void;
   handleLlamaSamplerProfileChange: (value: AdvancedModelSettings["llamaSamplerProfile"]) => void;
   handleLlamaSamplerOrderChange: (value: AdvancedModelSettings["llamaSamplerOrder"]) => void;
   handleLlamaMinPChange: (value: number | null) => void;
   handleLlamaTypicalPChange: (value: number | null) => void;
+  handleLlamaDryMultiplierChange: (value: number | null) => void;
+  handleLlamaDryBaseChange: (value: number | null) => void;
+  handleLlamaDryAllowedLengthChange: (value: number | null) => void;
+  handleLlamaDryPenaltyLastNChange: (value: number | null) => void;
+  handleLlamaDrySequenceBreakersChange: (value: string[] | null) => void;
   handleLlamaChatTemplateOverrideChange: (value: string | null) => void;
   handleLlamaMmprojPathChange: (value: string | null) => void;
   handleLlamaChatTemplatePresetChange: (value: string | null) => void;
   handleLlamaRawCompletionFallbackChange: (value: boolean | null) => void;
   handleLlamaStrictModeChange: (value: boolean | null) => void;
+  handleLlamaMtpEnabledChange: (value: boolean | null) => void;
+  handleLlamaMtpDraftTokensChange: (value: number | null) => void;
+  handleLlamaMtpModelPathChange: (value: string | null) => void;
+  handleLlamaStreamingEnabledChange: (value: boolean | null) => void;
   handleOllamaNumCtxChange: (value: number | null) => void;
   handleOllamaNumPredictChange: (value: number | null) => void;
   handleOllamaNumKeepChange: (value: number | null) => void;
@@ -85,8 +97,9 @@ type ControllerReturn = {
   handleReasoningEnabledChange: (value: boolean) => void;
   handleReasoningEffortChange: (value: "low" | "medium" | "high" | null) => void;
   handleReasoningBudgetChange: (value: number | null) => void;
+  handleForceSendThinkingStateChange: (value: boolean) => void;
   handlePromptCachingEnabledChange: (value: boolean) => void;
-  handlePromptCachingTtlChange: (value: "5min" | "1h") => void;
+  handlePromptCachingTtlChange: (value: string) => void;
   applyLlamaRuntimeSuggestion: () => Promise<boolean>;
   handleSave: () => Promise<void>;
   saveModel: () => Promise<boolean>;
@@ -104,7 +117,7 @@ function useModelEditorState() {
 function getHardCappedScopes(
   providerId?: string | null,
 ): Pick<Model, "inputScopes" | "outputScopes"> | null {
-  if (providerId === "automatic1111") {
+  if (providerId === "automatic1111" || providerId === "localdiffusion") {
     return {
       inputScopes: ["text", "image"],
       outputScopes: ["image"],
@@ -115,7 +128,9 @@ function getHardCappedScopes(
 }
 
 function isImageOnlyProvider(providerId?: string | null): boolean {
-  return providerId === "automatic1111" || providerId === "stability";
+  return (
+    providerId === "automatic1111" || providerId === "stability" || providerId === "localdiffusion"
+  );
 }
 
 function cloneSnapshot<T>(value: T): T {
@@ -123,9 +138,11 @@ function cloneSnapshot<T>(value: T): T {
 }
 
 export function useModelEditorController(): ControllerReturn {
+  const { t } = useI18n();
   const { toModelsList, backOrReplace } = useNavigationManager();
   const { modelId } = useParams<{ modelId: string }>();
   const [searchParams] = useSearchParams();
+  const isMobile = getPlatform().type === "mobile";
   const isNew = !modelId || modelId === "new";
   const [state, dispatch] = useModelEditorState();
   const initialStateRef = useRef<{
@@ -145,14 +162,54 @@ export function useModelEditorController(): ControllerReturn {
     }),
     [],
   );
+  const localDiffusionProvider = useMemo<ProviderCredential>(
+    () => ({
+      id: crypto.randomUUID(),
+      providerId: "localdiffusion",
+      label: "Local Diffusion",
+      apiKey: "",
+    }),
+    [],
+  );
+
+  const visibleCapabilities = useMemo(
+    () =>
+      isMobile
+        ? capabilities.filter((capability) => capability.id !== "llamacpp")
+        : capabilities,
+    [capabilities, isMobile],
+  );
 
   const ensureLocalProvider = useCallback(
     (providers: ProviderCredential[]) => {
-      const hasLocal = providers.some((p) => p.providerId === localProvider.providerId);
-      if (hasLocal) return providers;
-      return providers.length === 0 ? [localProvider] : [...providers, localProvider];
+      const capabilityIds = new Set(visibleCapabilities.map((capability) => capability.id));
+      const filteredProviders =
+        capabilityIds.size > 0
+          ? providers.filter(
+              (provider) =>
+                provider.providerId === localProvider.providerId ||
+                provider.providerId === localDiffusionProvider.providerId ||
+                capabilityIds.has(provider.providerId),
+            )
+          : providers;
+
+      if (isMobile) {
+        return filteredProviders.filter(
+          (provider) =>
+            provider.providerId !== localProvider.providerId &&
+            provider.providerId !== localDiffusionProvider.providerId,
+        );
+      }
+      const result = [...filteredProviders];
+      if (!result.some((p) => p.providerId === localProvider.providerId)) {
+        result.push(localProvider);
+      }
+      if (!result.some((p) => p.providerId === localDiffusionProvider.providerId)) {
+        result.push(localDiffusionProvider);
+      }
+      return result;
     },
-    [localProvider],
+    [isMobile, localProvider, localDiffusionProvider, visibleCapabilities],
   );
 
   useEffect(() => {
@@ -191,6 +248,7 @@ export function useModelEditorController(): ControllerReturn {
           const hfModelName = searchParams.get("hfModelName");
           const hfDisplayName = searchParams.get("hfDisplayName");
           const hfMmprojPath = searchParams.get("hfMmprojPath");
+          const hfMtpPath = searchParams.get("hfMtpPath");
 
           const isFromHfBrowser = !!hfModelPath;
 
@@ -205,7 +263,7 @@ export function useModelEditorController(): ControllerReturn {
             selectedProvider = providers[0];
           }
 
-          const firstCap = capabilities[0];
+          const firstCap = visibleCapabilities[0];
           nextEditorModel = {
             id: crypto.randomUUID(),
             name: isFromHfBrowser ? hfModelPath! : "",
@@ -226,10 +284,11 @@ export function useModelEditorController(): ControllerReturn {
               ...hardCappedScopes,
             };
           }
-          if (hfMmprojPath) {
+          if (hfMmprojPath || hfMtpPath) {
             nextDraft = sanitizeAdvancedModelSettings({
               ...defaultAdvanced,
-              llamaMmprojPath: hfMmprojPath,
+              ...(hfMmprojPath ? { llamaMmprojPath: hfMmprojPath } : {}),
+              ...(hfMtpPath ? { llamaMtpEnabled: true, llamaMtpModelPath: hfMtpPath } : {}),
             });
           }
         } else {
@@ -302,7 +361,7 @@ export function useModelEditorController(): ControllerReturn {
         if (!cancelled) {
           dispatch({
             type: "set_error",
-            payload: "Failed to load model settings",
+            payload: t("editModel.errors.loadFailed"),
           });
           dispatch({ type: "set_loading", payload: false });
         }
@@ -313,7 +372,7 @@ export function useModelEditorController(): ControllerReturn {
     return () => {
       cancelled = true;
     };
-  }, [capabilities, ensureLocalProvider, isNew, modelId, searchParams, toModelsList]);
+  }, [ensureLocalProvider, isNew, modelId, searchParams, toModelsList, visibleCapabilities]);
 
   const syncRuntimeReportFromStore = useCallback(async () => {
     const currentModelId = state.editorModel?.id;
@@ -377,7 +436,7 @@ export function useModelEditorController(): ControllerReturn {
 
   const providerDisplay = useMemo(() => {
     return (prov: ProviderCredential) => {
-      if (prov.providerId === "llamacpp") {
+      if (prov.providerId === "llamacpp" || prov.providerId === "localdiffusion") {
         return prov.label;
       }
       const cap = capabilities.find((p) => p.id === prov.providerId);
@@ -756,6 +815,71 @@ export function useModelEditorController(): ControllerReturn {
     [dispatch, state.modelAdvancedDraft],
   );
 
+  const handleLlamaDryMultiplierChange = useCallback(
+    (value: number | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaDryMultiplier: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaDryBaseChange = useCallback(
+    (value: number | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaDryBase: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaDryAllowedLengthChange = useCallback(
+    (value: number | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaDryAllowedLength: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaDryPenaltyLastNChange = useCallback(
+    (value: number | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaDryPenaltyLastN: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaDrySequenceBreakersChange = useCallback(
+    (value: string[] | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaDrySequenceBreakers: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
   const handleLlamaChatTemplateOverrideChange = useCallback(
     (value: string | null) => {
       dispatch({
@@ -815,6 +939,71 @@ export function useModelEditorController(): ControllerReturn {
         payload: {
           ...state.modelAdvancedDraft,
           llamaStrictMode: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaSwaFullChange = useCallback(
+    (value: boolean | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaSwaFull: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaMtpEnabledChange = useCallback(
+    (value: boolean | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaMtpEnabled: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaMtpDraftTokensChange = useCallback(
+    (value: number | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaMtpDraftTokens: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaMtpModelPathChange = useCallback(
+    (value: string | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaMtpModelPath: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
+  const handleLlamaStreamingEnabledChange = useCallback(
+    (value: boolean | null) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          llamaStreamingEnabled: value,
         },
       });
     },
@@ -1087,6 +1276,19 @@ export function useModelEditorController(): ControllerReturn {
     [dispatch, state.modelAdvancedDraft],
   );
 
+  const handleForceSendThinkingStateChange = useCallback(
+    (value: boolean) => {
+      dispatch({
+        type: "set_model_advanced_draft",
+        payload: {
+          ...state.modelAdvancedDraft,
+          forceSendThinkingState: value,
+        },
+      });
+    },
+    [dispatch, state.modelAdvancedDraft],
+  );
+
   const handlePromptCachingEnabledChange = useCallback(
     (value: boolean) => {
       dispatch({
@@ -1101,7 +1303,7 @@ export function useModelEditorController(): ControllerReturn {
   );
 
   const handlePromptCachingTtlChange = useCallback(
-    (value: "5min" | "1h") => {
+    (value: string) => {
       dispatch({
         type: "set_model_advanced_draft",
         payload: {
@@ -1144,7 +1346,9 @@ export function useModelEditorController(): ControllerReturn {
         return false;
       }
 
-      const shouldVerify = ["openai", "anthropic"].includes(providerCred.providerId);
+      const shouldVerify = ["openai", "cerebras", "anthropic"].includes(
+        providerCred.providerId,
+      );
       if (shouldVerify) {
         try {
           dispatch({ type: "set_verifying", payload: true });
@@ -1444,15 +1648,25 @@ export function useModelEditorController(): ControllerReturn {
     handleLlamaBatchSizeChange,
     handleLlamaKvTypeChange,
     handleLlamaFlashAttentionChange,
+    handleLlamaSwaFullChange,
     handleLlamaSamplerProfileChange,
     handleLlamaSamplerOrderChange,
     handleLlamaMinPChange,
     handleLlamaTypicalPChange,
+    handleLlamaDryMultiplierChange,
+    handleLlamaDryBaseChange,
+    handleLlamaDryAllowedLengthChange,
+    handleLlamaDryPenaltyLastNChange,
+    handleLlamaDrySequenceBreakersChange,
     handleLlamaChatTemplateOverrideChange,
     handleLlamaMmprojPathChange,
     handleLlamaChatTemplatePresetChange,
     handleLlamaRawCompletionFallbackChange,
     handleLlamaStrictModeChange,
+    handleLlamaMtpEnabledChange,
+    handleLlamaMtpDraftTokensChange,
+    handleLlamaMtpModelPathChange,
+    handleLlamaStreamingEnabledChange,
     handleOllamaNumCtxChange,
     handleOllamaNumPredictChange,
     handleOllamaNumKeepChange,
@@ -1471,6 +1685,7 @@ export function useModelEditorController(): ControllerReturn {
     handleReasoningEnabledChange,
     handleReasoningEffortChange,
     handleReasoningBudgetChange,
+    handleForceSendThinkingStateChange,
     handlePromptCachingEnabledChange,
     handlePromptCachingTtlChange,
     applyLlamaRuntimeSuggestion,

@@ -1,5 +1,12 @@
-import { useState, useEffect, useMemo } from "react";
-import { getCachedGradient, type AvatarGradient, type EntityType } from "../../core/storage/avatars";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import {
+    AVATAR_UPDATED_EVENT,
+    getCachedGradient,
+    peekCachedGradient,
+    type AvatarGradient,
+    type EntityType,
+} from "../../core/storage/avatars";
+import type { AvatarGradientSource } from "../../core/storage/schemas";
 
 /**
  * Custom gradient colors configuration
@@ -79,14 +86,21 @@ export function useAvatarGradient(
     entityId: string,
     avatarPath?: string,
     disabled?: boolean,
-    customColors?: CustomGradientColors
+    customColors?: CustomGradientColors,
+    source: AvatarGradientSource = "round",
 ) {
-    const [gradient, setGradient] = useState<AvatarGradient | null>(null);
-    const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const hasCustomColors = Boolean(customColors?.colors && customColors.colors.length > 0);
+    const cachedGradient =
+        entityId && !hasCustomColors ? peekCachedGradient(type, entityId, source) ?? null : null;
 
-    // Check if we have custom colors
-    const hasCustomColors = customColors?.colors && customColors.colors.length > 0;
+    const [gradient, setGradient] = useState<AvatarGradient | null>(() =>
+        cachedGradient
+    );
+    const [isLoading, setIsLoading] = useState(() =>
+        Boolean(entityId && avatarPath && !disabled && !hasCustomColors && !cachedGradient)
+    );
+    const [error, setError] = useState<string | null>(null);
+    const [refreshTick, setRefreshTick] = useState(0);
 
     // Custom gradient - memoized to avoid recalculation
     const customGradient = useMemo(() => {
@@ -102,36 +116,64 @@ export function useAvatarGradient(
         };
     }, [hasCustomColors, customColors?.colors, customColors?.textColor, customColors?.textSecondary]);
 
-    useEffect(() => {
-        // If using custom colors, no need to fetch gradient
+    const refreshGradient = useCallback(async (force = false) => {
         if (hasCustomColors) {
             setGradient(null);
-            return;
+            return null;
         }
 
         if (!entityId || !avatarPath || disabled) {
             setGradient(null);
-            return;
+            return null;
         }
 
-        const generateGradient = async () => {
-            setIsLoading(true);
-            setError(null);
-
-            try {
-                const gradientData = await getCachedGradient(type, entityId, avatarPath);
-                setGradient(gradientData || null);
-            } catch (err) {
-                const errorMessage = err instanceof Error ? err.message : "Failed to generate gradient";
-                setError(errorMessage);
-                setGradient(null);
-            } finally {
+        const existingGradient = peekCachedGradient(type, entityId, source) ?? null;
+        if (existingGradient) {
+            setGradient((current) => current ?? existingGradient);
+            if (!force) {
                 setIsLoading(false);
+                setError(null);
+                return existingGradient;
             }
+        }
+
+        setIsLoading(true);
+        setError(null);
+
+        try {
+            const gradientData = await getCachedGradient(type, entityId, avatarPath, force, source);
+            setGradient((current) => gradientData || current || null);
+            return gradientData || null;
+        } catch (err) {
+            const errorMessage = err instanceof Error ? err.message : "Failed to generate gradient";
+            setError(errorMessage);
+            if (!existingGradient) {
+                setGradient(null);
+            }
+            throw err;
+        } finally {
+            setIsLoading(false);
+        }
+    }, [avatarPath, disabled, entityId, hasCustomColors, source, type]);
+
+    useEffect(() => {
+        refreshGradient().catch(() => undefined);
+    }, [refreshGradient, refreshTick]);
+
+    useEffect(() => {
+        const handleAvatarUpdated = (event: Event) => {
+            const detail = (event as CustomEvent<{ type?: EntityType; entityId?: string }>).detail;
+            if (!detail || detail.type !== type || detail.entityId !== entityId) {
+                return;
+            }
+            setRefreshTick((value) => value + 1);
         };
 
-        generateGradient();
-    }, [type, entityId, avatarPath, disabled, hasCustomColors]);
+        window.addEventListener(AVATAR_UPDATED_EVENT, handleAvatarUpdated as EventListener);
+        return () => {
+            window.removeEventListener(AVATAR_UPDATED_EVENT, handleAvatarUpdated as EventListener);
+        };
+    }, [entityId, type]);
 
     // Calculate average brightness from gradient colors
     const calculateAverageBrightness = (): number => {
@@ -172,6 +214,7 @@ export function useAvatarGradient(
             textSecondary: customGradient.textSecondary,
             averageBrightness: 0.5,
             isCustom: true,
+            refreshGradient,
         };
     }
 
@@ -187,6 +230,7 @@ export function useAvatarGradient(
         textSecondary: gradient?.text_secondary || "rgba(255, 255, 255, 0.7)",
         averageBrightness,
         isCustom: false,
+        refreshGradient,
     };
 }
 
@@ -198,13 +242,26 @@ export function useAvatarGradient(
  * @returns Map of entityId to gradient data
  */
 export function useMultipleAvatarGradients(
-    entities: Array<{ type: EntityType; id: string; avatarPath?: string; disableGradient?: boolean }>
+    entities: Array<{
+        type: EntityType;
+        id: string;
+        avatarPath?: string;
+        disableGradient?: boolean;
+        source?: AvatarGradientSource;
+    }>
 ) {
     const [gradients, setGradients] = useState<Map<string, AvatarGradient>>(new Map());
     const [isLoading, setIsLoading] = useState(false);
+    const [refreshTick, setRefreshTick] = useState(0);
 
     const entitiesKey = JSON.stringify(
-        entities.map(e => ({ type: e.type, id: e.id, path: e.avatarPath, disabled: e.disableGradient }))
+        entities.map(e => ({
+            type: e.type,
+            id: e.id,
+            path: e.avatarPath,
+            disabled: e.disableGradient,
+            source: e.source ?? "round",
+        }))
     );
 
     useEffect(() => {
@@ -222,7 +279,13 @@ export function useMultipleAvatarGradients(
                     .filter(entity => entity.id && entity.avatarPath && !entity.disableGradient)
                     .map(async (entity) => {
                         try {
-                            const gradient = await getCachedGradient(entity.type, entity.id, entity.avatarPath!);
+                            const gradient = await getCachedGradient(
+                                entity.type,
+                                entity.id,
+                                entity.avatarPath!,
+                                false,
+                                entity.source ?? "round",
+                            );
                             return { id: entity.id, gradient };
                         } catch {
                             return { id: entity.id, gradient: null };
@@ -245,7 +308,26 @@ export function useMultipleAvatarGradients(
         };
 
         generateGradients();
-    }, [entitiesKey]);
+    }, [entitiesKey, refreshTick]);
+
+    useEffect(() => {
+        const relevantKeys = new Set(entities.map((entity) => `${entity.type}:${entity.id}`));
+        const handleAvatarUpdated = (event: Event) => {
+            const detail = (event as CustomEvent<{ type?: EntityType; entityId?: string }>).detail;
+            if (!detail?.type || !detail.entityId) {
+                return;
+            }
+            if (!relevantKeys.has(`${detail.type}:${detail.entityId}`)) {
+                return;
+            }
+            setRefreshTick((value) => value + 1);
+        };
+
+        window.addEventListener(AVATAR_UPDATED_EVENT, handleAvatarUpdated as EventListener);
+        return () => {
+            window.removeEventListener(AVATAR_UPDATED_EVENT, handleAvatarUpdated as EventListener);
+        };
+    }, [entitiesKey, entities]);
 
     const getGradient = (entityId: string): AvatarGradient | undefined => {
         return gradients.get(entityId);

@@ -1,14 +1,23 @@
 import { ArrowLeft, Loader } from "lucide-react";
-import { AnimatePresence, motion } from "framer-motion";
 import { useOnboardingController, OnboardingStep } from "./hooks/useOnboardingController";
 import { ProviderStep } from "./steps/ProviderStep";
 import { ModelStep } from "./steps/ModelStep";
 import { MemoryStep } from "./steps/MemoryStep";
+import { IntroStep } from "./steps/IntroStep";
+import { LearnStep } from "./steps/LearnStep";
+import { PathStep } from "./steps/PathStep";
+import { GeminiSetupStep } from "./steps/GeminiSetupStep";
+import { OpenRouterSetupStep } from "./steps/OpenRouterSetupStep";
+import { MemorySetupStep } from "./steps/MemorySetupStep";
 import { ModelRecommendations } from "./ModelRecommendations";
+import { WelcomePage } from "./Welcome";
+import { OnboardingSyncStep } from "./OnboardingSyncPage";
+import welcomeBg from "../../../assets/welcomebackground.png";
+import welcomeBgMobile from "../../../assets/welcomebackground-mobile.png";
 import { cn, typography } from "../../design-tokens";
 import { getPlatform } from "../../../core/utils/platform";
 import { useState, useCallback, useEffect } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { checkEmbeddingModel } from "../../../core/storage/repo";
 import { setProviderSetupCompleted } from "../../../core/storage/appState";
 import { useI18n } from "../../../core/i18n/context";
@@ -16,24 +25,11 @@ import { useI18n } from "../../../core/i18n/context";
 export function OnboardingPage() {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const location = useLocation();
   const platform = getPlatform();
   const isDesktop = platform.type === "desktop";
   const controller = useOnboardingController();
   const { state } = controller;
 
-  useEffect(() => {
-    const nextStep =
-      location.pathname === "/onboarding/models"
-        ? OnboardingStep.Model
-        : location.pathname === "/onboarding/memory"
-          ? OnboardingStep.Memory
-          : OnboardingStep.Provider;
-
-    if (state.step !== nextStep) {
-      controller.setStep(nextStep);
-    }
-  }, [controller, location.pathname, state.step]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -49,15 +45,47 @@ export function OnboardingPage() {
   const [showDownloadModal, setShowDownloadModal] = useState(false);
   const [showRecommendations, setShowRecommendations] = useState(false);
 
+  const showStepCounter =
+    state.step === OnboardingStep.Provider ||
+    state.step === OnboardingStep.Model ||
+    state.step === OnboardingStep.Memory;
+
   const stepLabel =
     state.step === OnboardingStep.Provider
       ? t("onboarding.steps.provider")
       : state.step === OnboardingStep.Model
         ? t("onboarding.steps.model")
-        : t("onboarding.steps.memory");
+        : state.step === OnboardingStep.Memory
+          ? t("onboarding.steps.memory")
+          : state.step === OnboardingStep.GeminiSetup
+            ? t("onboarding.gemini.kicker")
+            : state.step === OnboardingStep.OpenRouterSetup
+              ? t("onboarding.openrouter.kicker")
+              : state.step === OnboardingStep.MemorySetup
+                ? t("onboarding.memorySetup.kicker")
+                : t("onboarding.steps.gettingStarted");
 
   const stepNumber =
     state.step === OnboardingStep.Provider ? 1 : state.step === OnboardingStep.Model ? 2 : 3;
+
+  const goToStep = useCallback(
+    (step: OnboardingStep, path: string) => {
+      controller.setStep(step);
+      window.history.replaceState(null, "", path);
+    },
+    [controller],
+  );
+
+  const handleChoosePath = useCallback(
+    (choice: "free" | "paid") => {
+      if (choice === "free") {
+        goToStep(OnboardingStep.GeminiSetup, "/onboarding/gemini");
+      } else {
+        goToStep(OnboardingStep.OpenRouterSetup, "/onboarding/openrouter");
+      }
+    },
+    [goToStep],
+  );
 
   const handleBrowseModelLibrary = useCallback(async () => {
     await setProviderSetupCompleted(true);
@@ -69,7 +97,6 @@ export function OnboardingPage() {
     navigate("/settings/models/new?provider=llamacpp&returnTo=/onboarding/memory");
   }, [navigate]);
 
-  // Handle finish - checks for embedding model if dynamic is selected
   const handleFinish = useCallback(async () => {
     if (!state.memoryType) return;
 
@@ -77,10 +104,8 @@ export function OnboardingPage() {
       try {
         const modelExists = await checkEmbeddingModel();
         if (modelExists) {
-          // Model already downloaded, just finish
           await controller.handleFinish();
         } else {
-          // Show download modal
           setShowDownloadModal(true);
         }
       } catch (error) {
@@ -88,12 +113,10 @@ export function OnboardingPage() {
         setShowDownloadModal(true);
       }
     } else {
-      // Manual mode - just finish
       await controller.handleFinish();
     }
   }, [state.memoryType, controller]);
 
-  // Handle download confirmation
   const handleConfirmDownload = useCallback(() => {
     setShowDownloadModal(false);
     navigate("/settings/embedding-download?returnTo=/chat?firstTime=true");
@@ -107,7 +130,7 @@ export function OnboardingPage() {
 
   if (state.capabilitiesLoading && state.step === OnboardingStep.Provider) {
     return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-[#050505] text-gray-200">
+      <div className="flex min-h-full flex-1 flex-col items-center justify-center bg-surface text-gray-200">
         <div className="flex items-center gap-3">
           <Loader size={20} className="animate-spin" />
           <span>{t("onboarding.loading")}</span>
@@ -116,19 +139,35 @@ export function OnboardingPage() {
     );
   }
 
-  const pageVariants = {
-    initial: { opacity: 0, x: 20 },
-    animate: { opacity: 1, x: 0 },
-    exit: { opacity: 0, x: -20 },
-  };
+  const isWelcomeStep = state.step === OnboardingStep.Welcome;
+  const isSyncStep = state.step === OnboardingStep.Sync;
+  const isStandaloneStep = isWelcomeStep || isSyncStep;
 
   return (
-    <div className="flex min-h-screen flex-col bg-[#050505] text-gray-200 overflow-hidden">
+    <div className="relative flex h-[calc(100dvh-var(--titlebar-h,0px))] flex-col text-gray-200">
+      {/* Background image + overlay */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 bg-cover bg-center bg-no-repeat lg:hidden"
+        style={{ backgroundImage: `url(${welcomeBgMobile})` }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 hidden bg-cover bg-center bg-no-repeat lg:block"
+        style={{ backgroundImage: `url(${welcomeBg})` }}
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 bg-[linear-gradient(180deg,rgba(5,5,5,0.32)_0%,rgba(5,5,5,0.42)_55%,rgba(5,5,5,0.62)_100%)]"
+      />
+
       {/* Header */}
       <div
         className={cn(
-          "flex items-center justify-between border-b border-white/10",
-          isDesktop ? "px-8 py-6" : "px-4 py-4",
+          "fixed top-[var(--titlebar-h,0px)] left-0 right-0 z-30 flex items-center justify-between",
+          "bg-[linear-gradient(180deg,rgba(5,5,5,0.7)_0%,rgba(5,5,5,0.4)_70%,rgba(5,5,5,0)_100%)]",
+          isDesktop ? "px-8 py-6 pb-10" : "px-4 py-4 pb-8 pt-[calc(env(safe-area-inset-top)+16px)]",
+          isStandaloneStep && "hidden",
         )}
       >
         <button
@@ -141,15 +180,17 @@ export function OnboardingPage() {
           <ArrowLeft size={isDesktop ? 18 : 16} />
         </button>
         <div className="text-center">
-          <p
-            className={cn(
-              typography.caption.size,
-              "font-medium uppercase tracking-[0.25em] text-gray-500",
-            )}
-          >
-            {t("onboarding.stepIndicator", { current: stepNumber, total: 3 })}
-          </p>
-          <p className="text-xs text-gray-400 mt-0.5">{stepLabel}</p>
+          {showStepCounter && (
+            <p
+              className={cn(
+                typography.caption.size,
+                "font-medium uppercase tracking-[0.25em] text-white/55",
+              )}
+            >
+              {t("onboarding.stepIndicator", { current: stepNumber, total: 3 })}
+            </p>
+          )}
+          <p className="text-[13px] text-white/70 mt-0.5">{stepLabel}</p>
         </div>
         <div className={isDesktop ? "w-11" : "w-10"} />
       </div>
@@ -157,24 +198,88 @@ export function OnboardingPage() {
       {/* Main Content */}
       <main
         className={cn(
-          "flex flex-1 flex-col overflow-hidden",
-          !isDesktop && "px-4 pt-4 overflow-y-auto",
+          "relative z-10 flex flex-1 flex-col overflow-y-auto",
+          !isStandaloneStep &&
+            (isDesktop
+              ? "pt-[88px] pb-6"
+              : "pt-[calc(env(safe-area-inset-top)+92px)] px-4 pb-[calc(env(safe-area-inset-bottom)+16px)]"),
         )}
       >
         {showRecommendations ? (
           <ModelRecommendations onBack={() => setShowRecommendations(false)} />
         ) : (
-          <AnimatePresence mode="wait">
+          <>
+            {state.step === OnboardingStep.Welcome && (
+              <div key="welcome" className="flex flex-1 flex-col">
+                <WelcomePage
+                  onContinue={() => {
+                    controller.setStep(OnboardingStep.Intro);
+                    window.history.replaceState(null, "", "/onboarding/start");
+                  }}
+                  onGoToSync={() => {
+                    controller.setStep(OnboardingStep.Sync);
+                    window.history.replaceState(null, "", "/onboarding/sync");
+                  }}
+                />
+              </div>
+            )}
+
+            {state.step === OnboardingStep.Sync && (
+              <div key="sync" className="flex flex-1 flex-col">
+                <OnboardingSyncStep />
+              </div>
+            )}
+
+            {state.step === OnboardingStep.Intro && (
+              <div key="intro" className="flex flex-1 flex-col">
+                <IntroStep
+                  onFirstTime={() => goToStep(OnboardingStep.Learn, "/onboarding/learn")}
+                  onExperienced={() =>
+                    goToStep(OnboardingStep.Provider, "/onboarding/provider")
+                  }
+                />
+              </div>
+            )}
+
+            {state.step === OnboardingStep.Learn && (
+              <div key="learn" className="flex flex-1 flex-col">
+                <LearnStep
+                  onDone={() => goToStep(OnboardingStep.Path, "/onboarding/path")}
+                  onExitBack={() => goToStep(OnboardingStep.Intro, "/onboarding/start")}
+                />
+              </div>
+            )}
+
+            {state.step === OnboardingStep.Path && (
+              <div key="path" className="flex flex-1 flex-col">
+                <PathStep onChoose={handleChoosePath} />
+              </div>
+            )}
+
+            {state.step === OnboardingStep.GeminiSetup && (
+              <div key="gemini" className="flex flex-1 flex-col">
+                <GeminiSetupStep
+                  onExitBack={() => goToStep(OnboardingStep.Path, "/onboarding/path")}
+                />
+              </div>
+            )}
+
+            {state.step === OnboardingStep.OpenRouterSetup && (
+              <div key="openrouter" className="flex flex-1 flex-col">
+                <OpenRouterSetupStep
+                  onExitBack={() => goToStep(OnboardingStep.Path, "/onboarding/path")}
+                />
+              </div>
+            )}
+
+            {state.step === OnboardingStep.MemorySetup && (
+              <div key="memory-setup" className="flex flex-1 flex-col">
+                <MemorySetupStep />
+              </div>
+            )}
+
             {state.step === OnboardingStep.Provider && (
-              <motion.div
-                key="provider"
-                variants={pageVariants}
-                initial="initial"
-                animate="animate"
-                exit="exit"
-                transition={{ duration: 0.2 }}
-                className="flex flex-1 flex-col"
-              >
+              <div key="provider" className="flex flex-1 flex-col">
                 <ProviderStep
                   capabilities={state.capabilities}
                   selectedProviderId={state.selectedProviderId}
@@ -197,19 +302,11 @@ export function OnboardingPage() {
                   onBrowseModelLibrary={() => void handleBrowseModelLibrary()}
                   onUseOwnGguf={() => void handleUseOwnGguf()}
                 />
-              </motion.div>
+              </div>
             )}
 
             {state.step === OnboardingStep.Model && (
-              <motion.div
-                key="model"
-                variants={pageVariants}
-                initial="initial"
-                animate="animate"
-                exit="exit"
-                transition={{ duration: 0.2 }}
-                className="flex flex-1 flex-col"
-              >
+              <div key="model" className="flex flex-1 flex-col">
                 <ModelStep
                   providers={state.providerCredentials}
                   selectedCredential={state.selectedCredential}
@@ -225,21 +322,12 @@ export function OnboardingPage() {
                   onSave={controller.handleSaveModel}
                   onSkip={controller.handleSkipModel}
                   onGoBack={controller.goBack}
-                  onShowRecommendations={() => setShowRecommendations(true)}
                 />
-              </motion.div>
+              </div>
             )}
 
             {state.step === OnboardingStep.Memory && (
-              <motion.div
-                key="memory"
-                variants={pageVariants}
-                initial="initial"
-                animate="animate"
-                exit="exit"
-                transition={{ duration: 0.2 }}
-                className="flex flex-1 flex-col"
-              >
+              <div key="memory" className="flex flex-1 flex-col">
                 <MemoryStep
                   selectedType={state.memoryType}
                   isProcessing={state.isProcessingMemory}
@@ -250,9 +338,9 @@ export function OnboardingPage() {
                   onConfirmDownload={handleConfirmDownload}
                   onSkipDownload={handleSkipDownload}
                 />
-              </motion.div>
+              </div>
             )}
-          </AnimatePresence>
+          </>
         )}
       </main>
     </div>

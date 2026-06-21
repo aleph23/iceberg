@@ -1,15 +1,16 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ChevronRight,
   Plus,
   Trash2,
   Play,
-  Mic,
   Volume2,
   Loader2,
   Edit3,
   RefreshCw,
   HardDrive,
+  EthernetPort,
 } from "lucide-react";
 
 import {
@@ -17,13 +18,10 @@ import {
   listUserVoices,
   upsertUserVoice,
   deleteUserVoice,
-  upsertAudioProvider,
-  deleteAudioProvider,
   listAudioModels,
   listVoiceDesignModels,
   refreshProviderVoices,
   getProviderVoices,
-  verifyAudioProvider,
   generateTtsPreview,
   playAudioFromBase64,
   designVoicePreview,
@@ -39,10 +37,32 @@ import {
 } from "../../../core/storage/audioProviders";
 
 import { BottomMenu, MenuButton } from "../../components/BottomMenu";
-import { useI18n } from "../../../core/i18n/context";
+import { useI18n, type TranslationKey } from "../../../core/i18n/context";
+
+const GEMINI_VOICES = [
+  { id: "kore", name: "Kore", descriptionKey: "voices.extra.geminiVoices.kore" },
+  { id: "aoede", name: "Aoede", descriptionKey: "voices.extra.geminiVoices.aoede" },
+  { id: "charon", name: "Charon", descriptionKey: "voices.extra.geminiVoices.charon" },
+  { id: "fenrir", name: "Fenrir", descriptionKey: "voices.extra.geminiVoices.fenrir" },
+  { id: "puck", name: "Puck", descriptionKey: "voices.extra.geminiVoices.puck" },
+  { id: "leda", name: "Leda", descriptionKey: "voices.extra.geminiVoices.leda" },
+  { id: "orus", name: "Orus", descriptionKey: "voices.extra.geminiVoices.orus" },
+  { id: "zephyr", name: "Zephyr", descriptionKey: "voices.extra.geminiVoices.zephyr" },
+  { id: "algieba", name: "Algieba", descriptionKey: "voices.extra.geminiVoices.algieba" },
+  {
+    id: "callirrhoe",
+    name: "Callirrhoe",
+    descriptionKey: "voices.extra.geminiVoices.callirrhoe",
+  },
+] as const satisfies ReadonlyArray<{
+  id: string;
+  name: string;
+  descriptionKey: TranslationKey;
+}>;
 
 export function VoicesPage() {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const [providers, setProviders] = useState<AudioProvider[]>([]);
   const [userVoices, setUserVoices] = useState<UserVoice[]>([]);
   const [providerVoices, setProviderVoices] = useState<Record<string, CachedVoice[]>>({});
@@ -56,13 +76,8 @@ export function VoicesPage() {
   const [isVoiceEditorOpen, setIsVoiceEditorOpen] = useState(false);
   const [editingVoice, setEditingVoice] = useState<UserVoice | null>(null);
 
-  // Provider editor state
-  const [isProviderEditorOpen, setIsProviderEditorOpen] = useState(false);
-  const [editingProvider, setEditingProvider] = useState<AudioProvider | null>(null);
-
   // Selection menu state
   const [selectedVoice, setSelectedVoice] = useState<UserVoice | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<AudioProvider | null>(null);
   const [selectedCustomVoice, setSelectedCustomVoice] = useState<
     (CachedVoice & { provider: AudioProvider }) | null
   >(null);
@@ -71,16 +86,12 @@ export function VoicesPage() {
     (provider) => provider.providerType !== "openai_tts",
   );
 
-  const getProviderTypeLabel = (providerType: AudioProviderType) => {
-    if (providerType === "gemini_tts") return "Gemini TTS";
-    if (providerType === "openai_tts") return "OpenAI-Compatible TTS";
-    return "ElevenLabs";
-  };
-
   const getProviderBadge = (providerType: AudioProviderType) => {
-    if (providerType === "gemini_tts") return "G";
-    if (providerType === "openai_tts") return "API";
-    return "11";
+    if (providerType === "gemini_tts") return t("voices.extra.badge.gemini");
+    if (providerType === "fish_tts") return t("voices.extra.badge.fish");
+    if (providerType === "fish_speech") return t("voices.extra.badge.fishSpeech");
+    if (providerType === "openai_tts") return t("voices.extra.badge.openai");
+    return t("voices.extra.badge.elevenlabs");
   };
 
   // Separate custom voices (cloned, generated) from premade library voices
@@ -150,22 +161,32 @@ export function VoicesPage() {
   }, [loadData]);
 
   const handleCreateVoice = () => {
-    const firstEditable = editableProviders[0];
-    if (!firstEditable) {
+    const firstNonKokoro = editableProviders.find((p) => p.providerType !== "kokoro");
+    if (firstNonKokoro) {
+      setEditingVoice({
+        id: "",
+        providerId: firstNonKokoro.id,
+        name: "",
+        modelId: "",
+        voiceId: "",
+        prompt: "",
+      });
+      setIsVoiceEditorOpen(true);
       return;
     }
-    setEditingVoice({
-      id: "",
-      providerId: firstEditable.id,
-      name: "",
-      modelId: "",
-      voiceId: "", // Not used but required by type
-      prompt: "",
-    });
-    setIsVoiceEditorOpen(true);
+    const kokoroProvider = editableProviders.find((p) => p.providerType === "kokoro");
+    if (kokoroProvider) {
+      navigate(`/settings/voices/kokoro/${kokoroProvider.id}`);
+    }
   };
 
   const handleEditVoice = (voice: UserVoice) => {
+    const owningProvider = providers.find((p) => p.id === voice.providerId);
+    if (owningProvider?.providerType === "kokoro") {
+      setSelectedVoice(null);
+      navigate(`/settings/voices/kokoro/${voice.providerId}/blend/${voice.id}`);
+      return;
+    }
     setEditingVoice({ ...voice });
     setIsVoiceEditorOpen(true);
     setSelectedVoice(null);
@@ -181,41 +202,6 @@ export function VoicesPage() {
     }
   };
 
-  const handleCreateProvider = useCallback(() => {
-    setEditingProvider({
-      id: "",
-      providerType: "elevenlabs",
-      label: "",
-      apiKey: "",
-      requestPath: "/v1/audio/speech",
-    });
-    setIsProviderEditorOpen(true);
-  }, []);
-
-  const handleEditProvider = (provider: AudioProvider) => {
-    setEditingProvider({ ...provider });
-    setIsProviderEditorOpen(true);
-    setSelectedProvider(null);
-  };
-
-  const handleDeleteProvider = async (id: string) => {
-    try {
-      await deleteAudioProvider(id);
-      await loadData();
-      setSelectedProvider(null);
-    } catch (e) {
-      console.error("Failed to delete provider:", e);
-    }
-  };
-
-  useEffect(() => {
-    const listener = () => handleCreateProvider();
-    window.addEventListener("audioProviders:add", listener);
-    return () => {
-      window.removeEventListener("audioProviders:add", listener);
-    };
-  }, [handleCreateProvider]);
-
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -226,56 +212,27 @@ export function VoicesPage() {
 
   return (
     <div className="flex h-full flex-col space-y-6">
-      {/* Audio Providers Section */}
-      <section>
-        <div className="mb-2 flex items-center justify-between px-1">
-          <h2 className="text-xs font-medium uppercase tracking-wider text-fg/40">
-            Audio Providers
-          </h2>
-          <button
-            onClick={handleCreateProvider}
-            className="flex items-center gap-1 rounded-lg border border-fg/10 bg-fg/5 px-2 py-1 text-xs text-fg/70 transition hover:border-fg/20 hover:bg-fg/10"
-          >
-            <Plus className="h-3 w-3" />
-            Add
-          </button>
-        </div>
-
-        {providers.length === 0 ? (
-          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-fg/10 py-8">
-            <Mic className="mb-2 h-8 w-8 text-fg/20" />
-            <p className="text-sm text-fg/50">{t("settings.items.providers.subtitle")}</p>
-            <p className="text-xs text-fg/30">{t("common.buttons.add")}</p>
+      {providers.length === 0 && (
+        <button
+          onClick={() => navigate("/settings/providers?tab=audio")}
+          className="group w-full rounded-xl border border-dashed border-fg/15 bg-fg/5 px-4 py-3 text-left transition hover:border-fg/25 hover:bg-fg/10"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-8 w-8 items-center justify-center rounded-full border border-fg/10 bg-fg/10">
+              <EthernetPort className="h-4 w-4 text-fg/60" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="truncate text-sm font-medium text-fg">
+                {t("providers.extra.audioEmpty.title")}
+              </p>
+              <p className="text-xs text-fg/50">
+                {t("voices.extra.page.noAudioProvidersHint")}
+              </p>
+            </div>
+            <ChevronRight className="h-4 w-4 text-fg/30 group-hover:text-fg/60" />
           </div>
-        ) : (
-          <div className="space-y-2">
-            {providers.map((provider) => (
-              <button
-                key={provider.id}
-                onClick={() => setSelectedProvider(provider)}
-                className="group w-full rounded-xl border border-fg/10 bg-fg/5 px-4 py-3 text-left transition hover:border-fg/20 hover:bg-fg/10"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full border border-fg/10 bg-fg/10">
-                    <span
-                      className={provider.providerType === "openai_tts" ? "text-[10px]" : "text-xs"}
-                    >
-                      {getProviderBadge(provider.providerType)}
-                    </span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="truncate text-sm font-medium text-fg">{provider.label}</p>
-                    <p className="text-xs text-fg/50">
-                      {getProviderTypeLabel(provider.providerType)}
-                    </p>
-                  </div>
-                  <ChevronRight className="h-4 w-4 text-fg/30 group-hover:text-fg/60" />
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </section>
+        </button>
+      )}
 
       {/* My Voices Section (Voice Designer + Custom Provider Voices) */}
       <section>
@@ -289,7 +246,7 @@ export function VoicesPage() {
               className="flex items-center gap-1 rounded-lg border border-fg/10 bg-fg/5 px-2 py-1 text-xs text-fg/70 transition hover:border-fg/20 hover:bg-fg/10"
             >
               <Plus className="h-3 w-3" />
-              Create
+              {t("common.buttons.create")}
             </button>
           )}
         </div>
@@ -297,11 +254,11 @@ export function VoicesPage() {
         {userVoices.length === 0 && customProviderVoices.length === 0 ? (
           <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-fg/10 py-8">
             <Volume2 className="mb-2 h-8 w-8 text-fg/20" />
-            <p className="text-sm text-fg/50">No voices created yet</p>
+            <p className="text-sm text-fg/50">{t("voices.extra.page.noVoicesTitle")}</p>
             <p className="text-xs text-fg/30">
               {editableProviders.length > 0
-                ? "Create voices with custom prompts for your characters"
-                : "Add an audio provider first"}
+                ? t("voices.extra.page.noVoicesDescription")
+                : t("voices.extra.page.addProviderFirst")}
             </p>
           </div>
         ) : (
@@ -323,7 +280,9 @@ export function VoicesPage() {
                       <p className="truncate text-sm font-medium text-fg">{voice.name}</p>
                       <p className="truncate text-xs text-fg/50">
                         {provider?.label} •{" "}
-                        {voice.prompt ? `"${voice.prompt.slice(0, 30)}..."` : "No prompt"}
+                        {voice.prompt
+                          ? `"${voice.prompt.slice(0, 30)}..."`
+                          : t("voices.extra.page.noPrompt")}
                       </p>
                     </div>
                     <ChevronRight className="h-4 w-4 text-fg/30 group-hover:text-fg/60" />
@@ -347,7 +306,9 @@ export function VoicesPage() {
                     <p className="truncate text-sm font-medium text-fg">{voice.name}</p>
                     <p className="truncate text-xs text-fg/50">
                       {voice.provider.label} •{" "}
-                      <span className="capitalize">{voice.labels?.category || "custom"}</span>
+                      <span className="capitalize">
+                        {voice.labels?.category || t("common.labels.custom")}
+                      </span>
                     </p>
                   </div>
                   <ChevronRight className="h-4 w-4 text-fg/30 group-hover:text-fg/60" />
@@ -363,7 +324,7 @@ export function VoicesPage() {
         <section>
           <div className="mb-2 px-1">
             <h2 className="text-xs font-medium uppercase tracking-wider text-fg/40">
-              Provider Voices
+              {t("voices.extra.providerVoices")}
             </h2>
           </div>
 
@@ -384,7 +345,9 @@ export function VoicesPage() {
                         </span>
                       </div>
                       <span className="text-sm font-medium text-fg">{provider.label}</span>
-                      <span className="text-xs text-fg/40">({voices.length} voices)</span>
+                      <span className="text-xs text-fg/40">
+                        ({t("voices.extra.page.voiceCount", { count: voices.length })})
+                      </span>
                     </div>
                     <button
                       onClick={() => void handleRefreshProviderVoices(provider.id)}
@@ -392,7 +355,7 @@ export function VoicesPage() {
                       className="flex items-center gap-1 rounded-lg border border-fg/10 bg-fg/5 px-2 py-1 text-[10px] text-fg/60 transition hover:border-fg/20 hover:bg-fg/10 disabled:opacity-50"
                     >
                       <RefreshCw className={`h-3 w-3 ${isLoadingThis ? "animate-spin" : ""}`} />
-                      Refresh
+                      {t("common.buttons.refresh")}
                     </button>
                   </div>
 
@@ -402,7 +365,7 @@ export function VoicesPage() {
                     </div>
                   ) : voices.length === 0 ? (
                     <p className="py-2 text-center text-xs text-fg/40">
-                      No voices found. Click Refresh to fetch voices.
+                      {t("voices.extra.page.noProviderVoices")}
                     </p>
                   ) : (
                     <div className="grid grid-cols-2 gap-2">
@@ -440,7 +403,9 @@ export function VoicesPage() {
                       }
                       className="mt-2 w-full rounded-lg border border-fg/10 bg-fg/5 py-1.5 text-[11px] text-fg/60 transition hover:border-fg/20 hover:bg-fg/10"
                     >
-                      {isExpanded ? "Show Less" : `Show All ${voices.length} Voices`}
+                      {isExpanded
+                        ? t("voices.extra.page.showLess")
+                        : t("voices.extra.page.showAllVoices", { count: voices.length })}
                     </button>
                   )}
                 </div>
@@ -453,7 +418,9 @@ export function VoicesPage() {
       {/* TTS Audio Cache Section */}
       <section>
         <div className="mb-2 px-1">
-          <h2 className="text-xs font-medium uppercase tracking-wider text-fg/40">Audio Cache</h2>
+          <h2 className="text-xs font-medium uppercase tracking-wider text-fg/40">
+            {t("voices.extra.cache.section")}
+          </h2>
         </div>
         <div className="rounded-xl border border-fg/10 bg-fg/5 p-4">
           <div className="flex items-start gap-3">
@@ -461,17 +428,24 @@ export function VoicesPage() {
               <HardDrive className="h-4 w-4 text-fg/70" />
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-fg">TTS Audio Cache</p>
+              <p className="text-sm font-medium text-fg">{t("voices.extra.cache.title")}</p>
               <p className="text-xs text-fg/50 mt-0.5">
-                Generated voice audio is cached to reduce regenerations
+                {t("voices.extra.cache.description")}
               </p>
               {cacheStats && (
                 <div className="mt-2 flex items-center gap-3 text-xs text-fg/60">
                   <span>
-                    {cacheStats.count} file{cacheStats.count !== 1 ? "s" : ""}
+                    {t("voices.extra.page.cacheFiles", { count: cacheStats.count })}
                   </span>
                   <span>•</span>
-                  <span>{formatBytes(cacheStats.sizeBytes)}</span>
+                  <span>
+                    {formatBytes(cacheStats.sizeBytes, [
+                      t("common.units.bytes"),
+                      t("common.units.kb"),
+                      t("common.units.mb"),
+                      t("common.units.gb"),
+                    ])}
+                  </span>
                 </div>
               )}
             </div>
@@ -496,12 +470,12 @@ export function VoicesPage() {
             {isClearingCache ? (
               <>
                 <Loader2 className="h-3 w-3 animate-spin" />
-                Clearing...
+                {t("voices.extra.cache.clearing")}
               </>
             ) : (
               <>
                 <Trash2 className="h-3 w-3" />
-                Clear Cache
+                {t("voices.extra.cache.clear")}
               </>
             )}
           </button>
@@ -512,21 +486,21 @@ export function VoicesPage() {
       <BottomMenu
         isOpen={!!selectedVoice}
         onClose={() => setSelectedVoice(null)}
-        title={selectedVoice?.name || "Voice"}
+        title={selectedVoice?.name || t("voices.extra.page.voiceFallbackTitle")}
       >
         {selectedVoice && (
           <div className="space-y-4">
             <MenuButton
               icon={Edit3}
-              title="Edit"
-              description="Modify this voice"
+              title={t("common.buttons.edit")}
+              description={t("voices.extra.menu.editDescription")}
               onClick={() => handleEditVoice(selectedVoice)}
               color="from-info to-info/80"
             />
             <MenuButton
               icon={Trash2}
-              title="Delete"
-              description="Remove this voice"
+              title={t("common.buttons.delete")}
+              description={t("voices.extra.menu.deleteDescription")}
               onClick={() => void handleDeleteVoice(selectedVoice.id)}
               color="from-danger to-danger/80"
             />
@@ -538,28 +512,28 @@ export function VoicesPage() {
       <BottomMenu
         isOpen={!!selectedCustomVoice}
         onClose={() => setSelectedCustomVoice(null)}
-        title={selectedCustomVoice?.name || "Voice"}
+        title={selectedCustomVoice?.name || t("voices.extra.page.voiceFallbackTitle")}
       >
         {selectedCustomVoice && (
           <div className="space-y-4">
             <div className="rounded-lg border border-fg/10 bg-fg/5 p-3">
-              <p className="text-xs text-fg/50">Provider</p>
+              <p className="text-xs text-fg/50">{t("voices.extra.menu.provider")}</p>
               <p className="text-sm text-fg">{selectedCustomVoice.provider.label}</p>
-              <p className="mt-2 text-xs text-fg/50">Category</p>
+              <p className="mt-2 text-xs text-fg/50">{t("voices.extra.menu.category")}</p>
               <p className="text-sm capitalize text-fg">
-                {selectedCustomVoice.labels?.category || "custom"}
+                {selectedCustomVoice.labels?.category || t("common.labels.custom")}
               </p>
               {selectedCustomVoice.labels?.description && (
                 <>
-                  <p className="mt-2 text-xs text-fg/50">Description</p>
+                  <p className="mt-2 text-xs text-fg/50">{t("common.labels.description")}</p>
                   <p className="text-sm text-fg">{selectedCustomVoice.labels.description}</p>
                 </>
               )}
             </div>
             <MenuButton
               icon={Plus}
-              title="Create Voice Config"
-              description="Use this voice with custom settings"
+              title={t("voices.extra.menu.createVoiceConfig")}
+              description={t("voices.extra.menu.createVoiceConfigDescription")}
               onClick={() => {
                 setEditingVoice({
                   id: "",
@@ -578,37 +552,11 @@ export function VoicesPage() {
         )}
       </BottomMenu>
 
-      {/* Provider Selection Menu */}
-      <BottomMenu
-        isOpen={!!selectedProvider}
-        onClose={() => setSelectedProvider(null)}
-        title={selectedProvider?.label || "Provider"}
-      >
-        {selectedProvider && (
-          <div className="space-y-4">
-            <MenuButton
-              icon={Edit3}
-              title="Edit"
-              description="Modify provider settings"
-              onClick={() => handleEditProvider(selectedProvider)}
-              color="from-info to-info/80"
-            />
-            <MenuButton
-              icon={Trash2}
-              title="Delete"
-              description="Remove this provider"
-              onClick={() => void handleDeleteProvider(selectedProvider.id)}
-              color="from-danger to-danger/80"
-            />
-          </div>
-        )}
-      </BottomMenu>
-
       {/* Voice Editor (Voice Designer) */}
       <VoiceEditor
         isOpen={isVoiceEditorOpen}
         voice={editingVoice}
-        providers={editableProviders}
+        providers={editableProviders.filter((p) => p.providerType !== "kokoro")}
         onClose={() => {
           setIsVoiceEditorOpen(false);
           setEditingVoice(null);
@@ -620,30 +568,13 @@ export function VoicesPage() {
           setEditingVoice(null);
         }}
       />
-
-      {/* Provider Editor */}
-      <ProviderEditor
-        isOpen={isProviderEditorOpen}
-        provider={editingProvider}
-        onClose={() => {
-          setIsProviderEditorOpen(false);
-          setEditingProvider(null);
-        }}
-        onSave={async (provider) => {
-          await upsertAudioProvider(provider);
-          await loadData();
-          setIsProviderEditorOpen(false);
-          setEditingProvider(null);
-        }}
-      />
     </div>
   );
 }
 
-function formatBytes(bytes: number): string {
-  if (bytes === 0) return "0 B";
+function formatBytes(bytes: number, sizes: string[]): string {
+  if (bytes === 0) return `0 ${sizes[0]}`;
   const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 }
@@ -657,6 +588,7 @@ interface VoiceEditorProps {
 }
 
 function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorProps) {
+  const { t } = useI18n();
   const [formData, setFormData] = useState<UserVoice | null>(null);
   const [models, setModels] = useState<AudioModel[]>([]);
   const [providerVoices, setProviderVoices] = useState<CachedVoice[]>([]);
@@ -666,7 +598,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
 
   const [generatedPreviewId, setGeneratedPreviewId] = useState<string | null>(null);
   const [textSample, setTextSample] = useState(
-    "Hello! This is how I sound when speaking. I can read longer passages with warmth, clarity, and emotion so you can judge my tone and pace.",
+    t("voices.extra.editor.defaultSample"),
   );
   const [previewError, setPreviewError] = useState<string | null>(null);
   const minVoiceDesignChars = 100;
@@ -688,7 +620,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
       }
       setGeneratedPreviewId(null);
       setTextSample(
-        "Hello! This is how I sound when speaking. I can read longer passages with warmth, clarity, and emotion so you can judge my tone and pace.",
+        t("voices.extra.editor.defaultSample"),
       );
       setPreviewError(null);
       setProviderVoices([]);
@@ -730,7 +662,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
     const provider = providers.find((p) => p.id === formData.providerId);
     if (!provider) return;
 
-    if (provider.providerType === "elevenlabs") {
+    if (provider.providerType === "elevenlabs" || provider.providerType === "fish_tts") {
       setIsLoadingVoices(true);
       void (async () => {
         try {
@@ -760,7 +692,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
 
       if (provider?.providerType === "elevenlabs" && !formData.id) {
         if (!generatedPreviewId) {
-          throw new Error("Please preview the voice first to generate it.");
+          throw new Error(t("voices.extra.editor.nameVoiceFirst"));
         }
 
         const result = await createVoiceFromPreview(
@@ -777,19 +709,23 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
         finalVoiceData.voiceId = "kore";
       }
 
+      if (provider?.providerType === "fish_tts" && !finalVoiceData.voiceId.trim()) {
+        throw new Error(t("voices.extra.editor.fishVoiceIdRequired"));
+      }
+
       if (provider?.providerType === "openai_tts") {
         if (!finalVoiceData.modelId.trim()) {
-          throw new Error("Model ID is required for OpenAI-compatible TTS.");
+          throw new Error(t("voices.extra.editor.openaiModelIdRequired"));
         }
         if (!finalVoiceData.voiceId.trim()) {
-          throw new Error("Voice ID is required for OpenAI-compatible TTS.");
+          throw new Error(t("voices.extra.editor.openaiVoiceIdRequired"));
         }
       }
 
       await onSave(finalVoiceData);
     } catch (e) {
       console.error("Failed to save voice:", e);
-      setPreviewError(e instanceof Error ? e.message : "Failed to save voice.");
+      setPreviewError(e instanceof Error ? e.message : t("voices.extra.editor.saveVoiceFailed"));
     } finally {
       setIsSaving(false);
     }
@@ -816,7 +752,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
     const trimmedSample = textSample.trim();
     if (isElevenLabsVoiceDesign && trimmedSample.length < minVoiceDesignChars) {
       setPreviewError(
-        `Example text must be at least ${minVoiceDesignChars} characters for voice design.`,
+        t("voices.extra.editor.exampleTextMinChars", { minimum: minVoiceDesignChars }),
       );
       return;
     }
@@ -858,7 +794,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
             (voice) => voice.name.trim().toLowerCase() === formData.name.trim().toLowerCase(),
           );
           if (!match) {
-            throw new Error("Unable to resolve ElevenLabs voice ID. Please recreate the voice.");
+            throw new Error(t("voices.extra.editor.resolveElevenlabsFailed"));
           }
           resolvedVoiceId = match.voiceId;
           const nextVoice = { ...formData, voiceId: resolvedVoiceId };
@@ -891,7 +827,12 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
   const isElevenLabsVoiceDesign = activeProvider?.providerType === "elevenlabs" && isNewVoice;
   const allowsVoiceLookupByName =
     activeProvider?.providerType === "elevenlabs" && !isElevenLabsVoiceDesign;
-  const requiresManualVoiceId = activeProvider?.providerType === "openai_tts";
+  const usesProviderVoicePicker =
+    activeProvider?.providerType === "elevenlabs" || activeProvider?.providerType === "fish_tts";
+  const requiresManualVoiceId =
+    activeProvider?.providerType === "openai_tts" ||
+    activeProvider?.providerType === "fish_tts" ||
+    activeProvider?.providerType === "fish_speech";
   const sampleLength = textSample.trim().length;
   const previewDisabled =
     isPlaying ||
@@ -907,24 +848,28 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
     <BottomMenu
       isOpen={isOpen}
       onClose={onClose}
-      title={formData.id ? "Edit Voice" : "Create Voice"}
+      title={formData.id ? t("voices.extra.editor.editTitle") : t("voices.extra.editor.createTitle")}
     >
       <div className="space-y-4 pb-2">
         {/* Voice Name */}
         <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">Voice Name</label>
+          <label className="mb-1 block text-[11px] font-medium text-fg/70">
+            {t("voices.extra.editor.voiceName")}
+          </label>
           <input
             type="text"
             value={formData.name}
             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-            placeholder="My Character Voice"
+            placeholder={t("voices.extra.editor.voiceNamePlaceholder")}
             className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
           />
         </div>
 
         {/* Provider Selection */}
         <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">Provider</label>
+          <label className="mb-1 block text-[11px] font-medium text-fg/70">
+            {t("voices.extra.editor.provider")}
+          </label>
           <select
             value={formData.providerId}
             onChange={(e) => setFormData({ ...formData, providerId: e.target.value, modelId: "" })}
@@ -940,18 +885,20 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
 
         {/* Model Selection */}
         <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">Model</label>
+          <label className="mb-1 block text-[11px] font-medium text-fg/70">
+            {t("voices.extra.editor.model")}
+          </label>
           {activeProvider?.providerType === "openai_tts" ? (
             <>
               <input
                 type="text"
                 value={formData.modelId}
                 onChange={(e) => setFormData({ ...formData, modelId: e.target.value })}
-                placeholder="gpt-4o-mini-tts"
+                placeholder={t("voices.extra.editor.modelIdPlaceholder")}
                 className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
               />
               <p className="mt-1 text-[10px] text-fg/40">
-                Enter the exact model ID your compatible endpoint expects
+                {t("voices.extra.editor.modelIdHint")}
               </p>
             </>
           ) : (
@@ -963,7 +910,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
             >
               {models.length === 0 ? (
                 <option value="" className="bg-surface-el">
-                  Loading models...
+                  {t("characters.description.loadingModels")}
                 </option>
               ) : (
                 models.map((m) => (
@@ -976,10 +923,14 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
           )}
         </div>
 
-        {activeProvider?.providerType === "elevenlabs" && !isElevenLabsVoiceDesign && (
+        {usesProviderVoicePicker && !isElevenLabsVoiceDesign && (
           <div>
             <div className="mb-1 flex items-center justify-between">
-              <label className="text-[11px] font-medium text-fg/70">ElevenLabs Voice</label>
+              <label className="text-[11px] font-medium text-fg/70">
+                {activeProvider?.providerType === "fish_tts"
+                  ? t("voices.extra.editor.fishVoice")
+                  : t("voices.extra.editor.elevenlabsVoice")}
+              </label>
               <button
                 type="button"
                 onClick={async () => {
@@ -997,7 +948,7 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
                 className="flex items-center gap-1 text-[10px] text-fg/50 hover:text-fg/70 disabled:opacity-50"
               >
                 <RefreshCw className={`h-3 w-3 ${isLoadingVoices ? "animate-spin" : ""}`} />
-                Refresh
+                {t("common.buttons.refresh")}
               </button>
             </div>
             <select
@@ -1015,16 +966,16 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
             >
               {isLoadingVoices ? (
                 <option value="" className="bg-surface-el">
-                  Loading voices...
+                  {t("characters.description.loadingVoices")}
                 </option>
               ) : providerVoices.length === 0 ? (
                 <option value="" className="bg-surface-el">
-                  No voices available
+                  {t("voices.extra.editor.noVoicesAvailable")}
                 </option>
               ) : (
                 <>
                   <option value="" className="bg-surface-el">
-                    Select a voice...
+                    {t("voices.extra.editor.selectVoice")}
                   </option>
                   {providerVoices.map((v) => (
                     <option key={v.voiceId} value={v.voiceId} className="bg-surface-el">
@@ -1035,102 +986,104 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
                 </>
               )}
             </select>
-            <p className="mt-1 text-[10px] text-fg/40">Select from your ElevenLabs voices</p>
+            <p className="mt-1 text-[10px] text-fg/40">
+              {activeProvider?.providerType === "fish_tts"
+                ? t("voices.extra.editor.fishVoiceHint")
+                : t("voices.extra.editor.elevenlabsVoiceHint")}
+            </p>
           </div>
         )}
 
         {/* Gemini Voice Selection */}
         {activeProvider?.providerType === "gemini_tts" && (
           <div>
-            <label className="mb-1 block text-[11px] font-medium text-fg/70">Gemini Voice</label>
+            <label className="mb-1 block text-[11px] font-medium text-fg/70">
+              {t("voices.extra.editor.geminiVoice")}
+            </label>
             <select
               value={formData.voiceId}
               onChange={(e) => setFormData({ ...formData, voiceId: e.target.value })}
               className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg focus:border-fg/30 focus:outline-none"
             >
-              <option value="kore" className="bg-surface-el">
-                Kore (Warm and friendly)
-              </option>
-              <option value="aoede" className="bg-surface-el">
-                Aoede (Bright and articulate)
-              </option>
-              <option value="charon" className="bg-surface-el">
-                Charon (Deep and authoritative)
-              </option>
-              <option value="fenrir" className="bg-surface-el">
-                Fenrir (Strong and bold)
-              </option>
-              <option value="puck" className="bg-surface-el">
-                Puck (Energetic and youthful)
-              </option>
-              <option value="leda" className="bg-surface-el">
-                Leda (Calm and soothing)
-              </option>
-              <option value="orus" className="bg-surface-el">
-                Orus (Warm and resonant)
-              </option>
-              <option value="zephyr" className="bg-surface-el">
-                Zephyr (Light and airy)
-              </option>
-              <option value="algieba" className="bg-surface-el">
-                Algieba (Professional and clear)
-              </option>
-              <option value="callirrhoe" className="bg-surface-el">
-                Callirrhoe (Expressive and dynamic)
-              </option>
+              {GEMINI_VOICES.map((v) => (
+                <option key={v.id} value={v.id} className="bg-surface-el">
+                  {v.name} ({t(v.descriptionKey)})
+                </option>
+              ))}
             </select>
-            <p className="mt-1 text-[10px] text-fg/40">Select a Gemini TTS voice</p>
+            <p className="mt-1 text-[10px] text-fg/40">
+              {t("voices.extra.editor.geminiVoiceHint")}
+            </p>
           </div>
         )}
 
-        {activeProvider?.providerType === "openai_tts" && (
+        {requiresManualVoiceId && (
           <div>
-            <label className="mb-1 block text-[11px] font-medium text-fg/70">Voice ID</label>
+            <label className="mb-1 block text-[11px] font-medium text-fg/70">
+              {t("voices.extra.editor.voiceId")}
+            </label>
             <input
               type="text"
               value={formData.voiceId}
               onChange={(e) => setFormData({ ...formData, voiceId: e.target.value })}
-              placeholder="alloy"
+              placeholder={
+                activeProvider?.providerType === "fish_tts"
+                  ? t("voices.extra.editor.fishVoiceIdPlaceholder")
+                  : activeProvider?.providerType === "fish_speech"
+                    ? t("voices.extra.editor.fishSpeechVoiceIdPlaceholder")
+                  : t("voices.extra.editor.voiceIdPlaceholder")
+              }
               className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
             />
             <p className="mt-1 text-[10px] text-fg/40">
-              Enter the voice ID supported by your compatible endpoint
+              {activeProvider?.providerType === "fish_tts"
+                ? t("voices.extra.editor.fishVoiceIdHint")
+                : activeProvider?.providerType === "fish_speech"
+                  ? t("voices.extra.editor.fishSpeechVoiceIdHint")
+                : t("voices.extra.editor.voiceIdHint")}
             </p>
           </div>
         )}
 
         {/* Prompt */}
         <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">Voice Prompt</label>
+          <label className="mb-1 block text-[11px] font-medium text-fg/70">
+            {t("voices.extra.editor.voicePrompt")}
+          </label>
           <textarea
             value={formData.prompt ?? ""}
             onChange={(e) => setFormData({ ...formData, prompt: e.target.value })}
-            placeholder="A warm, friendly voice with a cheerful tone..."
+            placeholder={t("voices.extra.editor.voicePromptPlaceholder")}
             rows={3}
             className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none resize-none"
           />
-          <p className="mt-1 text-[10px] text-fg/40">Describe how the voice should sound</p>
+          <p className="mt-1 text-[10px] text-fg/40">{t("voices.extra.editor.voicePromptHint")}</p>
         </div>
 
         {/* Example Text */}
         <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">Example Text</label>
+          <label className="mb-1 block text-[11px] font-medium text-fg/70">
+            {t("voices.extra.editor.exampleText")}
+          </label>
           <textarea
             value={textSample}
             onChange={(e) => {
               setTextSample(e.target.value);
               if (previewError) setPreviewError(null);
             }}
-            placeholder="Hello! This is how I sound when speaking..."
+            placeholder={t("voices.extra.editor.exampleTextPlaceholder")}
             rows={2}
             className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none resize-none"
           />
-          <p className="mt-1 text-[10px] text-fg/40">Sample text for testing the voice</p>
+          <p className="mt-1 text-[10px] text-fg/40">{t("voices.extra.editor.exampleTextHint")}</p>
           {isElevenLabsVoiceDesign && (
             <p
               className={`mt-1 text-[10px] ${sampleLength < minVoiceDesignChars ? "text-danger/80" : "text-fg/40"}`}
             >
-              {sampleLength}/{minVoiceDesignChars} characters required for voice design preview
+              {t("voices.extra.editor.voiceDesignChars", {
+                current: sampleLength,
+                minimum: minVoiceDesignChars,
+              })}
             </p>
           )}
           {previewError && (
@@ -1147,12 +1100,12 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
           {isPlaying ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
-              Playing...
+              {t("voices.extra.editor.playing")}
             </>
           ) : (
             <>
               <Play className="h-4 w-4" />
-              Preview Voice
+              {t("voices.extra.editor.previewVoice")}
             </>
           )}
         </button>
@@ -1163,232 +1116,14 @@ function VoiceEditor({ isOpen, voice, providers, onClose, onSave }: VoiceEditorP
             onClick={onClose}
             className="flex-1 rounded-lg border border-fg/10 bg-fg/5 px-4 py-2 text-sm font-medium text-fg/70 transition hover:border-fg/20 hover:bg-fg/10 hover:text-fg"
           >
-            Cancel
+            {t("common.buttons.cancel")}
           </button>
           <button
             onClick={() => void handleSave()}
             disabled={isSaving || !formData.name.trim()}
             className="flex-1 rounded-lg border border-accent/40 bg-accent/20 px-4 py-2 text-sm font-semibold text-accent/90 transition hover:border-accent/60 hover:bg-accent/30 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isSaving ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </div>
-    </BottomMenu>
-  );
-}
-
-interface ProviderEditorProps {
-  isOpen: boolean;
-  provider: AudioProvider | null;
-  onClose: () => void;
-  onSave: (provider: AudioProvider) => Promise<void>;
-}
-
-function ProviderEditor({ isOpen, provider, onClose, onSave }: ProviderEditorProps) {
-  const [formData, setFormData] = useState<AudioProvider | null>(null);
-  const [isSaving, setIsSaving] = useState(false);
-  const [validationError, setValidationError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (provider) {
-      setFormData({ ...provider });
-      setValidationError(null);
-    }
-  }, [provider]);
-
-  const handleSave = async () => {
-    if (!formData || !formData.label.trim()) return;
-
-    if (!formData.apiKey?.trim()) {
-      setValidationError("API key is required");
-      return;
-    }
-
-    if (formData.providerType === "gemini_tts" && !formData.projectId?.trim()) {
-      setValidationError("Project ID is required for Gemini TTS");
-      return;
-    }
-
-    if (formData.providerType === "openai_tts" && !formData.baseUrl?.trim()) {
-      setValidationError("Base URL is required for OpenAI-compatible TTS");
-      return;
-    }
-
-    setIsSaving(true);
-    setValidationError(null);
-
-    try {
-      const isValid = await verifyAudioProvider(
-        formData.providerType,
-        formData.apiKey,
-        formData.projectId,
-      );
-
-      if (!isValid) {
-        setValidationError("Invalid API key or credentials");
-        return;
-      }
-
-      await onSave(formData);
-    } catch (e) {
-      setValidationError(e instanceof Error ? e.message : "Verification failed");
-    } finally {
-      setIsSaving(false);
-    }
-  };
-
-  if (!formData) return null;
-
-  return (
-    <BottomMenu
-      isOpen={isOpen}
-      onClose={onClose}
-      title={formData.id ? "Edit Provider" : "Add Audio Provider"}
-    >
-      <div className="space-y-4 pb-2">
-        {/* Provider Type */}
-        <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">Provider Type</label>
-          <select
-            value={formData.providerType}
-            onChange={(e) =>
-              setFormData({
-                ...formData,
-                providerType: e.target.value as AudioProviderType,
-                projectId: undefined,
-                location: undefined,
-                baseUrl: undefined,
-                requestPath: e.target.value === "openai_tts" ? "/v1/audio/speech" : undefined,
-              })
-            }
-            className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg focus:border-fg/30 focus:outline-none"
-          >
-            <option value="elevenlabs" className="bg-surface-el">
-              ElevenLabs
-            </option>
-            <option value="gemini_tts" className="bg-surface-el">
-              Gemini TTS (Google)
-            </option>
-            <option value="openai_tts" className="bg-surface-el">
-              OpenAI-Compatible TTS
-            </option>
-          </select>
-        </div>
-
-        {/* Label */}
-        <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">Label</label>
-          <input
-            type="text"
-            value={formData.label}
-            onChange={(e) => setFormData({ ...formData, label: e.target.value })}
-            placeholder={
-              formData.providerType === "gemini_tts"
-                ? "My Gemini TTS"
-                : formData.providerType === "openai_tts"
-                  ? "My Compatible TTS"
-                  : "My ElevenLabs"
-            }
-            className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
-          />
-        </div>
-
-        {/* API Key */}
-        <div>
-          <label className="mb-1 block text-[11px] font-medium text-fg/70">API Key</label>
-          <input
-            type="password"
-            value={formData.apiKey ?? ""}
-            onChange={(e) => {
-              setFormData({ ...formData, apiKey: e.target.value });
-              if (validationError) setValidationError(null);
-            }}
-            placeholder="Enter your API key"
-            className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
-          />
-        </div>
-
-        {/* Gemini-specific fields */}
-        {formData.providerType === "gemini_tts" && (
-          <>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-fg/70">
-                Google Cloud Project ID
-              </label>
-              <input
-                type="text"
-                value={formData.projectId ?? ""}
-                onChange={(e) => {
-                  setFormData({ ...formData, projectId: e.target.value });
-                  if (validationError) setValidationError(null);
-                }}
-                placeholder="your-project-id"
-                className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-fg/70">
-                Region (optional)
-              </label>
-              <input
-                type="text"
-                value={formData.location ?? ""}
-                onChange={(e) => setFormData({ ...formData, location: e.target.value })}
-                placeholder="us-central1"
-                className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
-              />
-            </div>
-          </>
-        )}
-
-        {formData.providerType === "openai_tts" && (
-          <>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-fg/70">Base URL</label>
-              <input
-                type="text"
-                value={formData.baseUrl ?? ""}
-                onChange={(e) => {
-                  setFormData({ ...formData, baseUrl: e.target.value });
-                  if (validationError) setValidationError(null);
-                }}
-                placeholder="https://api.example.com"
-                className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-[11px] font-medium text-fg/70">Request Path</label>
-              <input
-                type="text"
-                value={formData.requestPath ?? "/v1/audio/speech"}
-                onChange={(e) => setFormData({ ...formData, requestPath: e.target.value })}
-                placeholder="/v1/audio/speech"
-                className="w-full rounded-lg border border-fg/10 bg-surface-el/20 px-3 py-2 text-sm text-fg placeholder-fg/40 focus:border-fg/30 focus:outline-none"
-              />
-              <p className="mt-1 text-[10px] text-fg/40">
-                Use the provider path if it differs from the OpenAI default
-              </p>
-            </div>
-          </>
-        )}
-
-        {validationError && <p className="text-xs font-medium text-danger/80">{validationError}</p>}
-
-        {/* Actions */}
-        <div className="flex gap-3 pt-1">
-          <button
-            onClick={onClose}
-            className="flex-1 rounded-lg border border-fg/10 bg-fg/5 px-4 py-2 text-sm font-medium text-fg/70 transition hover:border-fg/20 hover:bg-fg/10 hover:text-fg"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => void handleSave()}
-            disabled={isSaving || !formData.label.trim()}
-            className="flex-1 rounded-lg border border-accent/40 bg-accent/20 px-4 py-2 text-sm font-semibold text-accent/90 transition hover:border-accent/60 hover:bg-accent/30 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isSaving ? "Verifying..." : "Save"}
+            {isSaving ? t("common.buttons.saving") : t("common.buttons.save")}
           </button>
         </div>
       </div>

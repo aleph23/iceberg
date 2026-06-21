@@ -1,16 +1,18 @@
 import { useState, useEffect, useCallback } from "react";
-import { Shield, Lock, Database, Power, Search, ScrollText, Trash2 } from "lucide-react";
-import { isAnalyticsAvailable, readSettings } from "../../../core/storage/repo";
+import { Shield, Lock, Database, Power, ScrollText, Trash2, FilePlus2, FileBadge2 } from "lucide-react";
+import { isAnalyticsAvailable, readSettings, setAppState } from "../../../core/storage/repo";
 import {
   setAnalyticsEnabled,
   setAutoDownloadCharacterCardAvatars,
   setPureModeLevel,
 } from "../../../core/storage/appState";
-import type { PureModeLevel } from "../../../core/storage/schemas";
+import type { PureModeLevel, TrustedCertificate } from "../../../core/storage/schemas";
 import { invoke } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { open } from "@tauri-apps/plugin-dialog";
+import { readTextFile } from "@tauri-apps/plugin-fs";
 import { BottomMenu, MenuButton, MenuButtonGroup } from "../../components/BottomMenu";
-import { useI18n } from "../../../core/i18n/context";
+import { useI18n, type TranslationKey } from "../../../core/i18n/context";
 import { Switch } from "../../components/Switch";
 
 interface FilterLogEntry {
@@ -22,14 +24,7 @@ interface FilterLogEntry {
   level: string;
 }
 
-const PURE_MODE_OPTIONS: {
-  value: PureModeLevel;
-  labelKey: string;
-  descriptionKey: string;
-  color: string;
-  activeColor: string;
-  activeBg: string;
-}[] = [
+const PURE_MODE_OPTIONS = [
   {
     value: "off",
     labelKey: "security.pureMode.off",
@@ -62,35 +57,29 @@ const PURE_MODE_OPTIONS: {
     activeColor: "text-info",
     activeBg: "border-info/40 bg-info/20",
   },
-];
+] satisfies {
+  value: PureModeLevel;
+  labelKey: TranslationKey;
+  descriptionKey: TranslationKey;
+  color: string;
+  activeColor: string;
+  activeBg: string;
+}[];
 const FILTER_DEBUG_ENABLED = import.meta.env.DEV;
 
 export function SecurityPage() {
   const { t } = useI18n();
   const [pureModeLevel, setPureModeLevelState] = useState<PureModeLevel>("standard");
-  const [isGlitchEnabled, setIsGlitchEnabled] = useState(true);
   const [autoDownloadCharacterCardAvatars, setAutoDownloadCharacterCardAvatarsState] =
     useState(true);
   const [isAnalyticsEnabled, setIsAnalyticsEnabled] = useState(true);
   const [isAnalyticsAvailableState, setIsAnalyticsAvailableState] = useState(true);
   const [showRestartMenu, setShowRestartMenu] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
-  const [debugInput, setDebugInput] = useState("");
-  const [debugResult, setDebugResult] = useState<Record<string, unknown> | null>(null);
   const [filterLog, setFilterLog] = useState<FilterLogEntry[]>([]);
-
-  const handleDebugFilter = useCallback(async (text: string) => {
-    if (!text.trim()) {
-      setDebugResult(null);
-      return;
-    }
-    try {
-      const result = await invoke<Record<string, unknown>>("debug_content_filter", { text });
-      setDebugResult(result);
-    } catch (err) {
-      console.error("debug_content_filter failed:", err);
-    }
-  }, []);
+  const [trustedCertificates, setTrustedCertificates] = useState<TrustedCertificate[]>([]);
+  const [certificateError, setCertificateError] = useState<string | null>(null);
+  const [isImportingCertificate, setIsImportingCertificate] = useState(false);
 
   const refreshFilterLog = useCallback(async () => {
     try {
@@ -139,17 +128,9 @@ export function SecurityPage() {
         setAutoDownloadCharacterCardAvatarsState(autoDownloadAvatars);
         setIsAnalyticsEnabled(settings.appState.analyticsEnabled ?? true);
         setIsAnalyticsAvailableState(available);
+        setTrustedCertificates(settings.appState.trustedCertificates ?? []);
         if (!available) {
           setIsAnalyticsEnabled(false);
-        }
-        try {
-          const stored = localStorage.getItem("lettuce.easterEggs.glitch");
-          if (stored !== null) {
-            setIsGlitchEnabled(stored === "true");
-          }
-        } catch (err) {
-          console.error("Failed to read glitch setting:", err);
-          setIsGlitchEnabled(true);
         }
       } catch (err) {
         console.error("Failed to load settings:", err);
@@ -168,18 +149,6 @@ export function SecurityPage() {
     } catch (err) {
       console.error("Failed to save pure mode level:", err);
       setPureModeLevelState(prev);
-    }
-  };
-
-  const handleGlitchToggle = () => {
-    const newValue = !isGlitchEnabled;
-    setIsGlitchEnabled(newValue);
-    try {
-      localStorage.setItem("lettuce.easterEggs.glitch", String(newValue));
-      window.dispatchEvent(new CustomEvent("lettuce:easterEggs:glitch", { detail: newValue }));
-    } catch (err) {
-      console.error("Failed to save glitch setting:", err);
-      setIsGlitchEnabled(!newValue);
     }
   };
 
@@ -209,6 +178,69 @@ export function SecurityPage() {
     }
   };
 
+  const persistTrustedCertificates = useCallback(async (next: TrustedCertificate[]) => {
+    const settings = await readSettings();
+    await setAppState({
+      ...settings.appState,
+      trustedCertificates: next,
+    });
+    setTrustedCertificates(next);
+  }, []);
+
+  const handleImportCertificate = useCallback(async () => {
+    setCertificateError(null);
+    setIsImportingCertificate(true);
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "Certificates", extensions: ["pem", "crt", "cer"] }],
+      });
+      if (!selected || typeof selected !== "string") {
+        return;
+      }
+
+      const pem = (await readTextFile(selected)).trim();
+      if (!pem.includes("BEGIN CERTIFICATE") || !pem.includes("END CERTIFICATE")) {
+        setCertificateError(t("security.certificates.errorNotPem"));
+        return;
+      }
+
+      if (trustedCertificates.some((certificate) => certificate.pem.trim() === pem)) {
+        setCertificateError(t("security.certificates.errorAlreadyImported"));
+        return;
+      }
+
+      const filename = selected.split("/").pop() || "certificate.pem";
+      const nextEntry: TrustedCertificate = {
+        id: crypto.randomUUID(),
+        name: filename,
+        pem,
+        importedAt: Date.now(),
+      };
+      await persistTrustedCertificates([...trustedCertificates, nextEntry]);
+    } catch (error) {
+      console.error("Failed to import certificate:", error);
+      setCertificateError(String(error));
+    } finally {
+      setIsImportingCertificate(false);
+    }
+  }, [persistTrustedCertificates, trustedCertificates, t]);
+
+  const handleDeleteCertificate = useCallback(
+    async (id: string) => {
+      setCertificateError(null);
+      try {
+        await persistTrustedCertificates(
+          trustedCertificates.filter((certificate) => certificate.id !== id),
+        );
+      } catch (error) {
+        console.error("Failed to delete certificate:", error);
+        setCertificateError(String(error));
+      }
+    },
+    [persistTrustedCertificates, trustedCertificates],
+  );
+
   if (isLoading) {
     return null;
   }
@@ -217,12 +249,12 @@ export function SecurityPage() {
   const activeOption = PURE_MODE_OPTIONS.find((o) => o.value === pureModeLevel)!;
 
   return (
-    <div className="flex h-full flex-col pb-16">
-      <section className="flex-1 overflow-y-auto px-3 pt-3 space-y-6">
+    <div className="flex h-full flex-col">
+      <section className="flex-1 overflow-y-auto px-3 pt-3 pb-6 space-y-6">
         {/* Section: Content Filtering */}
         <div>
           <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
-            Content Filtering
+            {t("security.contentFiltering.sectionTitle")}
           </h2>
           <div
             className={`relative overflow-hidden rounded-xl border px-4 py-3 transition-all duration-300 ${
@@ -257,14 +289,16 @@ export function SecurityPage() {
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <span className="text-sm font-medium text-fg">Pure Mode</span>
+                  <span className="text-sm font-medium text-fg">
+                    {t("security.contentFiltering.pureModeTitle")}
+                  </span>
                   <span
                     className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none uppercase tracking-[0.25em] transition-all duration-300 ${activeOption.activeBg} ${activeOption.activeColor}`}
                   >
-                    {t(activeOption.labelKey as any)}
+                    {t(activeOption.labelKey)}
                   </span>
                 </div>
-                <div className="mt-0.5 text-[11px] text-fg/50">{t(activeOption.descriptionKey as any)}</div>
+                <div className="mt-0.5 text-[11px] text-fg/50">{t(activeOption.descriptionKey)}</div>
 
                 {/* Level selector */}
                 <div className="mt-3 flex gap-1.5">
@@ -280,57 +314,14 @@ export function SecurityPage() {
                             : "border-fg/10 bg-fg/5 text-fg/50 hover:bg-fg/10"
                         }`}
                       >
-                        {t(option.labelKey as any)}
+                        {t(option.labelKey)}
                       </button>
                     );
                   })}
                 </div>
 
                 <div className="mt-2 text-[11px] text-fg/45 leading-relaxed">
-                  Restrict adult content in AI responses
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Section: App Integrity */}
-        <div>
-          <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
-            App Integrity
-          </h2>
-          <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3">
-            <div className="flex items-start gap-3">
-              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-fg/10 bg-fg/10">
-                <Shield className="h-4 w-4 text-fg/70" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-fg">Glitch Effects</span>
-                      <span
-                        className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none uppercase tracking-[0.25em] ${
-                          isGlitchEnabled
-                            ? "border-info/40 bg-info/15 text-info"
-                            : "border-fg/10 bg-fg/10 text-fg/60"
-                        }`}
-                      >
-                        {isGlitchEnabled ? "On" : "Off"}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-[11px] text-fg/50">
-                      Disable the shake-triggered visuals
-                    </div>
-                  </div>
-                  <Switch
-                    id="glitch-effects"
-                    checked={isGlitchEnabled}
-                    onChange={() => handleGlitchToggle()}
-                  />
-                </div>
-                <div className="mt-2 text-[11px] text-fg/45 leading-relaxed">
-                  Keeps the app stable on shake
+                  {t("security.contentFiltering.pureModeFooter")}
                 </div>
               </div>
             </div>
@@ -340,7 +331,7 @@ export function SecurityPage() {
         {/* Section: Data Protection */}
         <div>
           <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
-            Data Protection
+            {t("security.dataProtection.sectionTitle")}
           </h2>
           <div className="space-y-2">
             <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3">
@@ -353,7 +344,7 @@ export function SecurityPage() {
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium text-fg">
-                          Remote Avatar Download
+                          {t("security.dataProtection.remoteAvatarTitle")}
                         </span>
                         <span
                           className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none uppercase tracking-[0.25em] ${
@@ -362,11 +353,11 @@ export function SecurityPage() {
                               : "border-fg/10 bg-fg/10 text-fg/60"
                           }`}
                         >
-                          {autoDownloadCharacterCardAvatars ? "On" : "Off"}
+                          {autoDownloadCharacterCardAvatars ? t("common.labels.on") : t("common.labels.off")}
                         </span>
                       </div>
                       <div className="mt-0.5 text-[11px] text-fg/50">
-                        Auto-download avatar images from HTTPS URLs during character card import
+                        {t("security.dataProtection.remoteAvatarDesc")}
                       </div>
                     </div>
                     <Switch
@@ -376,7 +367,7 @@ export function SecurityPage() {
                     />
                   </div>
                   <div className="mt-2 text-[11px] text-fg/45 leading-relaxed">
-                    Disable this to prevent network avatar fetches when importing character cards
+                    {t("security.dataProtection.remoteAvatarFooter")}
                   </div>
                 </div>
               </div>
@@ -391,7 +382,9 @@ export function SecurityPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex-1">
                       <div className="flex items-center gap-2">
-                        <span className="text-sm font-medium text-fg">Analytics</span>
+                        <span className="text-sm font-medium text-fg">
+                          {t("security.dataProtection.analyticsTitle")}
+                        </span>
                         <span
                           className={`rounded-md border px-1.5 py-0.5 text-[10px] font-medium leading-none uppercase tracking-[0.25em] ${
                             isAnalyticsEnabled
@@ -400,16 +393,16 @@ export function SecurityPage() {
                           }`}
                         >
                           {!isAnalyticsAvailableState
-                            ? "Unavailable"
+                            ? t("security.dataProtection.unavailable")
                             : isAnalyticsEnabled
-                              ? "On"
-                              : "Off"}
+                              ? t("common.labels.on")
+                              : t("common.labels.off")}
                         </span>
                       </div>
                       <div className="mt-0.5 text-[11px] text-fg/50">
                         {isAnalyticsAvailableState
-                          ? "Help improve the app with anonymous usage events"
-                          : "Requires an analytics API key"}
+                          ? t("security.dataProtection.analyticsDescAvailable")
+                          : t("security.dataProtection.analyticsDescUnavailable")}
                       </div>
                     </div>
                     <Switch
@@ -421,8 +414,8 @@ export function SecurityPage() {
                   </div>
                   <div className="mt-2 text-[11px] text-fg/45 leading-relaxed">
                     {isAnalyticsAvailableState
-                      ? "Restart required to apply changes"
-                      : "Set APTABASE_KEY to enable analytics"}
+                      ? t("security.dataProtection.analyticsFooterAvailable")
+                      : t("security.dataProtection.analyticsFooterUnavailable")}
                   </div>
                 </div>
               </div>
@@ -435,25 +428,113 @@ export function SecurityPage() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <span className="text-sm font-medium text-fg">Aptabase Analytics</span>
+                    <span className="text-sm font-medium text-fg">
+                      {t("security.dataProtection.aptabaseTitle")}
+                    </span>
                     <span className="rounded-md border border-fg/10 bg-fg/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-fg/70">
-                      Anonymous
+                      {t("security.dataProtection.aptabaseBadge")}
                     </span>
                   </div>
                   <div className="mt-0.5 text-[11px] text-fg/45 leading-relaxed">
-                    Events are anonymous and contain only the event name and not-identifying
-                    properties we define. We do not send message content or personal identifiers.
+                    {t("security.dataProtection.aptabaseDesc")}
                   </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
+
+        <div>
+          <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
+            {t("security.certificates.sectionTitle")}
+          </h2>
+          <div className="space-y-2">
+            <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3">
+              <div className="flex items-start gap-3">
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-fg/10 bg-fg/10">
+                  <Lock className="h-4 w-4 text-fg/70" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-medium text-fg">
+                          {t("security.certificates.customRootCasTitle")}
+                        </span>
+                        <span className="rounded-md border border-fg/10 bg-fg/10 px-1.5 py-0.5 text-[10px] font-medium leading-none text-fg/70">
+                          {trustedCertificates.length}
+                        </span>
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-fg/50">
+                        {t("security.certificates.customRootCasDesc")}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => void handleImportCertificate()}
+                      disabled={isImportingCertificate}
+                      className="inline-flex items-center gap-2 rounded-lg border border-accent/35 bg-accent/15 px-3 py-2 text-[11px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <FilePlus2 className="h-3.5 w-3.5" />
+                      {isImportingCertificate ? t("common.buttons.importing") : t("common.buttons.import")}
+                    </button>
+                  </div>
+                  <div className="mt-2 text-[11px] text-fg/45 leading-relaxed">
+                    {t("security.certificates.footer")}
+                  </div>
+                  {certificateError && (
+                    <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[11px] text-danger">
+                      {certificateError}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {trustedCertificates.length === 0 ? (
+              <div className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3 text-[11px] text-fg/45">
+                {t("security.certificates.empty")}
+              </div>
+            ) : (
+              trustedCertificates.map((certificate) => (
+                <div
+                  key={certificate.id}
+                  className="rounded-xl border border-fg/10 bg-fg/5 px-4 py-3"
+                >
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-fg/10 bg-fg/10">
+                      <FileBadge2 className="h-4 w-4 text-fg/70" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium text-fg">
+                            {certificate.name}
+                          </div>
+                          <div className="mt-0.5 text-[11px] text-fg/45">
+                            {t("security.certificates.importedAt", {
+                              date: new Date(certificate.importedAt).toLocaleString(),
+                            })}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => void handleDeleteCertificate(certificate.id)}
+                          className="rounded-lg border border-danger/25 bg-danger/10 px-2.5 py-2 text-[11px] font-medium text-danger transition hover:bg-danger/15"
+                        >
+                          {t("common.buttons.remove")}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
         {FILTER_DEBUG_ENABLED && (
           <div>
             <div className="mb-2 flex items-center justify-between px-1">
               <h2 className="text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
-                Filter Log
+                {t("security.filterLog.sectionTitle")}
               </h2>
               {filterLog.length > 0 && (
                 <button
@@ -461,7 +542,7 @@ export function SecurityPage() {
                   className="flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-fg/40 transition-colors hover:bg-fg/10 hover:text-fg/60"
                 >
                   <Trash2 className="h-3 w-3" />
-                  Clear
+                  {t("security.filterLog.clear")}
                 </button>
               )}
             </div>
@@ -472,7 +553,7 @@ export function SecurityPage() {
                     <ScrollText className="h-4 w-4 text-fg/70" />
                   </div>
                   <div className="text-[11px] text-fg/40">
-                    No filter hits recorded yet. Matches will appear here as you chat.
+                    {t("security.filterLog.empty")}
                   </div>
                 </div>
               ) : (
@@ -502,11 +583,11 @@ export function SecurityPage() {
                                   : "bg-warning/20 text-warning/80"
                               }`}
                             >
-                              {entry.blocked ? "Blocked" : "Hit"}
+                              {entry.blocked ? t("security.filterLog.blocked") : t("security.filterLog.hit")}
                             </span>
                             <span className="text-[10px] text-fg/30">{entry.level}</span>
                             <span className="text-[10px] text-fg/30">
-                              score:{" "}
+                              {t("security.filterLog.score")}{" "}
                               <span className={entry.blocked ? "text-danger/80" : "text-warning"}>
                                 {entry.score.toFixed(2)}
                               </span>
@@ -540,113 +621,18 @@ export function SecurityPage() {
           </div>
         )}
 
-        {/* Section: Filter Debug (TEMP) */}
-        {FILTER_DEBUG_ENABLED && (
-          <div>
-            <h2 className="mb-2 px-1 text-[10px] font-semibold uppercase tracking-[0.25em] text-fg/35">
-              Filter Pipeline Debug
-            </h2>
-            <div className="rounded-xl border border-warning/20 bg-warning/5 px-4 py-3 space-y-3">
-              <div className="flex items-center gap-2">
-                <Search className="h-4 w-4 text-warning/70" />
-                <span className="text-[10px] font-medium uppercase tracking-widest text-warning/60">
-                  Temp — tokenization inspector
-                </span>
-              </div>
-              <input
-                type="text"
-                value={debugInput}
-                onChange={(e) => {
-                  setDebugInput(e.target.value);
-                  void handleDebugFilter(e.target.value);
-                }}
-                placeholder="Type a sentence to see how it gets processed..."
-                className="w-full rounded-lg border border-fg/10 bg-surface-el/30 px-3 py-2 text-sm text-fg placeholder-fg/30 outline-none focus:border-warning/40"
-              />
-              {debugResult && (
-                <div className="space-y-2 text-[11px] font-mono">
-                  {(() => {
-                    const pipeline = debugResult.pipeline as Record<string, unknown>;
-                    const result = debugResult.result as Record<string, unknown>;
-                    const steps: [string, string][] = [
-                      ["stripped", String(pipeline.stripped)],
-                      ["lowercase", String(pipeline.lowercased)],
-                      ["unicode norm", String(pipeline.unicode_normalized)],
-                      ["leet norm", String(pipeline.leet_normalized)],
-                      ["tokens", (pipeline.tokens as string[]).join(" | ")],
-                      ["collapsed", String(pipeline.collapsed)],
-                      ["collapsed tokens", (pipeline.collapsed_tokens as string[]).join(" | ")],
-                    ];
-                    // Hide steps that are identical to previous
-                    const visible = steps.filter((s, i) => i === 0 || s[1] !== steps[i - 1][1]);
-                    return (
-                      <>
-                        {visible.map(([label, value]) => (
-                          <div key={label} className="flex gap-2">
-                            <span className="shrink-0 w-28 text-right text-fg/30">{label}</span>
-                            <span className="text-fg/80 break-all">{value}</span>
-                          </div>
-                        ))}
-                        <div className="mt-1 border-t border-fg/10 pt-2 flex flex-wrap gap-x-4 gap-y-1">
-                          <span className="text-fg/40">
-                            level:{" "}
-                            <span className="text-fg/70">{String(debugResult.level)}</span>
-                          </span>
-                          <span className="text-fg/40">
-                            context:{" "}
-                            <span className="text-fg/70">
-                              {debugResult.context_allowlist_hit ? "yes" : "no"}
-                            </span>
-                          </span>
-                          <span className="text-fg/40">
-                            score:{" "}
-                            <span
-                              className={
-                                (result.score as number) > 0 ? "text-danger/80" : "text-accent/80"
-                              }
-                            >
-                              {(result.score as number).toFixed(2)}
-                            </span>
-                          </span>
-                          <span className="text-fg/40">
-                            blocked:{" "}
-                            <span className={result.blocked ? "text-danger/80" : "text-accent/80"}>
-                              {result.blocked ? "yes" : "no"}
-                            </span>
-                          </span>
-                        </div>
-                        {(result.matched_terms as string[]).length > 0 && (
-                          <div className="flex flex-wrap gap-1.5 mt-1">
-                            {(result.matched_terms as string[]).map((term, i) => (
-                              <span
-                                key={i}
-                                className="rounded-md border border-danger/30 bg-danger/15 px-1.5 py-0.5 text-[10px] text-danger"
-                              >
-                                {term}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </>
-                    );
-                  })()}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
       </section>
       <BottomMenu
         isOpen={showRestartMenu}
         onClose={() => setShowRestartMenu(false)}
-        title="Restart required"
+        title={t("security.restart.title")}
       >
-        <div className="text-sm text-fg/70">Analytics changes apply after a restart.</div>
+        <div className="text-sm text-fg/70">{t("security.restart.body")}</div>
         <MenuButtonGroup>
           <MenuButton
             icon={Power}
-            title="Restart now"
-            description="Apply analytics changes"
+            title={t("security.restart.restartNow")}
+            description={t("security.restart.restartNowDesc")}
             color="from-accent to-accent/80"
             onClick={async () => {
               setShowRestartMenu(false);
@@ -655,8 +641,8 @@ export function SecurityPage() {
           />
           <MenuButton
             icon={Lock}
-            title="Later"
-            description="Keep current session"
+            title={t("security.restart.later")}
+            description={t("security.restart.laterDesc")}
             color="from-info to-info/80"
             onClick={() => setShowRestartMenu(false)}
           />

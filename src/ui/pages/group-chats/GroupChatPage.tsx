@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useCallback, useMemo, useLayoutEffect } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { ChevronDown, Loader2, Sparkles, Image, RefreshCw, PenLine, Check } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
@@ -12,6 +12,9 @@ import {
   readSettings,
   SETTINGS_UPDATED_EVENT,
   toggleGroupMessagePin,
+  updateGroupChatAppearance,
+  updateGroupSessionAuthorNote,
+  saveCharacter,
 } from "../../../core/storage/repo";
 import { useI18n } from "../../../core/i18n/context";
 import type {
@@ -20,16 +23,47 @@ import type {
   GroupParticipation,
   ImageAttachment,
   Model,
+  Session,
 } from "../../../core/storage/schemas";
 import { radius, interactive, cn } from "../../design-tokens";
 import { useGroupChatLayoutContext } from "./GroupChatLayout";
+import { useAuthorNoteInlineEditor } from "../chats/components/useAuthorNoteInlineEditor";
+import { getChatWidgetLayout, useViewportWidth } from "../chats/utils/chatWidgetLayout";
+import { ChatWidgetArea } from "../chats/components/ChatWidgetArea";
+import {
+  WidgetContextProvider,
+  WidgetEditProvider,
+  type WidgetActionContext,
+  type WidgetSlots,
+} from "../chats/components/widgets";
+import {
+  patchWidgetNode,
+  setScratchPadContentOnNode,
+} from "../chats/components/widgets/editor/widgetFactories";
+import type { WidgetNode } from "../../../core/storage/chatWidgetSchemas";
 import { splitThinkTags } from "../../../core/utils/thinkTags";
 
 import { Routes } from "../../navigation";
+import { useBeetrootRain } from "../chats/components/BeetrootRain";
+import { getChatColumnLayout } from "../chats/utils/chatColumnLayout";
+import { useBeetrootEasterEgg } from "../chats/hooks/useBeetrootEasterEgg";
 import { BottomMenu, MenuButton } from "../../components/BottomMenu";
+import {
+  asrCorrectionUpsert,
+  asrIgnoreSuggestion,
+  asrSuggestCorrectionsFromEdit,
+  asrWhisperListInstalledModels,
+  asrWhisperTranscribePcm,
+  micConstraintsWithStoredDevice,
+  type AsrInstalledWhisperModel,
+  type AsrLearnedSuggestion,
+} from "../../../core/asr";
 import {
   GroupChatFooter,
   GroupChatHeader,
+  GroupChatAppearanceDrawer,
+  GroupChatSettingsDrawer,
+  GroupInlineAuthorNoteBar,
   GroupChatMessage,
   GroupChatMessageActionsBottomSheet,
   type VariantState,
@@ -57,9 +91,12 @@ export function GroupChatPage() {
   const { t } = useI18n();
   const { groupSessionId } = useParams<{ groupSessionId: string }>();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   // State variables
   const [messages, setMessages] = useState<GroupMessage[]>([]);
+  const beetrootRain = useBeetrootRain();
+  useBeetrootEasterEgg({ messages, fire: beetrootRain.fire });
   const [_participationStats, setParticipationStats] = useState<GroupParticipation[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -80,11 +117,38 @@ export function GroupChatPage() {
   const [showResultMenu, setShowResultMenu] = useState(false);
   const [generatedReply, setGeneratedReply] = useState<string | null>(null);
   const [generatingReply, setGeneratingReply] = useState(false);
+  const [helpMeReplyReasoning, setHelpMeReplyReasoning] = useState(false);
   const [helpMeReplyError, setHelpMeReplyError] = useState<string | null>(null);
   const [shouldTriggerFileInput, setShouldTriggerFileInput] = useState(false);
   const [pendingAttachments, setPendingAttachments] = useState<ImageAttachment[]>([]);
   const [supportsImageInput, setSupportsImageInput] = useState(false);
+  const footerRecorderRef = useRef<{
+    stream: MediaStream;
+    audioContext: AudioContext;
+    source: MediaStreamAudioSourceNode;
+    processor: ScriptProcessorNode;
+    analyser: AnalyserNode;
+    chunks: Float32Array[];
+    sampleRate: number;
+    startedAt: number;
+  } | null>(null);
+  const footerRecordingTimerRef = useRef<number | null>(null);
+  const [footerAsrMode, setFooterAsrMode] = useState<
+    "idle" | "recording" | "transcribing"
+  >("idle");
+  const [footerRecordingMs, setFooterRecordingMs] = useState(0);
+  const [footerAnalyser, setFooterAnalyser] = useState<AnalyserNode | null>(null);
+  const [footerAsrBusy, setFooterAsrBusy] = useState(false);
+  const [footerAsrRawText, setFooterAsrRawText] = useState("");
+  const [footerAsrBaseText, setFooterAsrBaseText] = useState("");
+  const [footerAsrSuggestions, setFooterAsrSuggestions] = useState<AsrLearnedSuggestion[]>([]);
+  const [footerAsrLearning, setFooterAsrLearning] = useState(false);
+  const [installedWhisperModels, setInstalledWhisperModels] = useState<
+    AsrInstalledWhisperModel[]
+  >([]);
   const [keyboardInset, setKeyboardInset] = useState(0);
+  const [directorSelectedId, setDirectorSelectedId] = useState<string | null>(null);
+  const [directorWiggleNonce, setDirectorWiggleNonce] = useState(0);
   const helpMeReplyRequestIdRef = useRef<string | null>(null);
   const helpMeReplyUnlistenRef = useRef<UnlistenFn | null>(null);
   const helpMeReplyLoadingTimeoutRef = useRef<number | null>(null);
@@ -100,11 +164,17 @@ export function GroupChatPage() {
   const [actionStatus, setActionStatus] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [heldMessageId, setHeldMessageId] = useState<string | null>(null);
+  const [appearanceDrawerOpen, setAppearanceDrawerOpen] = useState(false);
+  const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
+  const inlineAuthorNoteEnabled = useAuthorNoteInlineEditor();
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const activeRequestIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<GroupMessage[]>([]);
+  const hasMoreOlderRef = useRef(true);
+  const loadingOlderRef = useRef(false);
   const isGenerating = sending || regeneratingMessageId !== null;
 
   // Shared data from layout (stays mounted across sub-route navigations)
@@ -117,6 +187,13 @@ export function GroupChatPage() {
     backgroundImageData,
     theme,
     chatAppearance,
+    updateSession,
+    group,
+    updateGroup,
+    reloadSession,
+    setDraftAppearanceOverride,
+    appearanceFieldUpdater,
+    registerAppearanceFieldUpdater,
   } = useGroupChatLayoutContext();
   const helpMeReplyEnabled = settings?.advancedSettings?.helpMeReplyEnabled ?? true;
 
@@ -125,6 +202,58 @@ export function GroupChatPage() {
     if (!session?.personaId) return null;
     return personas.find((p) => p.id === session.personaId) || null;
   }, [session, personas]);
+
+  const mutedCharacterIds = useMemo(
+    () => new Set(session?.mutedCharacterIds ?? []),
+    [session?.mutedCharacterIds],
+  );
+
+  const handleToggleMute = useCallback(
+    async (characterId: string, muted: boolean) => {
+      if (!session) return;
+      const previous = session.mutedCharacterIds ?? [];
+      const next = new Set(previous);
+      const activeCount = session.characterIds.length - next.size;
+      if (muted && activeCount <= 1 && !next.has(characterId)) return;
+      if (muted) {
+        next.add(characterId);
+      } else {
+        next.delete(characterId);
+      }
+      const nextArr = Array.from(next);
+      updateSession({ ...session, mutedCharacterIds: nextArr });
+      try {
+        await storageBridge.groupSessionUpdateMutedCharacterIds(session.id, nextArr);
+      } catch (err) {
+        console.error("Failed to update muted characters:", err);
+        updateSession({ ...session, mutedCharacterIds: previous });
+      }
+    },
+    [session, updateSession],
+  );
+
+  const isMobilePlatform = useMemo(() => {
+    const p = getPlatform();
+    return p === "android" || p === "ios";
+  }, []);
+
+  const handleOpenAppearance = useCallback(() => {
+    if (!session) return;
+    if (isMobilePlatform) {
+      navigate(Routes.groupChatAppearance(session.id));
+    } else {
+      setAppearanceDrawerOpen(true);
+    }
+  }, [isMobilePlatform, navigate, session]);
+
+  const handleOpenSettings = useCallback(() => {
+    if (!session) return;
+    if (isMobilePlatform) {
+      navigate(Routes.groupChatSettings(session.id));
+    } else {
+      setSettingsDrawerOpen(true);
+    }
+  }, [isMobilePlatform, navigate, session]);
 
   // Load messages and stats (session, characters, personas, settings come from layout)
   const loadData = useCallback(async () => {
@@ -137,6 +266,8 @@ export function GroupChatPage() {
       ]);
 
       setMessages(msgs);
+      messagesRef.current = msgs;
+      hasMoreOlderRef.current = msgs.length >= MESSAGES_PAGE_SIZE;
       setParticipationStats(stats);
     } catch (err) {
       setError(err instanceof Error ? err.message : t("common.labels.loading"));
@@ -148,6 +279,98 @@ export function GroupChatPage() {
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  const loadOlderGroupMessages = useCallback(async () => {
+    if (!groupSessionId) return;
+    if (loadingOlderRef.current || !hasMoreOlderRef.current) return;
+    const first = messagesRef.current[0];
+    if (!first) return;
+    loadingOlderRef.current = true;
+    try {
+      const older: GroupMessage[] = await storageBridge.groupMessagesList(
+        groupSessionId,
+        MESSAGES_PAGE_SIZE,
+        first.createdAt,
+        first.id,
+      );
+      if (older.length === 0) {
+        hasMoreOlderRef.current = false;
+        return;
+      }
+      hasMoreOlderRef.current = older.length >= MESSAGES_PAGE_SIZE;
+      setMessages((prev) => {
+        const seen = new Set(prev.map((m) => m.id));
+        const merged = [...older.filter((m) => !seen.has(m.id)), ...prev];
+        messagesRef.current = merged;
+        return merged;
+      });
+    } catch (err) {
+      console.warn("GroupChatPage: failed to load older messages", err);
+    } finally {
+      loadingOlderRef.current = false;
+    }
+  }, [groupSessionId]);
+
+  const ensureGroupMessageLoaded = useCallback(
+    async (messageId: string) => {
+      for (let i = 0; i < 20; i += 1) {
+        if (messagesRef.current.some((m) => m.id === messageId)) return;
+        if (!hasMoreOlderRef.current) return;
+        await loadOlderGroupMessages();
+      }
+    },
+    [loadOlderGroupMessages],
+  );
+
+  const jumpToMessageId = searchParams.get("jumpToMessage");
+  useEffect(() => {
+    if (!jumpToMessageId || loading) return;
+
+    let cancelled = false;
+    let rafId: number | null = null;
+    let highlightTimeoutId: number | null = null;
+
+    const run = async () => {
+      await ensureGroupMessageLoaded(jumpToMessageId);
+      if (cancelled) return;
+
+      let tries = 0;
+      const tryScroll = () => {
+        if (cancelled) return;
+        const el = document.getElementById(`group-msg-${jumpToMessageId}`);
+        if (el) {
+          isAtBottomRef.current = false;
+          setIsAtBottom(false);
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          el.classList.add("ring-2", "ring-accent", "rounded-xl");
+          highlightTimeoutId = window.setTimeout(() => {
+            el.classList.remove("ring-2", "ring-accent", "rounded-xl");
+          }, 2000);
+          const next = new URLSearchParams(searchParams);
+          next.delete("jumpToMessage");
+          setSearchParams(next, { replace: true });
+          return;
+        }
+        tries += 1;
+        if (tries < 30) {
+          rafId = window.requestAnimationFrame(tryScroll);
+        }
+      };
+      rafId = window.requestAnimationFrame(tryScroll);
+    };
+
+    void run();
+
+    return () => {
+      cancelled = true;
+      if (rafId !== null) window.cancelAnimationFrame(rafId);
+      if (highlightTimeoutId !== null) window.clearTimeout(highlightTimeoutId);
+    };
+  }, [jumpToMessageId, loading, ensureGroupMessageLoaded, searchParams, setSearchParams]);
 
   useEffect(() => {
     if (!error) return;
@@ -215,6 +438,7 @@ export function GroupChatPage() {
       status: string;
       characterId?: string;
       characterName?: string;
+      message?: string;
     }>("group_chat_status", (event) => {
       const { sessionId, status, characterId, characterName } = event.payload;
 
@@ -246,6 +470,16 @@ export function GroupChatPage() {
         setSelectedCharacterId(null);
         setSelectedCharacterName(null);
         setSelectedCharacterAvatarUrl(null);
+      } else if (status === "error") {
+        setSendingStatus(null);
+        setSelectedCharacterId(null);
+        setSelectedCharacterName(null);
+        setSelectedCharacterAvatarUrl(null);
+        const message =
+          typeof event.payload.message === "string" ? event.payload.message : "Group chat failed.";
+        if (!isAbortMessage(message)) {
+          setError(message);
+        }
       }
     });
 
@@ -345,6 +579,50 @@ export function GroupChatPage() {
     if (!isAtBottom || !isGenerating) return;
     scrollToBottom("auto");
   }, [isAtBottom, isGenerating, scrollToBottom]);
+
+  const isDirectorMode =
+    session?.speakerSelectionMethod === "director" ||
+    session?.speakerSelectionMethod === "director_action";
+  const directorBehavior: "cue" | "action" =
+    session?.speakerSelectionMethod === "director_action" ? "action" : "cue";
+
+  const handleAddUserMessage = useCallback(
+    async (text: string): Promise<boolean> => {
+      if (!groupSessionId) return false;
+      const trimmed = text.trim();
+      if (!trimmed) return false;
+      const tempUserMessage: GroupMessage = {
+        id: `temp-user-${Date.now()}`,
+        sessionId: groupSessionId,
+        role: "user",
+        content: trimmed,
+        speakerCharacterId: null,
+        turnNumber: messages.length + 1,
+        createdAt: Date.now(),
+        usage: undefined,
+        variants: undefined,
+        selectedVariantId: undefined,
+        isPinned: false,
+        attachments: [],
+        reasoning: null,
+        selectionReasoning: null,
+      };
+      setMessages((prev) => [...prev, tempUserMessage]);
+      scrollToBottom();
+      try {
+        await storageBridge.groupChatAddUserMessage(groupSessionId, trimmed);
+        const updated = await storageBridge.groupMessagesList(groupSessionId, MESSAGES_PAGE_SIZE);
+        setMessages(updated);
+        return true;
+      } catch (err) {
+        console.error("Failed to add user message:", err);
+        setError(err instanceof Error ? err.message : "Failed to add message");
+        setMessages((prev) => prev.filter((m) => m.id !== tempUserMessage.id));
+        return false;
+      }
+    },
+    [groupSessionId, messages.length, scrollToBottom],
+  );
 
   const handleSend = useCallback(async () => {
     if (!groupSessionId || !draft.trim() || sending) return;
@@ -720,6 +998,73 @@ export function GroupChatPage() {
     }
   }, []);
 
+  const handleDirectorAction = useCallback(
+    async (characterId: string) => {
+      if (sending) return;
+      if (!session?.characterIds.includes(characterId)) return;
+      const text = draft.trim();
+      if (text) {
+        setDraft("");
+        const added = await handleAddUserMessage(text);
+        if (!added) {
+          setDraft(text);
+          return;
+        }
+      }
+      setDirectorSelectedId(characterId);
+      try {
+        await handleContinue(characterId);
+      } finally {
+        setDirectorSelectedId(null);
+      }
+    },
+    [sending, session, draft, setDraft, handleAddUserMessage, handleContinue],
+  );
+
+  const handleDirectorTap = useCallback(
+    (characterId: string) => {
+      if (sending) return;
+      if (directorBehavior === "action") {
+        void handleDirectorAction(characterId);
+        return;
+      }
+      setDirectorSelectedId(characterId);
+    },
+    [sending, directorBehavior, handleDirectorAction],
+  );
+
+  const handleDirectorAddMessage = useCallback(async () => {
+    if (sending) return;
+    const text = draft.trim();
+    if (!text) return;
+    setDraft("");
+    const added = await handleAddUserMessage(text);
+    if (!added) setDraft(text);
+  }, [sending, draft, setDraft, handleAddUserMessage]);
+
+  const handleDirectorSend = useCallback(async () => {
+    if (sending) return;
+    const text = draft.trim();
+    const selected =
+      directorSelectedId && session?.characterIds.includes(directorSelectedId)
+        ? directorSelectedId
+        : null;
+    if (!selected) {
+      setDirectorWiggleNonce((n) => n + 1);
+      return;
+    }
+    if (text) {
+      setDraft("");
+      const added = await handleAddUserMessage(text);
+      if (!added) return;
+    }
+    await handleContinue(selected);
+  }, [sending, draft, directorSelectedId, session, handleAddUserMessage, handleContinue]);
+
+  useEffect(() => {
+    setDirectorSelectedId(null);
+  }, [isDirectorMode, directorBehavior]);
+
   const getCharacterById = useCallback(
     (characterId?: string | null): Character | undefined => {
       if (!characterId) return undefined;
@@ -972,7 +1317,359 @@ export function GroupChatPage() {
     checkImageSupport();
   }, [session, settings, characters]);
 
-  // Plus menu handlers
+  useEffect(() => {
+    let cancelled = false;
+    const loadInstalled = () =>
+      asrWhisperListInstalledModels()
+        .then((list) => {
+          if (!cancelled) setInstalledWhisperModels(list);
+        })
+        .catch((err) => {
+          console.error("Failed to load installed Whisper models:", err);
+        });
+    loadInstalled();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (footerAsrMode !== "recording") return;
+    const timer = window.setInterval(() => {
+      const startedAt = footerRecorderRef.current?.startedAt;
+      if (startedAt) setFooterRecordingMs(Date.now() - startedAt);
+    }, 200);
+    footerRecordingTimerRef.current = timer;
+    return () => {
+      window.clearInterval(timer);
+      footerRecordingTimerRef.current = null;
+    };
+  }, [footerAsrMode]);
+
+  useEffect(() => {
+    return () => {
+      const session = footerRecorderRef.current;
+      if (session) {
+        try {
+          session.processor.disconnect();
+          session.source.disconnect();
+          session.stream.getTracks().forEach((track) => track.stop());
+          void session.audioContext.close();
+        } catch {}
+        footerRecorderRef.current = null;
+      }
+      if (footerRecordingTimerRef.current != null) {
+        window.clearInterval(footerRecordingTimerRef.current);
+        footerRecordingTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      !footerAsrRawText.trim() ||
+      !draft.trim() ||
+      draft.trim() === footerAsrBaseText.trim()
+    ) {
+      setFooterAsrSuggestions([]);
+      return;
+    }
+    const timeoutId = window.setTimeout(() => {
+      void asrSuggestCorrectionsFromEdit({
+        before: footerAsrRawText,
+        after: draft,
+        language: null,
+        scope: "conversation",
+      })
+        .then((next) => {
+          setFooterAsrSuggestions((prev) => {
+            const seen = new Set<string>();
+            const merged: AsrLearnedSuggestion[] = [];
+            const key = (s: AsrLearnedSuggestion) =>
+              `${s.normalizedWrong} ${s.normalizedCorrect}`;
+            for (const s of prev) {
+              if (next.some((n) => key(n) === key(s))) {
+                seen.add(key(s));
+                merged.push(s);
+              }
+            }
+            for (const s of next) {
+              if (!seen.has(key(s))) {
+                seen.add(key(s));
+                merged.push(s);
+              }
+            }
+            return merged;
+          });
+        })
+        .catch((error) => {
+          console.error("Failed to suggest ASR corrections from group footer edit:", error);
+        });
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [draft, footerAsrRawText, footerAsrBaseText]);
+
+  const stopFooterRecordingVisuals = useCallback(() => {
+    if (footerRecordingTimerRef.current != null) {
+      window.clearInterval(footerRecordingTimerRef.current);
+      footerRecordingTimerRef.current = null;
+    }
+    setFooterRecordingMs(0);
+    setFooterAnalyser(null);
+  }, []);
+
+  const stopFooterRecording = useCallback(async () => {
+    const session = footerRecorderRef.current;
+    if (!session) return;
+    footerRecorderRef.current = null;
+    setFooterAsrMode("transcribing");
+    setFooterAsrBusy(true);
+    try {
+      session.processor.disconnect();
+      session.source.disconnect();
+      session.stream.getTracks().forEach((track) => track.stop());
+      await session.audioContext.close();
+    } catch {}
+
+    try {
+      const total = session.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      if (total === 0) {
+        stopFooterRecordingVisuals();
+        setFooterAsrMode("idle");
+        setFooterAsrBusy(false);
+        setError(t("groupChats.pageExtra.noAudioCaptured"));
+        return;
+      }
+      const merged = new Float32Array(total);
+      let offset = 0;
+      for (const chunk of session.chunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      const modelPath = installedWhisperModels[0]?.path;
+      if (!modelPath) {
+        stopFooterRecordingVisuals();
+        setFooterAsrMode("idle");
+        setFooterAsrBusy(false);
+        setError(t("groupChats.pageExtra.noWhisperModelInstalled"));
+        return;
+      }
+      const pcmBytes = new Uint8Array(merged.buffer, merged.byteOffset, merged.byteLength);
+      const result = await asrWhisperTranscribePcm({
+        modelPath,
+        pcmBytes,
+        sampleRateHz: session.sampleRate,
+        channels: 1,
+        scopes: ["conversation", "global"],
+        useGpu: true,
+        forceCpu: false,
+        keepModelLoaded: true,
+      });
+      const nextDraft = result.correctedText?.trim() || result.rawText?.trim();
+      setFooterAsrRawText(result.rawText || "");
+      setFooterAsrBaseText(nextDraft || "");
+      setDraft(nextDraft || "");
+      setFooterAsrSuggestions([]);
+      setFooterAsrMode("idle");
+    } catch (error) {
+      console.error("Failed to transcribe group footer recording:", error);
+      setFooterAsrMode("idle");
+      setError(error instanceof Error ? error.message : String(error));
+    } finally {
+      stopFooterRecordingVisuals();
+      setFooterAsrBusy(false);
+    }
+  }, [installedWhisperModels, setDraft, setError, stopFooterRecordingVisuals]);
+
+  const handleFooterMicClick = useCallback(async () => {
+    if (sending || footerAsrBusy) return;
+    if (footerAsrMode === "recording") {
+      await stopFooterRecording();
+      return;
+    }
+    setError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: micConstraintsWithStoredDevice({
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }),
+      });
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const processor = audioContext.createScriptProcessor(4096, 1, 1);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.4;
+      const chunks: Float32Array[] = [];
+      processor.onaudioprocess = (event) => {
+        chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+      };
+      source.connect(analyser);
+      source.connect(processor);
+      processor.connect(audioContext.destination);
+      footerRecorderRef.current = {
+        stream,
+        audioContext,
+        source,
+        processor,
+        analyser,
+        chunks,
+        sampleRate: audioContext.sampleRate,
+        startedAt: Date.now(),
+      };
+      setFooterAnalyser(analyser);
+      setFooterAsrRawText("");
+      setFooterAsrBaseText("");
+      setFooterAsrSuggestions([]);
+      setFooterAsrMode("recording");
+      setFooterRecordingMs(0);
+    } catch (error) {
+      console.error("Failed to start group footer recording:", error);
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  }, [footerAsrBusy, footerAsrMode, sending, setError, stopFooterRecording]);
+
+  const cancelFooterRecording = useCallback(() => {
+    const session = footerRecorderRef.current;
+    if (!session) return;
+    footerRecorderRef.current = null;
+    stopFooterRecordingVisuals();
+    try {
+      session.processor.disconnect();
+      session.source.disconnect();
+      session.stream.getTracks().forEach((track) => track.stop());
+      void session.audioContext.close();
+    } catch (err) {
+      console.warn("Failed to cleanly cancel group footer recording:", err);
+    }
+    setFooterAsrMode("idle");
+    setFooterAsrRawText("");
+    setFooterAsrBaseText("");
+    setFooterAsrSuggestions([]);
+  }, [stopFooterRecordingVisuals]);
+
+  const handleLearnFooterSuggestion = useCallback(
+    async (suggestion: AsrLearnedSuggestion) => {
+      if (footerAsrLearning) return;
+      setFooterAsrLearning(true);
+      try {
+        await asrCorrectionUpsert({
+          wrong: suggestion.wrong,
+          correct: suggestion.correct,
+          confidence: suggestion.confidence,
+          language: suggestion.language ?? null,
+          scope: suggestion.scope,
+          userApproved: true,
+        });
+        setFooterAsrSuggestions((prev) =>
+          prev.filter(
+            (item) =>
+              !(
+                item.normalizedWrong === suggestion.normalizedWrong &&
+                item.normalizedCorrect === suggestion.normalizedCorrect
+              ),
+          ),
+        );
+      } catch (error) {
+        console.error("Failed to learn group footer ASR correction:", error);
+        setError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setFooterAsrLearning(false);
+      }
+    },
+    [footerAsrLearning, setError],
+  );
+
+  const handleIgnoreFooterSuggestion = useCallback(
+    async (suggestion: AsrLearnedSuggestion) => {
+      if (footerAsrLearning) return;
+      setFooterAsrLearning(true);
+      try {
+        await asrIgnoreSuggestion(suggestion);
+        setFooterAsrSuggestions((prev) =>
+          prev.filter(
+            (item) =>
+              !(
+                item.normalizedWrong === suggestion.normalizedWrong &&
+                item.normalizedCorrect === suggestion.normalizedCorrect
+              ),
+          ),
+        );
+      } catch (error) {
+        console.error("Failed to ignore group footer ASR suggestion:", error);
+        setError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setFooterAsrLearning(false);
+      }
+    },
+    [footerAsrLearning, setError],
+  );
+
+  const asrInlinePanel =
+    footerAsrSuggestions.length === 0 ? undefined : (
+      <div className="space-y-1.5 px-4 py-2">
+        {footerAsrSuggestions.map((suggestion, idx) => (
+          <div
+            key={`${suggestion.normalizedWrong}-${suggestion.normalizedCorrect}-${idx}`}
+            className="flex flex-wrap items-center justify-between gap-2"
+          >
+            <div className="min-w-0 text-xs text-fg/65">
+              Learn correction:{" "}
+              <span className="text-danger/80 line-through decoration-danger/40">
+                {suggestion.wrong}
+              </span>
+              <span className="mx-1.5 text-fg/40">→</span>
+              <span className="font-medium text-fg">{suggestion.correct}</span>
+            </div>
+            <div className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => void handleLearnFooterSuggestion(suggestion)}
+                disabled={footerAsrLearning}
+                className={cn(
+                  "rounded-full border border-accent/30 bg-accent/15 px-3 py-1 text-xs font-medium text-accent",
+                  "hover:border-accent/50 hover:bg-accent/20 disabled:opacity-50",
+                )}
+              >
+                {footerAsrLearning ? "Learning..." : "Learn"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleIgnoreFooterSuggestion(suggestion)}
+                disabled={footerAsrLearning}
+                className={cn(
+                  "rounded-full border border-fg/15 bg-fg/8 px-3 py-1 text-xs font-medium text-fg/70",
+                  "hover:border-fg/25 hover:bg-fg/12 disabled:opacity-50",
+                )}
+              >
+                Ignore
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+
+  const authorNoteInlineBar =
+    inlineAuthorNoteEnabled && session ? (
+      <GroupInlineAuthorNoteBar session={session} onSaved={(s) => updateSession(s)} />
+    ) : null;
+
+  const footerInlinePanel =
+    authorNoteInlineBar || asrInlinePanel ? (
+      <>
+        {authorNoteInlineBar}
+        {asrInlinePanel && (
+          <div className={authorNoteInlineBar ? "border-t border-fg/10" : undefined}>
+            {asrInlinePanel}
+          </div>
+        )}
+      </>
+    ) : undefined;
+
   const handleOpenPlusMenu = useCallback(() => {
     setShowPlusMenu(true);
   }, []);
@@ -993,6 +1690,7 @@ export function GroupChatPage() {
     const requestId = helpMeReplyRequestIdRef.current;
     clearHelpMeReplyRuntime();
     setGeneratingReply(false);
+    setHelpMeReplyReasoning(false);
     if (!requestId) return;
     try {
       await storageBridge.abortRequest(requestId);
@@ -1005,6 +1703,7 @@ export function GroupChatPage() {
     setShowResultMenu(false);
     setGeneratedReply(null);
     setHelpMeReplyError(null);
+    setHelpMeReplyReasoning(false);
     void cancelHelpMeReplyGeneration();
   }, [cancelHelpMeReplyGeneration]);
 
@@ -1017,6 +1716,7 @@ export function GroupChatPage() {
       setShowPlusMenu(false);
       setGeneratedReply(null);
       setHelpMeReplyError(null);
+      setHelpMeReplyReasoning(false);
       setGeneratingReply(true);
       setShowResultMenu(true);
 
@@ -1025,10 +1725,10 @@ export function GroupChatPage() {
       let streamingText = "";
       let hasStartedStreaming = false;
 
-      // Timeout to clear loading state if streaming doesn't start within 5 seconds
+      // Some reasoning models can spend several seconds thinking before sending reply text.
       helpMeReplyLoadingTimeoutRef.current = window.setTimeout(() => {
         if (!hasStartedStreaming) {
-          setGeneratingReply(false);
+          setHelpMeReplyReasoning(true);
         }
       }, 5000);
 
@@ -1045,6 +1745,7 @@ export function GroupChatPage() {
               if (!hasStartedStreaming) {
                 hasStartedStreaming = true;
                 setGeneratingReply(false);
+                setHelpMeReplyReasoning(false);
                 if (helpMeReplyLoadingTimeoutRef.current !== null) {
                   window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
                   helpMeReplyLoadingTimeoutRef.current = null;
@@ -1052,6 +1753,16 @@ export function GroupChatPage() {
               }
               streamingText += String(payload.data.text);
               setGeneratedReply(streamingText);
+            } else if (payload && payload.type === "reasoning" && payload.data?.text) {
+              if (!hasStartedStreaming) {
+                hasStartedStreaming = true;
+                if (helpMeReplyLoadingTimeoutRef.current !== null) {
+                  window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
+                  helpMeReplyLoadingTimeoutRef.current = null;
+                }
+              }
+              setGeneratingReply(true);
+              setHelpMeReplyReasoning(true);
             } else if (payload && payload.type === "error") {
               const message =
                 payload.data?.message ||
@@ -1060,6 +1771,7 @@ export function GroupChatPage() {
                 "Help Me Reply failed.";
               setHelpMeReplyError(String(message));
               setGeneratingReply(false);
+              setHelpMeReplyReasoning(false);
               if (helpMeReplyLoadingTimeoutRef.current !== null) {
                 window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
                 helpMeReplyLoadingTimeoutRef.current = null;
@@ -1083,21 +1795,22 @@ export function GroupChatPage() {
           }
         }
 
-        // Clear loading state once API call completes (for non-streaming case)
-        if (!hasStartedStreaming) {
-          setGeneratingReply(false);
-          if (helpMeReplyLoadingTimeoutRef.current !== null) {
-            window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
-            helpMeReplyLoadingTimeoutRef.current = null;
-          }
+        setGeneratingReply(false);
+        setHelpMeReplyReasoning(false);
+        if (helpMeReplyLoadingTimeoutRef.current !== null) {
+          window.clearTimeout(helpMeReplyLoadingTimeoutRef.current);
+          helpMeReplyLoadingTimeoutRef.current = null;
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         setHelpMeReplyError(message);
+        setGeneratingReply(false);
+        setHelpMeReplyReasoning(false);
       } finally {
         // Only clear loading if streaming hasn't started yet
         if (!hasStartedStreaming) {
           setGeneratingReply(false);
+          setHelpMeReplyReasoning(false);
         }
         if (helpMeReplyRequestIdRef.current === requestId) {
           clearHelpMeReplyRuntime();
@@ -1114,6 +1827,7 @@ export function GroupChatPage() {
     setShowResultMenu(false);
     setGeneratedReply(null);
     setHelpMeReplyError(null);
+    setHelpMeReplyReasoning(false);
   }, [generatedReply]);
 
   const handlePlusMenuImageUpload = useCallback(() => {
@@ -1154,6 +1868,169 @@ export function GroupChatPage() {
       .filter(Boolean) as Character[];
   }, [session, characters]);
 
+  // --- Widget area (desktop, non-full chat column) ---
+  const viewportWidth = useViewportWidth();
+  const widgetLayout = getChatWidgetLayout(chatAppearance, viewportWidth);
+  const widgetsOn = widgetLayout.enabled;
+  const [widgetEditNonce, setWidgetEditNonce] = useState(0);
+  const requestWidgetEdit = widgetsOn ? () => setWidgetEditNonce((n) => n + 1) : undefined;
+  const widgetLeftNodes = widgetLayout.showLeft
+    ? widgetLayout.showRight
+      ? chatAppearance.chatWidgetSlots.left
+      : [...chatAppearance.chatWidgetSlots.left, ...chatAppearance.chatWidgetSlots.right]
+    : [];
+  const widgetRightNodes = widgetLayout.showRight
+    ? widgetLayout.showLeft
+      ? chatAppearance.chatWidgetSlots.right
+      : [...chatAppearance.chatWidgetSlots.right, ...chatAppearance.chatWidgetSlots.left]
+    : [];
+
+  const persistWidgetSlots = useCallback(
+    async (slots: WidgetSlots) => {
+      if (!group) return;
+      const existing = (group.chatAppearance ?? {}) as Record<string, unknown>;
+      const saved = await updateGroupChatAppearance(group.id, {
+        ...existing,
+        chatWidgetSlots: slots,
+      });
+      updateGroup(saved);
+    },
+    [group, updateGroup],
+  );
+
+  const persistColumnWidthPx = useCallback(
+    async (px: number) => {
+      if (!group) return;
+      const existing = (group.chatAppearance ?? {}) as Record<string, unknown>;
+      const saved = await updateGroupChatAppearance(group.id, {
+        ...existing,
+        chatColumnWidth: "custom",
+        chatColumnWidthPx: px,
+      });
+      updateGroup(saved);
+    },
+    [group, updateGroup],
+  );
+
+  const widgetCharacter = groupCharacters[0] ?? null;
+  const widgetCtxValue = useMemo<WidgetActionContext>(() => {
+    const persistSlotMutation = async (
+      mutate: (nodes: WidgetNode[]) => WidgetNode[],
+    ) => {
+      if (!group) return;
+      const existing = (group.chatAppearance ?? {}) as Record<string, unknown>;
+      const slots = (existing.chatWidgetSlots as WidgetSlots | undefined) ?? {
+        left: [],
+        right: [],
+      };
+      const saved = await updateGroupChatAppearance(group.id, {
+        ...existing,
+        chatWidgetSlots: { left: mutate(slots.left), right: mutate(slots.right) },
+      });
+      updateGroup(saved);
+    };
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && !m.id.startsWith("placeholder"));
+    const contextCharacter = widgetCharacter
+      ? { ...widgetCharacter, memoryType: session?.memoryType ?? widgetCharacter.memoryType }
+      : null;
+    return {
+      character: contextCharacter,
+      characters: groupCharacters,
+      persona: currentPersona,
+      session: (session as unknown as Session) ?? null,
+      hasBackground: !!backgroundImageData,
+      messageCount: messages.filter((m) => !m.id.startsWith("placeholder")).length,
+      sceneName: null,
+      memories: session?.memories ?? [],
+      personas,
+      models: settings?.models ?? [],
+      currentModelId: widgetCharacter?.defaultModelId ?? null,
+      fallbackModelId: widgetCharacter?.fallbackModelId ?? null,
+      swapPlacesActive: false,
+      voiceAutoplayActive: false,
+      canRegenerate: !!lastAssistant && !sending,
+      canContinue: messages.length > 0 && !sending,
+      isGenerating: sending,
+      onSelectPersona: async (personaId) => {
+        if (!session) return;
+        const updated = await storageBridge.groupSessionUpdate(
+          session.id,
+          session.name,
+          session.characterIds,
+          personaId ?? null,
+        );
+        updateSession(updated);
+      },
+      onSelectModel: async (modelId) => {
+        if (!widgetCharacter) return;
+        await saveCharacter({ id: widgetCharacter.id, defaultModelId: modelId ?? null });
+        reloadSession();
+      },
+      onSelectFallbackModel: async (modelId) => {
+        if (!widgetCharacter) return;
+        await saveCharacter({ id: widgetCharacter.id, fallbackModelId: modelId });
+        reloadSession();
+      },
+      onAuthorNoteSaved: () => {},
+      onRegenerate: async () => {
+        if (lastAssistant) await handleRegenerate(lastAssistant.id);
+      },
+      onToggleSwapPlaces: () => {},
+      onNewSession: () => {},
+      onContinue: async () => {
+        await handleContinue();
+      },
+      onAbort: async () => {
+        await handleAbort();
+      },
+      onViewHistory: () => navigate(Routes.groupChatHistory),
+      onOpenMemories: () => session && navigate(Routes.groupChatMemories(session.id)),
+      onOpenSearch: () => session && navigate(Routes.groupChatSearch(session.id)),
+      onToggleVoiceAutoplay: () => {},
+      onUpdateScratchPad: async (nodeId, content) => {
+        await persistSlotMutation((nodes) => setScratchPadContentOnNode(nodes, nodeId, content));
+      },
+      onUpdateAuthorNote: async (content) => {
+        if (!session) return;
+        const trimmed = content.trim();
+        const updated = await updateGroupSessionAuthorNote(session.id, trimmed || null);
+        updateSession(updated);
+      },
+      onUpdateNode: async (nodeId, patch) => {
+        await persistSlotMutation((nodes) =>
+          patchWidgetNode(nodes, nodeId, patch as Partial<WidgetNode>),
+        );
+      },
+      onUpdateCompanionTimeOverride: () => {},
+      onInsertText: (text) => {
+        const trimmed = draft.trimEnd();
+        setDraft(trimmed ? `${trimmed} ${text}` : text);
+      },
+    };
+  }, [
+    widgetCharacter,
+    groupCharacters,
+    currentPersona,
+    backgroundImageData,
+    messages,
+    session,
+    personas,
+    settings,
+    sending,
+    group,
+    updateGroup,
+    updateSession,
+    reloadSession,
+    handleRegenerate,
+    handleContinue,
+    handleAbort,
+    navigate,
+    draft,
+    setDraft,
+  ]);
+
   if (sessionLoading || loading) {
     return (
       <div className="flex h-full items-center justify-center">
@@ -1184,40 +2061,157 @@ export function GroupChatPage() {
   const footerBottomOffset = `calc(env(safe-area-inset-bottom) + ${keyboardInset}px)`;
   const scrollButtonBottomOffset = `calc(env(safe-area-inset-bottom) + ${keyboardInset}px + 88px)`;
 
+  const columnLayout = getChatColumnLayout(chatAppearance);
+  const participantsBarVisible =
+    groupCharacters.length >= 2 && (chatAppearance.participantsBarEnabled || isDirectorMode);
+  const messagesPadBottom = participantsBarVisible
+    ? isDirectorMode
+      ? "pb-28"
+      : "pb-20"
+    : "pb-6";
+  const headerInside = widgetsOn && chatAppearance.chatHeaderMoves;
+  const footerInside = widgetsOn && chatAppearance.chatFooterMoves;
+  const applyHeaderColumnClass = !widgetsOn && chatAppearance.chatHeaderMoves;
+  const applyFooterColumnClass = !widgetsOn && chatAppearance.chatFooterMoves;
+
+  const headerNode = (
+    <div
+      className={`relative z-20 shrink-0 ${applyHeaderColumnClass ? columnLayout.className : ""}`}
+      style={applyHeaderColumnClass ? columnLayout.style : undefined}
+    >
+      <GroupChatHeader
+        session={session}
+        characters={groupCharacters}
+        onBack={() => navigate(Routes.groupChats)}
+        onSettings={handleOpenSettings}
+        onMemories={() => navigate(Routes.groupChatMemories(session.id))}
+        onLorebooks={() => navigate(Routes.groupChatLorebook(session.id))}
+        onAppearance={group ? handleOpenAppearance : undefined}
+        onSearch={() => navigate(Routes.groupChatSearch(session.id))}
+        onEditWidgets={!isMobilePlatform ? requestWidgetEdit : undefined}
+        hasBackgroundImage={!!backgroundImageData}
+        headerOverlayClassName={theme.headerOverlay}
+        transparentHeader={chatAppearance.transparentHeader}
+      />
+    </div>
+  );
+
+  const footerNode = (
+    <div
+      className={`relative z-20 shrink-0 ${applyFooterColumnClass ? columnLayout.className : ""}`}
+      style={{
+        paddingBottom: footerBottomOffset,
+        ...(applyFooterColumnClass ? columnLayout.style : {}),
+      }}
+    >
+      <GroupChatFooter
+        draft={draft}
+        setDraft={setDraft}
+        error={error}
+        setError={setError}
+        sending={sending}
+        characters={groupCharacters}
+        persona={currentPersona}
+        onSendMessage={
+          isDirectorMode
+            ? directorBehavior === "action"
+              ? handleDirectorAddMessage
+              : handleDirectorSend
+            : handleSend
+        }
+        onContinue={
+          isDirectorMode ? undefined : messages.length > 0 ? () => handleContinue() : undefined
+        }
+        onAbort={handleAbort}
+        directorMode={isDirectorMode}
+        directorBehavior={directorBehavior}
+        directorSelectedId={directorSelectedId}
+        directorWiggleNonce={directorWiggleNonce}
+        directorHintPosition={chatAppearance.participantsBarHintPosition}
+        onSelectSpeaker={handleDirectorTap}
+        hasBackgroundImage={!!backgroundImageData}
+        footerOverlayClassName={theme.footerOverlay}
+        footerOverlayColor={theme.footerOverlayColor}
+        footerFgColor={theme.footerFgColor}
+        footerFgMutedColor={theme.footerFgMutedColor}
+        pendingAttachments={pendingAttachments}
+        onAddAttachment={supportsImageInput ? addPendingAttachment : undefined}
+        onRemoveAttachment={supportsImageInput ? removePendingAttachment : undefined}
+        onOpenPlusMenu={handleOpenPlusMenu}
+        triggerFileInput={shouldTriggerFileInput}
+        onFileInputTriggered={() => setShouldTriggerFileInput(false)}
+        inlinePanel={footerInlinePanel}
+        onMicClick={
+          installedWhisperModels.length === 0
+            ? undefined
+            : () => {
+                void handleFooterMicClick();
+              }
+        }
+        onMicCancel={cancelFooterRecording}
+        micActive={footerAsrMode === "recording" || footerAsrMode === "transcribing"}
+        micDisabled={footerAsrBusy}
+        recordingElapsedMs={footerRecordingMs}
+        recordingAnalyser={footerAnalyser}
+        recordingTranscribing={footerAsrMode === "transcribing"}
+        composerDisabled={footerAsrMode !== "idle"}
+        mutedCharacterIds={mutedCharacterIds}
+        onToggleMute={handleToggleMute}
+        participantsBarEnabled={chatAppearance.participantsBarEnabled}
+        participantsBarSize={chatAppearance.participantsBarAvatarSize}
+        participantsBarShape={chatAppearance.participantsBarAvatarShape}
+        participantsBarBackground={chatAppearance.participantsBarBackground}
+        participantsBarGap={chatAppearance.participantsBarGap}
+        participantsBarAlign={chatAppearance.participantsBarAlign}
+      />
+    </div>
+  );
+
   return (
     <div
       className={cn(
-        "relative flex h-screen flex-col overflow-hidden",
+        "relative flex h-full flex-col overflow-hidden",
         !backgroundImageData && "bg-surface",
       )}
     >
+      {beetrootRain.overlay}
       {/* Content layer - on top of background */}
       <div
         className="relative z-10 flex h-full flex-col"
       >
-        {/* Header */}
-        <div className="relative z-20 shrink-0">
-          <GroupChatHeader
-            session={session}
-            characters={groupCharacters}
-            onBack={() => navigate(Routes.groupChats)}
-            onSettings={() => navigate(Routes.groupChatSettings(session.id))}
-            onMemories={() => navigate(Routes.groupChatMemories(session.id))}
-            onLorebooks={() => navigate(Routes.groupChatLorebook(session.id))}
-            hasBackgroundImage={!!backgroundImageData}
-            headerOverlayClassName={theme.headerOverlay}
-          />
-        </div>
+        {!headerInside && headerNode}
 
         {/* Main content area - flex-1 takes remaining space */}
+        <WidgetContextProvider value={widgetCtxValue}>
+          <WidgetEditProvider
+            slots={chatAppearance.chatWidgetSlots}
+            onPersist={persistWidgetSlots}
+            editRequestNonce={widgetEditNonce}
+          >
+            <ChatWidgetArea
+              widgetLayout={widgetLayout}
+              leftNodes={widgetLeftNodes}
+              rightNodes={widgetRightNodes}
+              resizable={chatAppearance.chatColumnWidth === "custom" && appearanceDrawerOpen}
+              viewportWidth={viewportWidth}
+              onResizeColumn={(px) => {
+                if (appearanceFieldUpdater) {
+                  appearanceFieldUpdater("chatColumnWidthPx", px);
+                } else {
+                  void persistColumnWidthPx(px);
+                }
+              }}
+            >
+        {headerInside && headerNode}
         <main
           ref={scrollContainerRef}
           onScroll={handleScroll}
-          className="relative flex-1 overflow-y-auto px-2 pb-2"
+          className="relative w-full flex-1 overflow-y-auto px-2 pb-2"
         >
           <div
-            className={`${chatAppearance.messageGap === "tight" ? "space-y-2" : chatAppearance.messageGap === "relaxed" ? "space-y-6" : "space-y-4"} pb-6 pt-4`}
+            className={`${getChatColumnLayout(chatAppearance).className} ${chatAppearance.messageGap === "tight" ? "space-y-2" : chatAppearance.messageGap === "relaxed" ? "space-y-6" : "space-y-4"} ${messagesPadBottom} pt-4`}
             style={{
+              ...getChatColumnLayout(chatAppearance).style,
               backgroundColor: backgroundImageData
                 ? theme.contentOverlay || "transparent"
                 : "transparent",
@@ -1277,13 +2271,17 @@ export function GroupChatPage() {
             )}
           </div>
         </main>
+        {footerInside && footerNode}
+            </ChatWidgetArea>
+          </WidgetEditProvider>
+        </WidgetContextProvider>
 
         {/* Scroll to Bottom Button */}
         <AnimatePresence>
           {!isAtBottom && (
             <motion.button
               type="button"
-              aria-label="Scroll to bottom"
+              aria-label={t("groupChats.pageExtra.scrollToBottomAria")}
               onClick={() => scrollToBottom("smooth")}
               initial={{ opacity: 0, y: 10, scale: 0.98 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -1302,42 +2300,20 @@ export function GroupChatPage() {
           )}
         </AnimatePresence>
 
-        {/* Footer */}
-        <div className="relative z-20 shrink-0" style={{ paddingBottom: footerBottomOffset }}>
-          <GroupChatFooter
-            draft={draft}
-            setDraft={setDraft}
-            error={error}
-            setError={setError}
-            sending={sending}
-            characters={groupCharacters}
-            persona={currentPersona}
-            onSendMessage={handleSend}
-            onContinue={messages.length > 0 ? () => handleContinue() : undefined}
-            onAbort={handleAbort}
-            hasBackgroundImage={!!backgroundImageData}
-            footerOverlayClassName={theme.footerOverlay}
-            pendingAttachments={pendingAttachments}
-            onAddAttachment={supportsImageInput ? addPendingAttachment : undefined}
-            onRemoveAttachment={supportsImageInput ? removePendingAttachment : undefined}
-            onOpenPlusMenu={handleOpenPlusMenu}
-            triggerFileInput={shouldTriggerFileInput}
-            onFileInputTriggered={() => setShouldTriggerFileInput(false)}
-          />
-        </div>
+        {!footerInside && footerNode}
       </div>
 
       {/* Plus Menu - Upload Image & Help Me Reply */}
-      <BottomMenu isOpen={showPlusMenu} onClose={() => setShowPlusMenu(false)} title="Add Content">
+      <BottomMenu isOpen={showPlusMenu} onClose={() => setShowPlusMenu(false)} title={t("groupChats.addContentMenu.title")}>
         <div className="space-y-2">
           {supportsImageInput && (
-            <MenuButton icon={Image} title="Upload Image" onClick={handlePlusMenuImageUpload} />
+            <MenuButton icon={Image} title={t("groupChats.addContentMenu.uploadImage")} onClick={handlePlusMenuImageUpload} />
           )}
           {helpMeReplyEnabled && (
             <MenuButton
               icon={Sparkles}
-              title="Help Me Reply"
-              description="Let AI suggest what to say"
+              title={t("groupChats.helpMeReplyMenu.title")}
+              description={t("groupChats.helpMeReplyMenu.helpMeReplyDesc")}
               onClick={handlePlusMenuHelpMeReply}
             />
           )}
@@ -1348,22 +2324,22 @@ export function GroupChatPage() {
       <BottomMenu
         isOpen={showChoiceMenu}
         onClose={() => setShowChoiceMenu(false)}
-        title="Help Me Reply"
+        title={t("groupChats.helpMeReplyMenu.title")}
       >
         <div className="space-y-2">
           <p className="text-sm text-fg/60 mb-4">
-            You have a draft message. How would you like to proceed?
+            {t("groupChats.helpMeReplyMenu.draftPrompt")}
           </p>
           <MenuButton
             icon={PenLine}
-            title="Use my text as base"
-            description="Expand and improve your draft"
+            title={t("groupChats.helpMeReplyMenu.useTextAsBase")}
+            description={t("groupChats.helpMeReplyMenu.useTextAsBaseDesc")}
             onClick={() => handleHelpMeReply("enrich")}
           />
           <MenuButton
             icon={Sparkles}
-            title="Write something new"
-            description="Generate a fresh reply"
+            title={t("groupChats.helpMeReplyMenu.writeSomethingNew")}
+            description={t("groupChats.helpMeReplyMenu.writeSomethingNewDesc")}
             onClick={() => handleHelpMeReply("new")}
           />
         </div>
@@ -1373,7 +2349,7 @@ export function GroupChatPage() {
       <BottomMenu
         isOpen={showResultMenu}
         onClose={handleCloseHelpMeReplyResultMenu}
-        title="Suggested Reply"
+        title={t("groupChats.suggestedReplyMenu.title")}
       >
         <div className="space-y-4">
           {helpMeReplyError ? (
@@ -1381,8 +2357,13 @@ export function GroupChatPage() {
               <p className="text-danger text-sm">{helpMeReplyError}</p>
             </div>
           ) : generatingReply && !generatedReply ? (
-            <div className="flex items-center justify-center py-8">
+            <div className="flex flex-col items-center justify-center gap-3 py-8" role="status">
               <Loader2 className="h-8 w-8 animate-spin text-fg/50" />
+              <p className="text-center text-sm text-fg/60">
+                {helpMeReplyReasoning
+                  ? t("groupChats.suggestedReplyMenu.reasoningBeforeWriting")
+                  : t("groupChats.suggestedReplyMenu.writingYourReply")}
+              </p>
             </div>
           ) : generatedReply ? (
             <div
@@ -1408,7 +2389,7 @@ export function GroupChatPage() {
               )}
             >
               <RefreshCw size={18} />
-              <span>Regenerate</span>
+              <span>{t("groupChats.suggestedReplyMenu.regenerate")}</span>
             </button>
             <button
               onClick={handleUseReply}
@@ -1421,7 +2402,7 @@ export function GroupChatPage() {
               )}
             >
               <Check size={18} />
-              <span>Use Reply</span>
+              <span>{t("groupChats.suggestedReplyMenu.useReply")}</span>
             </button>
           </div>
         </div>
@@ -1452,6 +2433,25 @@ export function GroupChatPage() {
         }}
         characters={groupCharacters}
       />
+
+      {!isMobilePlatform && group && (
+        <GroupChatAppearanceDrawer
+          open={appearanceDrawerOpen}
+          onClose={() => setAppearanceDrawerOpen(false)}
+          group={group}
+          onGroupUpdate={updateGroup}
+          setDraftOverride={setDraftAppearanceOverride}
+          registerFieldUpdater={registerAppearanceFieldUpdater}
+        />
+      )}
+
+      {!isMobilePlatform && (
+        <GroupChatSettingsDrawer
+          isOpen={settingsDrawerOpen}
+          onClose={() => setSettingsDrawerOpen(false)}
+          groupSessionId={session.id}
+        />
+      )}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import type { Model } from "../../core/storage/schemas";
 import { getProviderIcon } from "../../core/utils/providerIcons";
 import { cn } from "../design-tokens";
 import { BottomMenu } from "./BottomMenu";
+import { useI18n } from "../../core/i18n/context";
 
 type MenuTheme = "default" | "dark";
 type SelectionTone = "accent" | "emerald" | "info";
@@ -32,6 +33,7 @@ export type ModelSelectionBottomMenuProps = {
   modelMatchesQuery?: (model: Model, query: string) => boolean;
   renderModelTitle?: (model: Model) => ReactNode;
   renderModelDescription?: (model: Model) => ReactNode;
+  renderModelMeta?: (model: Model) => ReactNode;
   renderModelIcon?: (model: Model) => ReactNode;
   renderEmptyState?: (query: string, hasModels: boolean) => ReactNode;
   loading?: boolean;
@@ -108,11 +110,12 @@ export function ModelSelectionBottomMenu({
   onToggleModel,
   searchQuery,
   onSearchChange,
-  searchPlaceholder = "Search models...",
+  searchPlaceholder,
   filterModels = true,
   modelMatchesQuery,
   renderModelTitle,
   renderModelDescription,
+  renderModelMeta,
   renderModelIcon,
   renderEmptyState,
   loading = false,
@@ -121,9 +124,10 @@ export function ModelSelectionBottomMenu({
   rightAction,
   theme = "default",
   tone = "accent",
-  includeExitIcon = true,
+  includeExitIcon = false,
   location = "bottom",
 }: ModelSelectionBottomMenuProps) {
+  const { t } = useI18n();
   const [internalQuery, setInternalQuery] = useState("");
   const query = searchQuery ?? internalQuery;
   const setQuery = onSearchChange ?? setInternalQuery;
@@ -157,17 +161,20 @@ export function ModelSelectionBottomMenu({
       isOpen={isOpen}
       onClose={onClose}
       title={title}
-      rightAction={rightAction}
+      rightAction={rightAction ? <span className="hidden sm:flex">{rightAction}</span> : undefined}
       includeExitIcon={includeExitIcon}
       location={location}
     >
       <div className="space-y-4">
+        {rightAction && (
+          <div className="flex justify-end sm:hidden">{rightAction}</div>
+        )}
         <div className="relative">
           <input
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder={searchPlaceholder}
+            placeholder={searchPlaceholder ?? t("components.extra.searchModelsPlaceholder")}
             className={themeStyles.input}
             autoFocus
           />
@@ -207,15 +214,15 @@ export function ModelSelectionBottomMenu({
             loadingContent ?? (
               <div className="flex flex-col items-center justify-center py-12">
                 <Loader2 className={cn("h-6 w-6 animate-spin", themeStyles.icon)} />
-                <p className={cn("mt-3 text-sm", themeStyles.secondaryText)}>Loading models...</p>
+                <p className={cn("mt-3 text-sm", themeStyles.secondaryText)}>{t("components.extra.loadingModelsDefault")}</p>
               </div>
             )
           ) : filteredModels.length === 0 ? (
             renderEmptyState?.(query, models.length > 0) ?? (
               <div className={cn("py-8 text-center text-sm", themeStyles.secondaryText)}>
                 {models.length === 0
-                  ? "No models available."
-                  : `No models found matching "${query}".`}
+                  ? t("components.extra.noModelsAvailable")
+                  : t("components.extra.noModelsMatching", { query })}
               </div>
             )
           ) : (
@@ -232,7 +239,7 @@ export function ModelSelectionBottomMenu({
                     }
                   }}
                   className={cn(
-                    "flex w-full items-center gap-3 rounded-xl border px-3.5 py-3 text-left transition",
+                    "flex w-full items-start gap-3 rounded-xl border px-3.5 py-3 text-left transition",
                     isSelected ? toneStyles.selectedItem : themeStyles.idleItem,
                   )}
                 >
@@ -244,6 +251,9 @@ export function ModelSelectionBottomMenu({
                     <span className={cn("block truncate text-xs", themeStyles.secondaryText)}>
                       {renderModelDescription?.(model) ?? model.name}
                     </span>
+                    {renderModelMeta && (
+                      <div className="mt-1">{renderModelMeta(model)}</div>
+                    )}
                   </div>
                   {isSelected && <Check className={cn("h-4 w-4 shrink-0", toneStyles.check)} />}
                 </button>

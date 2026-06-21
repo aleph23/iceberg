@@ -1,26 +1,31 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AlertTriangle, Trash2 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
 import { exit } from "@tauri-apps/plugin-process";
 
 import { ResetManager } from "../../../core/storage/reset";
-import { typography, radius, interactive, shadows, cn } from "../../design-tokens";
-import { useI18n } from "../../../core/i18n/context";
+import { typography, interactive, cn } from "../../design-tokens";
+import { useI18n, type TranslationKey } from "../../../core/i18n/context";
+import { confirmBottomMenu } from "../../components/ConfirmBottomMenu";
 
 export function ResetPage() {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [isResetting, setIsResetting] = useState(false);
-  const [showConfirmModal, setShowConfirmModal] = useState(false);
 
-  const handleReset = async () => {
+  const handleResetClick = async () => {
+    const confirmed = await confirmBottomMenu({
+      title: t("reset.confirmTitle"),
+      message: t("reset.confirmDescription"),
+      confirmLabel: t("reset.confirmButton"),
+      cancelLabel: t("common.buttons.cancel"),
+      destructive: true,
+    });
+    if (!confirmed) return;
+
     try {
       setIsResetting(true);
       await ResetManager.resetAllData();
-
-      // Force app restart for clean database state
-      // The app will re-initialize fresh when reopened
       await exit(0);
     } catch (error: any) {
       console.error("Reset failed:", error);
@@ -29,196 +34,123 @@ export function ResetPage() {
           ? error.message
           : typeof error === "string"
             ? error
-            : "Unknown error";
-      alert(`Reset failed: ${message}`);
+            : t("reset.unknownError");
+      alert(t("reset.failed", { message }));
       setIsResetting(false);
-      setShowConfirmModal(false);
     }
   };
 
+  const removed = [
+    "reset.items.providers",
+    "reset.items.characters",
+    "reset.items.preferences",
+  ] satisfies TranslationKey[];
+
   return (
-    <div className="px-0 pt-4 pb-4 text-fg" data-settings-scroll>
-      <motion.div
-        initial={{ opacity: 0, y: 16 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3, ease: "easeOut" }}
-        className="mx-auto w-full max-w-md text-center"
-      >
-        {/* Warning Icon */}
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ delay: 0.1, duration: 0.3 }}
-          className={cn(
-            "mx-auto mb-8 flex h-24 w-24 items-center justify-center border border-danger/30 bg-danger/10 text-danger/80",
-            radius.full,
-            shadows.lg,
-          )}
-        >
-          <AlertTriangle size={44} strokeWidth={2} />
-        </motion.div>
-
-        {/* Title & Description */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.2 }}
-          className="mb-10 space-y-3"
-        >
-          <h2 className={cn(typography.display.size, typography.display.weight, "text-fg")}>
-            {t("reset.title")}
-          </h2>
-          <p className={cn(typography.body.size, typography.body.lineHeight, "text-fg/50")}>
-            {t("reset.description")}
-          </p>
-        </motion.div>
-
-        {/* Warning Message */}
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className={cn("mb-8 border border-danger/30 bg-danger/5 p-4", radius.lg)}
-        >
-          <div className="flex items-center justify-center gap-2">
-            <AlertTriangle size={16} className="text-danger/80" strokeWidth={2.5} />
-            <p className={cn(typography.bodySmall.size, typography.h3.weight, "text-danger/80")}>
-              {t("reset.warning")}
-            </p>
-          </div>
-        </motion.div>
-
-        {/* Action Buttons */}
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
-          className="flex flex-col gap-3"
-        >
-          <button
-            onClick={() => setShowConfirmModal(true)}
-            disabled={isResetting}
-            className={cn(
-              "w-full px-6 py-4",
-              radius.md,
-              typography.body.size,
-              typography.h3.weight,
-              "border border-danger/40 bg-danger/20 text-danger/90",
-              shadows.glow,
-              interactive.transition.default,
-              "active:scale-[0.97] active:border-danger/60 active:bg-danger/30",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-            )}
-          >
-            <div className="flex items-center justify-center gap-2">
-              <Trash2 size={18} />
-              <span>{t("reset.resetButton")}</span>
+    <div className="flex h-full flex-col">
+      <section className="flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-2xl px-3 pt-4 pb-10 sm:px-4 lg:pt-8">
+          <div className="flex flex-col gap-7">
+            <div className="flex flex-col gap-2">
+              <h1
+                className={cn(
+                  typography.h1.size,
+                  typography.h1.weight,
+                  typography.h1.tracking,
+                  "text-fg",
+                )}
+              >
+                {t("reset.title")}
+              </h1>
+              <p className={cn(typography.body.size, "leading-relaxed text-fg/55")}>
+                {t("reset.description")}
+              </p>
             </div>
-          </button>
 
-          <button
-            onClick={() => navigate("/settings")}
-            disabled={isResetting}
-            className={cn(
-              "w-full px-6 py-3",
-              radius.md,
-              typography.body.size,
-              "border border-fg/10 bg-fg/5 text-fg/60",
-              interactive.transition.default,
-              "active:scale-[0.97] active:bg-fg/10",
-              "disabled:cursor-not-allowed disabled:opacity-50",
-            )}
-          >
-            {t("common.buttons.cancel")}
-          </button>
-        </motion.div>
-      </motion.div>
-
-      {/* Confirmation Modal */}
-      <AnimatePresence>
-        {showConfirmModal && (
-          <motion.div
-            className="fixed inset-0 z-50 flex items-end justify-center bg-black/70 backdrop-blur-md sm:items-center"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => !isResetting && setShowConfirmModal(false)}
-          >
-            <motion.div
-              className={cn(
-                "w-full max-w-md border border-fg/10 bg-surface-el p-6",
-                "rounded-t-3xl sm:rounded-3xl",
-                shadows.xl,
-              )}
-              initial={{ y: "100%", opacity: 0, scale: 0.95 }}
-              animate={{ y: 0, opacity: 1, scale: 1 }}
-              exit={{ y: "100%", opacity: 0, scale: 0.95 }}
-              transition={{ type: "spring", damping: 30, stiffness: 350 }}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* Header */}
-              <div className="mb-6 text-center">
-                <div
-                  className={cn(
-                    "mx-auto mb-4 flex h-16 w-16 items-center justify-center border border-danger/40 bg-danger/15 text-danger/80",
-                    radius.full,
-                  )}
-                >
-                  <AlertTriangle size={28} strokeWidth={2.5} />
-                </div>
-                <h3 className={cn(typography.h2.size, typography.h2.weight, "mb-2 text-fg")}>
-                  {t("reset.confirmTitle")}
-                </h3>
-                <p className={cn(typography.body.size, "text-fg/50")}>
-                  {t("reset.confirmDescription")}
-                </p>
+            <div className="flex flex-col gap-2">
+              <h2
+                className={cn(
+                  "px-1",
+                  typography.overline.size,
+                  typography.overline.weight,
+                  typography.overline.tracking,
+                  typography.overline.transform,
+                  "text-fg/40",
+                )}
+              >
+                {t("reset.willBeRemoved")}
+              </h2>
+              <div
+                className={cn(
+                  "overflow-hidden rounded-xl",
+                  "border border-fg/10 bg-fg/[0.025]",
+                  "divide-y divide-fg/[0.06]",
+                )}
+              >
+                {removed.map((key) => (
+                  <div key={key} className="flex items-center gap-3 px-4 py-3">
+                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-danger/60" />
+                    <span className={cn(typography.body.size, "text-fg/75")}>{t(key)}</span>
+                  </div>
+                ))}
               </div>
-
-              {/* Actions */}
-              <div className="flex flex-col gap-3">
-                <button
-                  onClick={handleReset}
-                  disabled={isResetting}
-                  className={cn(
-                    "w-full px-6 py-3.5",
-                    radius.md,
-                    typography.body.size,
-                    typography.h3.weight,
-                    "border border-danger/40 bg-danger/20 text-danger/90",
-                    interactive.transition.fast,
-                    "active:scale-[0.97] active:bg-danger/30",
-                    "disabled:cursor-not-allowed disabled:opacity-50",
-                  )}
-                >
-                  {isResetting ? (
-                    <div className="flex items-center justify-center gap-2">
-                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-danger/30 border-t-danger/90" />
-                      <span>Resetting...</span>
-                    </div>
-                  ) : (
-                    t("reset.confirmButton")
-                  )}
-                </button>
-                <button
-                  onClick={() => setShowConfirmModal(false)}
-                  disabled={isResetting}
-                  className={cn(
-                    "w-full px-6 py-3",
-                    radius.md,
-                    typography.body.size,
-                    "text-fg/60",
-                    interactive.transition.fast,
-                    "active:scale-[0.97] active:text-fg",
-                    "disabled:cursor-not-allowed disabled:opacity-50",
-                  )}
-                >
-                  {t("common.buttons.cancel")}
-                </button>
+              <div
+                className={cn(
+                  "mt-1 inline-flex items-center gap-1.5 self-start px-1",
+                  typography.caption.size,
+                  "font-medium text-danger/85",
+                )}
+              >
+                <AlertTriangle className="h-3.5 w-3.5" strokeWidth={2.5} />
+                {t("reset.warning")}
               </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                onClick={() => navigate("/settings/about")}
+                disabled={isResetting}
+                className={cn(
+                  "inline-flex h-10 items-center justify-center rounded-lg border border-fg/10 px-5",
+                  typography.body.size,
+                  "font-medium text-fg/75",
+                  interactive.transition.default,
+                  "hover:bg-fg/[0.04] hover:text-fg",
+                  "disabled:cursor-not-allowed disabled:opacity-50",
+                )}
+              >
+                {t("common.buttons.cancel")}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleResetClick()}
+                disabled={isResetting}
+                className={cn(
+                  "inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-danger/30 bg-danger/10 px-5",
+                  typography.body.size,
+                  "font-medium text-danger",
+                  interactive.transition.default,
+                  "hover:bg-danger/15",
+                  "disabled:cursor-not-allowed disabled:opacity-50",
+                )}
+              >
+                {isResetting ? (
+                  <>
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-danger/30 border-t-danger" />
+                    <span>{t("reset.resetting")}</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="h-4 w-4" />
+                    {t("reset.resetButton")}
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }

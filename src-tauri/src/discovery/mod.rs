@@ -1026,20 +1026,28 @@ pub async fn discovery_import_character(app: AppHandle, path: String) -> Result<
     let avatar_base64 =
         base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &avatar_data);
 
-    let avatar_path =
-        storage_save_avatar(app.clone(), avatar_entity_id.clone(), avatar_base64, None).map_err(
-            |e| {
-                crate::utils::err_msg(
-                    module_path!(),
-                    line!(),
-                    format!("Failed to save avatar: {}", e),
-                )
-            },
-        )?;
+    let avatar_path = storage_save_avatar(
+        app.clone(),
+        avatar_entity_id.clone(),
+        avatar_base64,
+        None,
+        None,
+    )
+    .map_err(|e| {
+        crate::utils::err_msg(
+            module_path!(),
+            line!(),
+            format!("Failed to save avatar: {}", e),
+        )
+    })?;
 
-    if let Err(err) =
-        generate_avatar_gradient(app.clone(), avatar_entity_id, "avatar_base.webp".into())
-    {
+    if let Err(err) = generate_avatar_gradient(
+        app.clone(),
+        avatar_entity_id,
+        "avatar_base.webp".into(),
+        Some(false),
+        Some("round".into()),
+    ) {
         log_error(
             &app,
             "discovery_import",
@@ -1225,9 +1233,11 @@ pub async fn discovery_import_character(app: AppHandle, path: String) -> Result<
                         }
                     }
 
-                    if let Err(err) =
-                        set_character_lorebooks(&mut conn, &character_id, &[lorebook_id.clone()])
-                    {
+                    if let Err(err) = set_character_lorebooks(
+                        &mut conn,
+                        &character_id,
+                        std::slice::from_ref(&lorebook_id),
+                    ) {
                         log_error(
                             &app,
                             "discovery_import",

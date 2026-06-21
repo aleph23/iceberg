@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AvatarCrop, Character, ChatTemplate } from "./schemas";
+import type {
+  AvatarCrop,
+  AvatarGradientSource,
+  Character,
+  CharacterCardType,
+  CharacterMode,
+  ChatTemplate,
+  CompanionConfig,
+} from "./schemas";
 
 export type CharacterFileFormat =
   | "uec"
@@ -21,6 +29,7 @@ export interface SceneExport {
   id: string;
   content: string;
   direction?: string;
+  backgroundImagePath?: string;
   createdAt?: number;
   selectedVariantId?: string;
   variants: SceneVariantExport[];
@@ -49,12 +58,17 @@ export interface CharacterImportPreview {
   chatTemplates: ChatTemplate[];
   defaultSceneId: string | null;
   defaultChatTemplateId: string | null;
+  mode?: CharacterMode;
+  companion?: CompanionConfig | null;
   promptTemplateId: string | null;
   memoryType: "manual" | "dynamic";
   disableAvatarGradient: boolean;
+  avatarGradientSource?: AvatarGradientSource;
+  cardType?: CharacterCardType;
   fileFormat?: CharacterFileFormat;
   avatarData?: string | null;
   avatarCrop?: AvatarCrop;
+  bannerCrop?: AvatarCrop;
   backgroundImageData?: string | null;
 }
 

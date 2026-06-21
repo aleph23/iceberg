@@ -14,31 +14,54 @@ use tauri::AppHandle;
 
 pub const APP_DEFAULT_TEMPLATE_ID: &str = "prompt_app_default";
 pub const APP_LOCAL_ROLEPLAY_TEMPLATE_ID: &str = "prompt_app_local_roleplay";
+pub const APP_COMPANION_TEMPLATE_ID: &str = "prompt_app_companion";
 pub const APP_DYNAMIC_SUMMARY_TEMPLATE_ID: &str = "prompt_app_dynamic_summary";
 pub const APP_DYNAMIC_MEMORY_TEMPLATE_ID: &str = "prompt_app_dynamic_memory";
 pub const APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID: &str = "prompt_app_dynamic_memory_local";
 pub const APP_HELP_ME_REPLY_TEMPLATE_ID: &str = "prompt_app_help_me_reply";
 pub const APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID: &str =
     "prompt_app_help_me_reply_conversational";
+pub const APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID: &str = "prompt_app_lorebook_entry_writer";
+pub const LEGACY_APP_LOREBOOK_ENTRY_GENERATOR_TEMPLATE_ID: &str =
+    "prompt_app_lorebook_entry_generator";
+pub const APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID: &str =
+    "prompt_app_lorebook_keyword_generator";
+pub const APP_LOREBOOK_GENERATOR_PLANNER_TEMPLATE_ID: &str =
+    "prompt_app_lorebook_generator_planner";
+pub const APP_LOREBOOK_GENERATOR_WRITER_TEMPLATE_ID: &str = "prompt_app_lorebook_generator_writer";
+pub const APP_LOREBOOK_GENERATOR_REFINE_TEMPLATE_ID: &str = "prompt_app_lorebook_generator_refine";
+pub const APP_LOREBOOK_GENERATOR_COHERENCE_TEMPLATE_ID: &str =
+    "prompt_app_lorebook_generator_coherence";
 pub const APP_GROUP_CHAT_TEMPLATE_ID: &str = "prompt_app_group_chat";
 pub const APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID: &str = "prompt_app_group_chat_roleplay";
 pub const APP_AVATAR_GENERATION_TEMPLATE_ID: &str = "prompt_app_avatar_generation";
 pub const APP_AVATAR_EDIT_TEMPLATE_ID: &str = "prompt_app_avatar_edit";
 pub const APP_SCENE_GENERATION_TEMPLATE_ID: &str = "prompt_app_scene_generation";
+pub const APP_SCENE_PROMPT_WRITER_TEMPLATE_ID: &str = "prompt_app_scene_prompt_writer";
 pub const APP_DESIGN_REFERENCE_TEMPLATE_ID: &str = "prompt_app_design_reference";
+pub const APP_COMPANION_SOUL_WRITER_TEMPLATE_ID: &str = "prompt_app_companion_soul_writer";
 const APP_DEFAULT_TEMPLATE_NAME: &str = "App Default";
 const APP_LOCAL_ROLEPLAY_TEMPLATE_NAME: &str = "Local RP Default";
+const APP_COMPANION_TEMPLATE_NAME: &str = "Companion Default";
 const APP_DYNAMIC_SUMMARY_TEMPLATE_NAME: &str = "Dynamic Memory: Summarizer";
 const APP_DYNAMIC_MEMORY_TEMPLATE_NAME: &str = "Dynamic Memory: Memory Manager";
 const APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_NAME: &str = "Dynamic Memory: Memory Manager (Local LLM)";
 const APP_HELP_ME_REPLY_TEMPLATE_NAME: &str = "Reply Helper";
 const APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_NAME: &str = "Reply Helper (Conversational)";
+const APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_NAME: &str = "Lorebook Entry Writer";
+const APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_NAME: &str = "Lorebook Keyword Generator";
+const APP_LOREBOOK_GENERATOR_PLANNER_TEMPLATE_NAME: &str = "Lorebook Generator: Planner";
+const APP_LOREBOOK_GENERATOR_WRITER_TEMPLATE_NAME: &str = "Lorebook Generator: Writer";
+const APP_LOREBOOK_GENERATOR_REFINE_TEMPLATE_NAME: &str = "Lorebook Generator: Refine";
+const APP_LOREBOOK_GENERATOR_COHERENCE_TEMPLATE_NAME: &str = "Lorebook Generator: Coherence";
 const APP_GROUP_CHAT_TEMPLATE_NAME: &str = "Group Chat (Conversation)";
 const APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_NAME: &str = "Group Chat (Roleplay)";
 const APP_AVATAR_GENERATION_TEMPLATE_NAME: &str = "Avatar Generation";
 const APP_AVATAR_EDIT_TEMPLATE_NAME: &str = "Avatar Image Edit";
 const APP_SCENE_GENERATION_TEMPLATE_NAME: &str = "Scene Generation";
+const APP_SCENE_PROMPT_WRITER_TEMPLATE_NAME: &str = "Scene Prompt Writer";
 const APP_DESIGN_REFERENCE_TEMPLATE_NAME: &str = "Design Reference Writer";
+const APP_COMPANION_SOUL_WRITER_TEMPLATE_NAME: &str = "Companion Soul Writer";
 const LEGACY_AVATAR_GENERATION_PROMPT_V1: &str = "You write a single high-quality image generation prompt for a character avatar. Your job is to turn the request into a clear visual prompt that preserves identity and produces a strong profile image.\n\n# Avatar Subject\nName: {{avatar_subject_name}}\n{{avatar_subject_description}}\n\n# Avatar Request\n{{avatar_request}}\n\nWrite one polished prompt for an image model.\n- Prioritize face, hair, clothing, expression, pose, and overall vibe.\n- Keep the subject centered and suitable for an avatar or profile image.\n- Preserve identity-defining traits from the context.\n- Do not add text, logos, watermarks, frames, UI, or split panels unless explicitly requested.\n- Do not explain your reasoning.\n\nOutput only the final image prompt text.";
 const LEGACY_AVATAR_EDIT_PROMPT_V1: &str = "You revise an existing avatar image prompt. The source image will be provided to you separately. Use that image and the edit request to produce one updated prompt for the next generation.\n\n# Avatar Subject\nName: {{avatar_subject_name}}\n{{avatar_subject_description}}\n\n# Current Avatar Prompt\n{{current_avatar_prompt}}\n\n# Edit Request\n{{edit_request}}\n\nUse the actual source image as the truth for current appearance. Preserve everything that should stay the same and change only what the edit request asks for.\n- Keep the character recognizable.\n- If the old prompt conflicts with the source image, trust the source image.\n- Do not restate unchanged details more than needed.\n- Do not explain what you changed.\n\nOutput only the revised image prompt text.";
 const LEGACY_SCENE_GENERATION_PROMPT_V1: &str = "You write a single high-quality image generation prompt for a roleplay scene. Your job is to convert the current conversation context and scene request into one clear visual prompt for an image model.\n\n# Scene Context\nCharacter: {{char.name}}\n{{char.desc}}\n\nPersona: {{persona.name}}\n{{persona.desc}}\n\nRecent Messages:\n{{recent_messages}}\n\n# Scene Request\n{{scene_request}}\n\nWrite one polished scene prompt for an image model.\n- Focus on who is present, what is happening, where the scene is set, mood, lighting, composition, camera framing, and key visual details.\n- Preserve identity-defining details from the conversation context.\n- Keep character and persona identities separate.\n- Do not swap, merge, or borrow features between them.\n- Prefer concrete visual details over abstract interpretation.\n- Do not add text, logos, watermarks, UI, split panels, or dialogue bubbles unless explicitly requested.\n- Do not explain your reasoning.\n\nOutput only the final image prompt text.";
@@ -46,6 +69,7 @@ const LEGACY_SCENE_GENERATION_PROMPT_V1: &str = "You write a single high-quality
 pub fn template_prompt_type_from_id(id: &str) -> PromptTemplateType {
     match id {
         APP_DEFAULT_TEMPLATE_ID | APP_LOCAL_ROLEPLAY_TEMPLATE_ID => PromptTemplateType::DirectChat,
+        APP_COMPANION_TEMPLATE_ID => PromptTemplateType::CompanionChat,
         APP_GROUP_CHAT_TEMPLATE_ID => PromptTemplateType::GroupChatConversational,
         APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID => PromptTemplateType::GroupChatRoleplay,
         APP_DYNAMIC_SUMMARY_TEMPLATE_ID => PromptTemplateType::DynamicMemorySummarizer,
@@ -56,10 +80,22 @@ pub fn template_prompt_type_from_id(id: &str) -> PromptTemplateType {
         APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID => {
             PromptTemplateType::ReplyHelperConversational
         }
+        APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID | LEGACY_APP_LOREBOOK_ENTRY_GENERATOR_TEMPLATE_ID => {
+            PromptTemplateType::LorebookEntryWriter
+        }
+        APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID => PromptTemplateType::LorebookKeywordGenerator,
+        APP_LOREBOOK_GENERATOR_PLANNER_TEMPLATE_ID => PromptTemplateType::LorebookGeneratorPlanner,
+        APP_LOREBOOK_GENERATOR_WRITER_TEMPLATE_ID => PromptTemplateType::LorebookGeneratorWriter,
+        APP_LOREBOOK_GENERATOR_REFINE_TEMPLATE_ID => PromptTemplateType::LorebookGeneratorRefine,
+        APP_LOREBOOK_GENERATOR_COHERENCE_TEMPLATE_ID => {
+            PromptTemplateType::LorebookGeneratorCoherence
+        }
         APP_AVATAR_GENERATION_TEMPLATE_ID => PromptTemplateType::AvatarGeneration,
         APP_AVATAR_EDIT_TEMPLATE_ID => PromptTemplateType::AvatarEditRequest,
         APP_SCENE_GENERATION_TEMPLATE_ID => PromptTemplateType::SceneGeneration,
+        APP_SCENE_PROMPT_WRITER_TEMPLATE_ID => PromptTemplateType::ScenePromptWriter,
         APP_DESIGN_REFERENCE_TEMPLATE_ID => PromptTemplateType::DesignReferenceWriter,
+        APP_COMPANION_SOUL_WRITER_TEMPLATE_ID => PromptTemplateType::CompanionSoulWriter,
         _ => PromptTemplateType::Undefined,
     }
 }
@@ -89,7 +125,11 @@ fn maybe_repair_protected_template_prompt_type(
         return Ok(());
     }
 
-    let updated_at = now();
+    let updated_at = if template.created_at == template.updated_at {
+        template.created_at
+    } else {
+        now()
+    };
     conn.execute(
         "UPDATE prompt_templates SET prompt_type = ?1, updated_at = ?2 WHERE id = ?3",
         params![
@@ -102,6 +142,48 @@ fn maybe_repair_protected_template_prompt_type(
 
     template.prompt_type = expected_prompt_type;
     template.updated_at = updated_at;
+    Ok(())
+}
+
+fn migrate_legacy_lorebook_entry_writer_template_id(
+    conn: &rusqlite::Connection,
+) -> Result<(), String> {
+    let legacy_exists: Option<String> = conn
+        .query_row(
+            "SELECT id FROM prompt_templates WHERE id = ?1",
+            params![LEGACY_APP_LOREBOOK_ENTRY_GENERATOR_TEMPLATE_ID],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    if legacy_exists.is_none() {
+        return Ok(());
+    }
+
+    let current_exists: Option<String> = conn
+        .query_row(
+            "SELECT id FROM prompt_templates WHERE id = ?1",
+            params![APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    if current_exists.is_some() {
+        return Ok(());
+    }
+
+    let updated_at = now();
+    conn.execute(
+        "UPDATE prompt_templates SET id = ?1, prompt_type = ?2, updated_at = ?3 WHERE id = ?4",
+        params![
+            APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID,
+            prompt_type_to_str(PromptTemplateType::LorebookEntryWriter),
+            updated_at,
+            LEGACY_APP_LOREBOOK_ENTRY_GENERATOR_TEMPLATE_ID
+        ],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
     Ok(())
 }
 
@@ -178,6 +260,10 @@ fn template_entries_to_validation_content(entries: &[SystemPromptEntry]) -> Stri
         .join("\n\n")
 }
 
+fn template_allows_auto_refresh(template: &SystemPromptTemplate) -> bool {
+    template.created_at == template.updated_at
+}
+
 fn maybe_migrate_legacy_template_content(
     app: &AppHandle,
     id: &str,
@@ -188,6 +274,9 @@ fn maybe_migrate_legacy_template_content(
         return Ok(());
     };
 
+    if !template_allows_auto_refresh(&template) {
+        return Ok(());
+    }
     if template.content.trim() != legacy_content.trim() {
         return Ok(());
     }
@@ -221,6 +310,9 @@ fn maybe_backfill_entries(
     if !template.entries.is_empty() {
         return Ok(());
     }
+    if !template_allows_auto_refresh(&template) {
+        return Ok(());
+    }
     let base = get_base_prompt(prompt_type);
     if template.content.trim() != base.trim() {
         return Ok(());
@@ -247,6 +339,9 @@ fn maybe_backfill_template_name(
         None => return Ok(()),
     };
     if template.name == expected_name {
+        return Ok(());
+    }
+    if !template_allows_auto_refresh(&template) {
         return Ok(());
     }
 
@@ -280,6 +375,9 @@ fn append_missing_entry(
     {
         return Ok(());
     }
+    if !template_allows_auto_refresh(&template) {
+        return Ok(());
+    }
 
     let mut next_entries = template.entries;
     next_entries.push(entry);
@@ -308,6 +406,9 @@ fn backfill_missing_entry_conditions(
         None => return Ok(()),
     };
     if template.entries.is_empty() {
+        return Ok(());
+    }
+    if !template_allows_auto_refresh(&template) {
         return Ok(());
     }
 
@@ -359,6 +460,9 @@ fn backfill_missing_entry_payloads(
     if template.entries.is_empty() {
         return Ok(());
     }
+    if !template_allows_auto_refresh(&template) {
+        return Ok(());
+    }
 
     let mut changed = false;
     let next_entries = template
@@ -395,6 +499,53 @@ fn backfill_missing_entry_payloads(
     Ok(())
 }
 
+fn refresh_unedited_protected_template(
+    app: &AppHandle,
+    id: &str,
+    name: &str,
+    prompt_template_type: PromptTemplateType,
+    prompt_type: PromptType,
+    defaults: &[SystemPromptEntry],
+) -> Result<bool, String> {
+    let template = match get_template(app, id)? {
+        Some(template) => template,
+        None => return Ok(false),
+    };
+    if !template_allows_auto_refresh(&template) {
+        return Ok(false);
+    }
+
+    let content = get_base_prompt(prompt_type);
+    let default_entries_json = serde_json::to_string(defaults)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    let current_entries_json = serde_json::to_string(&template.entries)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    if template.name == name
+        && template.prompt_type == prompt_template_type
+        && template.content == content
+        && current_entries_json == default_entries_json
+    {
+        return Ok(false);
+    }
+
+    let conn = open_db(app)?;
+    conn.execute(
+        "UPDATE prompt_templates SET name = ?1, prompt_type = ?2, content = ?3, entries = ?4, updated_at = ?5 WHERE id = ?6",
+        params![
+            name,
+            prompt_type_to_str(prompt_template_type),
+            content,
+            default_entries_json,
+            template.created_at,
+            id
+        ],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    Ok(true)
+}
+
 fn backfill_legacy_image_entry_content(
     app: &AppHandle,
     id: &str,
@@ -405,6 +556,9 @@ fn backfill_legacy_image_entry_content(
         None => return Ok(()),
     };
     if template.entries.is_empty() {
+        return Ok(());
+    }
+    if !template_allows_auto_refresh(&template) {
         return Ok(());
     }
 
@@ -457,6 +611,9 @@ fn migrate_legacy_scene_generation_entry_roles(app: &AppHandle) -> Result<(), St
         return Ok(());
     };
     if template.entries.is_empty() {
+        return Ok(());
+    }
+    if !template_allows_auto_refresh(&template) {
         return Ok(());
     }
 
@@ -514,7 +671,7 @@ pub fn validate_required_variables(
 }
 
 fn generate_id() -> String {
-    format!("prompt_{}", uuid::Uuid::new_v4().to_string())
+    format!("prompt_{}", uuid::Uuid::new_v4())
 }
 
 fn now() -> u64 {
@@ -528,16 +685,25 @@ fn prompt_type_to_str(prompt_type: PromptTemplateType) -> &'static str {
     match prompt_type {
         PromptTemplateType::Undefined => "undefined",
         PromptTemplateType::DirectChat => "directChat",
+        PromptTemplateType::CompanionChat => "companionChat",
         PromptTemplateType::GroupChatRoleplay => "groupChatRoleplay",
         PromptTemplateType::GroupChatConversational => "groupChatConversational",
         PromptTemplateType::DynamicMemorySummarizer => "dynamicMemorySummarizer",
         PromptTemplateType::DynamicMemoryManager => "dynamicMemoryManager",
         PromptTemplateType::ReplyHelperRoleplay => "replyHelperRoleplay",
         PromptTemplateType::ReplyHelperConversational => "replyHelperConversational",
+        PromptTemplateType::LorebookEntryWriter => "lorebookEntryWriter",
+        PromptTemplateType::LorebookKeywordGenerator => "lorebookKeywordGenerator",
+        PromptTemplateType::LorebookGeneratorPlanner => "lorebookGeneratorPlanner",
+        PromptTemplateType::LorebookGeneratorWriter => "lorebookGeneratorWriter",
+        PromptTemplateType::LorebookGeneratorRefine => "lorebookGeneratorRefine",
+        PromptTemplateType::LorebookGeneratorCoherence => "lorebookGeneratorCoherence",
         PromptTemplateType::AvatarGeneration => "avatarGeneration",
         PromptTemplateType::AvatarEditRequest => "avatarEditRequest",
         PromptTemplateType::SceneGeneration => "sceneGeneration",
+        PromptTemplateType::ScenePromptWriter => "scenePromptWriter",
         PromptTemplateType::DesignReferenceWriter => "designReferenceWriter",
+        PromptTemplateType::CompanionSoulWriter => "companionSoulWriter",
     }
 }
 
@@ -545,16 +711,37 @@ fn str_to_prompt_type(s: &str) -> Result<PromptTemplateType, String> {
     match s {
         "undefined" => Ok(PromptTemplateType::Undefined),
         "directChat" => Ok(PromptTemplateType::DirectChat),
+        "companionChat" => Ok(PromptTemplateType::CompanionChat),
         "groupChatRoleplay" => Ok(PromptTemplateType::GroupChatRoleplay),
         "groupChatConversational" => Ok(PromptTemplateType::GroupChatConversational),
         "dynamicMemorySummarizer" => Ok(PromptTemplateType::DynamicMemorySummarizer),
         "dynamicMemoryManager" => Ok(PromptTemplateType::DynamicMemoryManager),
         "replyHelperRoleplay" => Ok(PromptTemplateType::ReplyHelperRoleplay),
         "replyHelperConversational" => Ok(PromptTemplateType::ReplyHelperConversational),
+        "lorebookEntryWriter" | "lorebook_entry_writer" => {
+            Ok(PromptTemplateType::LorebookEntryWriter)
+        }
+        "lorebookKeywordGenerator" | "lorebook_keyword_generator" => {
+            Ok(PromptTemplateType::LorebookKeywordGenerator)
+        }
+        "lorebookGeneratorPlanner" | "lorebook_generator_planner" => {
+            Ok(PromptTemplateType::LorebookGeneratorPlanner)
+        }
+        "lorebookGeneratorWriter" | "lorebook_generator_writer" => {
+            Ok(PromptTemplateType::LorebookGeneratorWriter)
+        }
+        "lorebookGeneratorRefine" | "lorebook_generator_refine" => {
+            Ok(PromptTemplateType::LorebookGeneratorRefine)
+        }
+        "lorebookGeneratorCoherence" | "lorebook_generator_coherence" => {
+            Ok(PromptTemplateType::LorebookGeneratorCoherence)
+        }
         "avatarGeneration" => Ok(PromptTemplateType::AvatarGeneration),
         "avatarEditRequest" => Ok(PromptTemplateType::AvatarEditRequest),
         "sceneGeneration" => Ok(PromptTemplateType::SceneGeneration),
+        "scenePromptWriter" => Ok(PromptTemplateType::ScenePromptWriter),
         "designReferenceWriter" => Ok(PromptTemplateType::DesignReferenceWriter),
+        "companionSoulWriter" => Ok(PromptTemplateType::CompanionSoulWriter),
         other => Err(crate::utils::err_msg(
             module_path!(),
             line!(),
@@ -573,8 +760,7 @@ fn row_to_template(row: &rusqlite::Row<'_>) -> Result<SystemPromptTemplate, rusq
     let created_at: u64 = row.get(6)?;
     let updated_at: u64 = row.get(7)?;
 
-    let prompt_type =
-        str_to_prompt_type(&prompt_type_str).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let prompt_type = str_to_prompt_type(&prompt_type_str).unwrap_or(PromptTemplateType::Undefined);
     let entries: Vec<SystemPromptEntry> = serde_json::from_str(&entries_json).unwrap_or_default();
 
     Ok(SystemPromptTemplate {
@@ -592,16 +778,22 @@ fn row_to_template(row: &rusqlite::Row<'_>) -> Result<SystemPromptTemplate, rusq
 pub fn load_templates(app: &AppHandle) -> Result<Vec<SystemPromptTemplate>, String> {
     let _ = ensure_app_default_template(app)?;
     let _ = ensure_local_roleplay_template(app)?;
+    let _ = ensure_companion_template(app)?;
     ensure_dynamic_memory_templates(app)?;
+    ensure_lorebook_entry_writer_template(app)?;
+    ensure_lorebook_keyword_generator_template(app)?;
+    ensure_lorebook_generator_templates(app)?;
     ensure_group_chat_templates(app)?;
+    ensure_companion_soul_writer_template(app)?;
     let conn = open_db(app)?;
+    migrate_legacy_lorebook_entry_writer_template_id(&conn)?;
     let mut stmt = conn
         .prepare(
             "SELECT id, name, prompt_type, content, entries, condense_prompt_entries, created_at, updated_at FROM prompt_templates ORDER BY created_at ASC",
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let rows = stmt
-        .query_map([], |row| row_to_template(row))
+        .query_map([], row_to_template)
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     let mut out = Vec::new();
     for r in rows {
@@ -614,6 +806,7 @@ pub fn load_templates(app: &AppHandle) -> Result<Vec<SystemPromptTemplate>, Stri
         // Guarantee existence of App Default template even if setup call was skipped
         let _ = ensure_app_default_template(app)?;
         let _ = ensure_local_roleplay_template(app)?;
+        let _ = ensure_companion_template(app)?;
         // Reload
         let mut stmt2 = conn
             .prepare(
@@ -621,7 +814,7 @@ pub fn load_templates(app: &AppHandle) -> Result<Vec<SystemPromptTemplate>, Stri
             )
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         let rows2 = stmt2
-            .query_map([], |row| row_to_template(row))
+            .query_map([], row_to_template)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         out.clear();
         for r in rows2 {
@@ -743,6 +936,30 @@ pub fn update_template(
     get_template(app, &id).map(|opt| opt.expect("updated row should exist"))
 }
 
+fn reset_protected_template_to_defaults(
+    app: &AppHandle,
+    id: &str,
+    content: String,
+    entries: Vec<SystemPromptEntry>,
+) -> Result<SystemPromptTemplate, String> {
+    let updated = update_template(
+        app,
+        id.to_string(),
+        None,
+        None,
+        Some(content),
+        Some(entries),
+        None,
+    )?;
+    let conn = open_db(app)?;
+    conn.execute(
+        "UPDATE prompt_templates SET updated_at = ?1 WHERE id = ?2",
+        params![updated.created_at, id],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    get_template(app, id).map(|opt| opt.expect("reset row should exist"))
+}
+
 pub fn delete_template(app: &AppHandle, id: String) -> Result<(), String> {
     if is_app_default_template(&id) {
         return Err(crate::utils::err_msg(
@@ -768,11 +985,17 @@ pub fn delete_template(app: &AppHandle, id: String) -> Result<(), String> {
 
 pub fn get_template(app: &AppHandle, id: &str) -> Result<Option<SystemPromptTemplate>, String> {
     let conn = open_db(app)?;
+    migrate_legacy_lorebook_entry_writer_template_id(&conn)?;
+    let lookup_id = if id == LEGACY_APP_LOREBOOK_ENTRY_GENERATOR_TEMPLATE_ID {
+        APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID
+    } else {
+        id
+    };
     let mut template = conn
         .query_row(
             "SELECT id, name, prompt_type, content, entries, condense_prompt_entries, created_at, updated_at FROM prompt_templates WHERE id = ?1",
-            params![id],
-            |row| row_to_template(row),
+            params![lookup_id],
+            row_to_template,
         )
         .optional()
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
@@ -787,17 +1010,36 @@ pub fn get_template(app: &AppHandle, id: &str) -> Result<Option<SystemPromptTemp
 pub fn ensure_app_default_template(app: &AppHandle) -> Result<String, String> {
     // Check existence
     if let Some(existing) = get_template(app, APP_DEFAULT_TEMPLATE_ID)? {
+        let defaults = prompt_engine::default_modular_prompt_entries();
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_DEFAULT_TEMPLATE_ID,
+            APP_DEFAULT_TEMPLATE_NAME,
+            PromptTemplateType::DirectChat,
+            PromptType::SystemPrompt,
+            &defaults,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_DEFAULT_TEMPLATE_ID,
             PromptType::SystemPrompt,
-            prompt_engine::default_modular_prompt_entries(),
+            defaults.clone(),
+        );
+        let _ = append_missing_entry(
+            app,
+            APP_DEFAULT_TEMPLATE_ID,
+            "entry_author_note",
+            defaults
+                .iter()
+                .cloned()
+                .find(|entry| entry.id == "entry_author_note")
+                .expect("author note entry should exist"),
         );
         let _ = append_missing_entry(
             app,
             APP_DEFAULT_TEMPLATE_ID,
             "entry_scene_image_protocol",
-            prompt_engine::default_modular_prompt_entries()
+            defaults
                 .into_iter()
                 .find(|entry| entry.id == "entry_scene_image_protocol")
                 .expect("scene image protocol entry should exist"),
@@ -827,11 +1069,20 @@ pub fn ensure_app_default_template(app: &AppHandle) -> Result<String, String> {
 
 pub fn ensure_local_roleplay_template(app: &AppHandle) -> Result<String, String> {
     if let Some(existing) = get_template(app, APP_LOCAL_ROLEPLAY_TEMPLATE_ID)? {
+        let defaults = prompt_engine::default_local_roleplay_entries();
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_LOCAL_ROLEPLAY_TEMPLATE_ID,
+            APP_LOCAL_ROLEPLAY_TEMPLATE_NAME,
+            PromptTemplateType::DirectChat,
+            PromptType::LocalRoleplayPrompt,
+            &defaults,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_LOCAL_ROLEPLAY_TEMPLATE_ID,
             PromptType::LocalRoleplayPrompt,
-            prompt_engine::default_local_roleplay_entries(),
+            defaults,
         );
         return Ok(existing.id);
     }
@@ -856,15 +1107,58 @@ pub fn ensure_local_roleplay_template(app: &AppHandle) -> Result<String, String>
     Ok(APP_LOCAL_ROLEPLAY_TEMPLATE_ID.to_string())
 }
 
+pub fn ensure_companion_template(app: &AppHandle) -> Result<String, String> {
+    let defaults = prompt_engine::default_companion_entries();
+    if let Some(existing) = get_template(app, APP_COMPANION_TEMPLATE_ID)? {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_COMPANION_TEMPLATE_ID,
+            APP_COMPANION_TEMPLATE_NAME,
+            PromptTemplateType::CompanionChat,
+            PromptType::CompanionPrompt,
+            &defaults,
+        )?;
+        let _ = maybe_backfill_entries(
+            app,
+            APP_COMPANION_TEMPLATE_ID,
+            PromptType::CompanionPrompt,
+            defaults.clone(),
+        );
+        let _ = backfill_missing_entry_conditions(app, APP_COMPANION_TEMPLATE_ID, &defaults);
+        return Ok(existing.id);
+    }
+
+    let conn = open_db(app)?;
+    let now = now();
+    let content = get_base_prompt(PromptType::CompanionPrompt);
+    let entries_json = serde_json::to_string(&defaults)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    conn.execute(
+        "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            APP_COMPANION_TEMPLATE_ID,
+            APP_COMPANION_TEMPLATE_NAME,
+            prompt_type_to_str(PromptTemplateType::CompanionChat),
+            content,
+            entries_json,
+            now
+        ],
+    )
+    .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    Ok(APP_COMPANION_TEMPLATE_ID.to_string())
+}
+
 pub fn ensure_dynamic_memory_templates(app: &AppHandle) -> Result<(), String> {
     let conn = open_db(app)?;
     let now = now();
+    let summary_entries = get_base_prompt_entries(PromptType::DynamicSummaryPrompt);
+    let memory_entries = get_base_prompt_entries(PromptType::DynamicMemoryPrompt);
+    let memory_local_entries = get_base_prompt_entries(PromptType::DynamicMemoryLocalPrompt);
 
     // Summarizer template
     if get_template(app, APP_DYNAMIC_SUMMARY_TEMPLATE_ID)?.is_none() {
         let content = get_base_prompt(PromptType::DynamicSummaryPrompt);
-        let entries = get_base_prompt_entries(PromptType::DynamicSummaryPrompt);
-        let entries_json = serde_json::to_string(&entries)
+        let entries_json = serde_json::to_string(&summary_entries)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         conn.execute(
             "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
@@ -879,19 +1173,41 @@ pub fn ensure_dynamic_memory_templates(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_DYNAMIC_SUMMARY_TEMPLATE_ID,
+            APP_DYNAMIC_SUMMARY_TEMPLATE_NAME,
+            PromptTemplateType::DynamicMemorySummarizer,
+            PromptType::DynamicSummaryPrompt,
+            &summary_entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_DYNAMIC_SUMMARY_TEMPLATE_ID,
             PromptType::DynamicSummaryPrompt,
-            get_base_prompt_entries(PromptType::DynamicSummaryPrompt),
+            summary_entries.clone(),
+        );
+        let _ = append_missing_entry(
+            app,
+            APP_DYNAMIC_SUMMARY_TEMPLATE_ID,
+            "summary_companion_temporal",
+            summary_entries
+                .iter()
+                .find(|entry| entry.id == "summary_companion_temporal")
+                .cloned()
+                .expect("summary_companion_temporal exists"),
+        );
+        let _ = backfill_missing_entry_conditions(
+            app,
+            APP_DYNAMIC_SUMMARY_TEMPLATE_ID,
+            &summary_entries,
         );
     }
 
     // Memory manager template
     if get_template(app, APP_DYNAMIC_MEMORY_TEMPLATE_ID)?.is_none() {
         let content = get_base_prompt(PromptType::DynamicMemoryPrompt);
-        let entries = get_base_prompt_entries(PromptType::DynamicMemoryPrompt);
-        let entries_json = serde_json::to_string(&entries)
+        let entries_json = serde_json::to_string(&memory_entries)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         conn.execute(
             "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
@@ -906,12 +1222,42 @@ pub fn ensure_dynamic_memory_templates(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_DYNAMIC_MEMORY_TEMPLATE_ID,
+            APP_DYNAMIC_MEMORY_TEMPLATE_NAME,
+            PromptTemplateType::DynamicMemoryManager,
+            PromptType::DynamicMemoryPrompt,
+            &memory_entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_DYNAMIC_MEMORY_TEMPLATE_ID,
             PromptType::DynamicMemoryPrompt,
-            get_base_prompt_entries(PromptType::DynamicMemoryPrompt),
+            memory_entries.clone(),
         );
+        let _ = append_missing_entry(
+            app,
+            APP_DYNAMIC_MEMORY_TEMPLATE_ID,
+            "memory_companion_linking",
+            memory_entries
+                .iter()
+                .find(|entry| entry.id == "memory_companion_linking")
+                .cloned()
+                .expect("memory_companion_linking exists"),
+        );
+        let _ = append_missing_entry(
+            app,
+            APP_DYNAMIC_MEMORY_TEMPLATE_ID,
+            "memory_companion_time_awareness",
+            memory_entries
+                .iter()
+                .find(|entry| entry.id == "memory_companion_time_awareness")
+                .cloned()
+                .expect("memory_companion_time_awareness exists"),
+        );
+        let _ =
+            backfill_missing_entry_conditions(app, APP_DYNAMIC_MEMORY_TEMPLATE_ID, &memory_entries);
         let _ = maybe_backfill_template_name(
             app,
             APP_DYNAMIC_MEMORY_TEMPLATE_ID,
@@ -921,8 +1267,7 @@ pub fn ensure_dynamic_memory_templates(app: &AppHandle) -> Result<(), String> {
 
     if get_template(app, APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID)?.is_none() {
         let content = get_base_prompt(PromptType::DynamicMemoryLocalPrompt);
-        let entries = get_base_prompt_entries(PromptType::DynamicMemoryLocalPrompt);
-        let entries_json = serde_json::to_string(&entries)
+        let entries_json = serde_json::to_string(&memory_local_entries)
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         conn.execute(
             "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
@@ -937,11 +1282,44 @@ pub fn ensure_dynamic_memory_templates(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID,
+            APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_NAME,
+            PromptTemplateType::DynamicMemoryManager,
+            PromptType::DynamicMemoryLocalPrompt,
+            &memory_local_entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID,
             PromptType::DynamicMemoryLocalPrompt,
-            get_base_prompt_entries(PromptType::DynamicMemoryLocalPrompt),
+            memory_local_entries.clone(),
+        );
+        let _ = append_missing_entry(
+            app,
+            APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID,
+            "memory_local_companion_linking",
+            memory_local_entries
+                .iter()
+                .find(|entry| entry.id == "memory_local_companion_linking")
+                .cloned()
+                .expect("memory_local_companion_linking exists"),
+        );
+        let _ = append_missing_entry(
+            app,
+            APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID,
+            "memory_local_companion_time_awareness",
+            memory_local_entries
+                .iter()
+                .find(|entry| entry.id == "memory_local_companion_time_awareness")
+                .cloned()
+                .expect("memory_local_companion_time_awareness exists"),
+        );
+        let _ = backfill_missing_entry_conditions(
+            app,
+            APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID,
+            &memory_local_entries,
         );
         let _ = maybe_backfill_template_name(
             app,
@@ -976,6 +1354,14 @@ pub fn ensure_group_chat_templates(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_GROUP_CHAT_TEMPLATE_ID,
+            APP_GROUP_CHAT_TEMPLATE_NAME,
+            PromptTemplateType::GroupChatConversational,
+            PromptType::GroupChatPrompt,
+            &group_chat_entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_GROUP_CHAT_TEMPLATE_ID,
@@ -1006,6 +1392,14 @@ pub fn ensure_group_chat_templates(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID,
+            APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_NAME,
+            PromptTemplateType::GroupChatRoleplay,
+            PromptType::GroupChatRoleplayPrompt,
+            &group_chat_roleplay_entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID,
@@ -1025,113 +1419,94 @@ pub fn ensure_group_chat_templates(app: &AppHandle) -> Result<(), String> {
 pub fn is_app_default_template(id: &str) -> bool {
     id == APP_DEFAULT_TEMPLATE_ID
         || id == APP_LOCAL_ROLEPLAY_TEMPLATE_ID
+        || id == APP_COMPANION_TEMPLATE_ID
         || id == APP_DYNAMIC_SUMMARY_TEMPLATE_ID
         || id == APP_DYNAMIC_MEMORY_TEMPLATE_ID
         || id == APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID
         || id == APP_HELP_ME_REPLY_TEMPLATE_ID
         || id == APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID
+        || id == APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID
+        || id == LEGACY_APP_LOREBOOK_ENTRY_GENERATOR_TEMPLATE_ID
+        || id == APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID
         || id == APP_GROUP_CHAT_TEMPLATE_ID
         || id == APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID
         || id == APP_AVATAR_GENERATION_TEMPLATE_ID
         || id == APP_AVATAR_EDIT_TEMPLATE_ID
         || id == APP_SCENE_GENERATION_TEMPLATE_ID
+        || id == APP_SCENE_PROMPT_WRITER_TEMPLATE_ID
         || id == APP_DESIGN_REFERENCE_TEMPLATE_ID
+        || id == APP_COMPANION_SOUL_WRITER_TEMPLATE_ID
+        || id == APP_LOREBOOK_GENERATOR_PLANNER_TEMPLATE_ID
+        || id == APP_LOREBOOK_GENERATOR_WRITER_TEMPLATE_ID
+        || id == APP_LOREBOOK_GENERATOR_REFINE_TEMPLATE_ID
+        || id == APP_LOREBOOK_GENERATOR_COHERENCE_TEMPLATE_ID
 }
 
 pub fn reset_app_default_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::SystemPrompt);
-    update_template(
+    reset_protected_template_to_defaults(
         app,
-        APP_DEFAULT_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(prompt_engine::default_modular_prompt_entries()),
-        None,
+        APP_DEFAULT_TEMPLATE_ID,
+        content,
+        prompt_engine::default_modular_prompt_entries(),
     )
 }
 
 pub fn reset_local_roleplay_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::LocalRoleplayPrompt);
-    update_template(
+    reset_protected_template_to_defaults(
         app,
-        APP_LOCAL_ROLEPLAY_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(prompt_engine::default_local_roleplay_entries()),
-        None,
+        APP_LOCAL_ROLEPLAY_TEMPLATE_ID,
+        content,
+        prompt_engine::default_local_roleplay_entries(),
+    )
+}
+
+pub fn reset_companion_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
+    let content = get_base_prompt(PromptType::CompanionPrompt);
+    reset_protected_template_to_defaults(
+        app,
+        APP_COMPANION_TEMPLATE_ID,
+        content,
+        prompt_engine::default_companion_entries(),
     )
 }
 
 pub fn reset_dynamic_summary_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::DynamicSummaryPrompt);
     let entries = get_base_prompt_entries(PromptType::DynamicSummaryPrompt);
-    update_template(
-        app,
-        APP_DYNAMIC_SUMMARY_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_DYNAMIC_SUMMARY_TEMPLATE_ID, content, entries)
 }
 
 pub fn reset_dynamic_memory_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::DynamicMemoryPrompt);
     let entries = get_base_prompt_entries(PromptType::DynamicMemoryPrompt);
-    update_template(
-        app,
-        APP_DYNAMIC_MEMORY_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_DYNAMIC_MEMORY_TEMPLATE_ID, content, entries)
 }
 
-pub fn reset_dynamic_memory_local_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
+pub fn reset_dynamic_memory_local_template(
+    app: &AppHandle,
+) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::DynamicMemoryLocalPrompt);
     let entries = get_base_prompt_entries(PromptType::DynamicMemoryLocalPrompt);
-    update_template(
+    reset_protected_template_to_defaults(
         app,
-        APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
+        APP_DYNAMIC_MEMORY_LOCAL_TEMPLATE_ID,
+        content,
+        entries,
     )
 }
 
 pub fn reset_group_chat_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::GroupChatPrompt);
     let entries = get_base_prompt_entries(PromptType::GroupChatPrompt);
-    update_template(
-        app,
-        APP_GROUP_CHAT_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_GROUP_CHAT_TEMPLATE_ID, content, entries)
 }
 
 pub fn reset_group_chat_roleplay_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::GroupChatRoleplayPrompt);
     let entries = get_base_prompt_entries(PromptType::GroupChatRoleplayPrompt);
-    update_template(
-        app,
-        APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_GROUP_CHAT_ROLEPLAY_TEMPLATE_ID, content, entries)
 }
 
 pub fn ensure_help_me_reply_template(app: &AppHandle) -> Result<(), String> {
@@ -1155,11 +1530,20 @@ pub fn ensure_help_me_reply_template(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let entries = get_base_prompt_entries(PromptType::HelpMeReplyPrompt);
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_HELP_ME_REPLY_TEMPLATE_ID,
+            APP_HELP_ME_REPLY_TEMPLATE_NAME,
+            PromptTemplateType::ReplyHelperRoleplay,
+            PromptType::HelpMeReplyPrompt,
+            &entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_HELP_ME_REPLY_TEMPLATE_ID,
             PromptType::HelpMeReplyPrompt,
-            get_base_prompt_entries(PromptType::HelpMeReplyPrompt),
+            entries,
         );
     }
 
@@ -1184,13 +1568,189 @@ pub fn ensure_help_me_reply_template(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let entries = get_base_prompt_entries(PromptType::HelpMeReplyConversationalPrompt);
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID,
+            APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_NAME,
+            PromptTemplateType::ReplyHelperConversational,
+            PromptType::HelpMeReplyConversationalPrompt,
+            &entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID,
             PromptType::HelpMeReplyConversationalPrompt,
-            get_base_prompt_entries(PromptType::HelpMeReplyConversationalPrompt),
+            entries,
         );
     }
+    Ok(())
+}
+
+pub fn ensure_lorebook_entry_writer_template(app: &AppHandle) -> Result<(), String> {
+    if get_template(app, APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID)?.is_none() {
+        let conn = open_db(app)?;
+        let now = now();
+        let content = get_base_prompt(PromptType::LorebookEntryWriterPrompt);
+        let entries = get_base_prompt_entries(PromptType::LorebookEntryWriterPrompt);
+        let entries_json = serde_json::to_string(&entries)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID,
+                APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_NAME,
+                prompt_type_to_str(PromptTemplateType::LorebookEntryWriter),
+                content,
+                entries_json,
+                now
+            ],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    } else {
+        let entries = get_base_prompt_entries(PromptType::LorebookEntryWriterPrompt);
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID,
+            APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_NAME,
+            PromptTemplateType::LorebookEntryWriter,
+            PromptType::LorebookEntryWriterPrompt,
+            &entries,
+        )?;
+        let _ = maybe_backfill_entries(
+            app,
+            APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID,
+            PromptType::LorebookEntryWriterPrompt,
+            entries,
+        );
+        let _ = maybe_backfill_template_name(
+            app,
+            APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID,
+            APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_NAME,
+        );
+    }
+
+    Ok(())
+}
+
+pub fn ensure_lorebook_keyword_generator_template(app: &AppHandle) -> Result<(), String> {
+    if get_template(app, APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID)?.is_none() {
+        let conn = open_db(app)?;
+        let now = now();
+        let content = get_base_prompt(PromptType::LorebookKeywordGeneratorPrompt);
+        let entries = get_base_prompt_entries(PromptType::LorebookKeywordGeneratorPrompt);
+        let entries_json = serde_json::to_string(&entries)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID,
+                APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_NAME,
+                prompt_type_to_str(PromptTemplateType::LorebookKeywordGenerator),
+                content,
+                entries_json,
+                now
+            ],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    } else {
+        let entries = get_base_prompt_entries(PromptType::LorebookKeywordGeneratorPrompt);
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID,
+            APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_NAME,
+            PromptTemplateType::LorebookKeywordGenerator,
+            PromptType::LorebookKeywordGeneratorPrompt,
+            &entries,
+        )?;
+        let _ = maybe_backfill_entries(
+            app,
+            APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID,
+            PromptType::LorebookKeywordGeneratorPrompt,
+            entries,
+        );
+        let _ = maybe_backfill_template_name(
+            app,
+            APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID,
+            APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_NAME,
+        );
+    }
+
+    Ok(())
+}
+
+fn ensure_lorebook_generator_template_inner(
+    app: &AppHandle,
+    id: &'static str,
+    name: &'static str,
+    template_type: PromptTemplateType,
+    prompt_type: PromptType,
+) -> Result<(), String> {
+    if get_template(app, id)?.is_none() {
+        let conn = open_db(app)?;
+        let now = now();
+        let content = get_base_prompt(prompt_type);
+        let entries = get_base_prompt_entries(prompt_type);
+        let entries_json = serde_json::to_string(&entries)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                id,
+                name,
+                prompt_type_to_str(template_type),
+                content,
+                entries_json,
+                now
+            ],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    } else {
+        let entries = get_base_prompt_entries(prompt_type);
+        let _ = refresh_unedited_protected_template(
+            app,
+            id,
+            name,
+            template_type,
+            prompt_type,
+            &entries,
+        )?;
+        let _ = maybe_backfill_entries(app, id, prompt_type, entries);
+        let _ = maybe_backfill_template_name(app, id, name);
+    }
+
+    Ok(())
+}
+
+pub fn ensure_lorebook_generator_templates(app: &AppHandle) -> Result<(), String> {
+    ensure_lorebook_generator_template_inner(
+        app,
+        APP_LOREBOOK_GENERATOR_PLANNER_TEMPLATE_ID,
+        APP_LOREBOOK_GENERATOR_PLANNER_TEMPLATE_NAME,
+        PromptTemplateType::LorebookGeneratorPlanner,
+        PromptType::LorebookGeneratorPlannerPrompt,
+    )?;
+    ensure_lorebook_generator_template_inner(
+        app,
+        APP_LOREBOOK_GENERATOR_WRITER_TEMPLATE_ID,
+        APP_LOREBOOK_GENERATOR_WRITER_TEMPLATE_NAME,
+        PromptTemplateType::LorebookGeneratorWriter,
+        PromptType::LorebookGeneratorWriterPrompt,
+    )?;
+    ensure_lorebook_generator_template_inner(
+        app,
+        APP_LOREBOOK_GENERATOR_REFINE_TEMPLATE_ID,
+        APP_LOREBOOK_GENERATOR_REFINE_TEMPLATE_NAME,
+        PromptTemplateType::LorebookGeneratorRefine,
+        PromptType::LorebookGeneratorRefinePrompt,
+    )?;
+    ensure_lorebook_generator_template_inner(
+        app,
+        APP_LOREBOOK_GENERATOR_COHERENCE_TEMPLATE_ID,
+        APP_LOREBOOK_GENERATOR_COHERENCE_TEMPLATE_NAME,
+        PromptTemplateType::LorebookGeneratorCoherence,
+        PromptType::LorebookGeneratorCoherencePrompt,
+    )?;
     Ok(())
 }
 
@@ -1217,6 +1777,14 @@ pub fn ensure_avatar_image_templates(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_AVATAR_GENERATION_TEMPLATE_ID,
+            APP_AVATAR_GENERATION_TEMPLATE_NAME,
+            PromptTemplateType::AvatarGeneration,
+            PromptType::AvatarGenerationPrompt,
+            &avatar_generation_entries,
+        )?;
         let _ = maybe_migrate_legacy_template_content(
             app,
             APP_AVATAR_GENERATION_TEMPLATE_ID,
@@ -1253,6 +1821,14 @@ pub fn ensure_avatar_image_templates(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_AVATAR_EDIT_TEMPLATE_ID,
+            APP_AVATAR_EDIT_TEMPLATE_NAME,
+            PromptTemplateType::AvatarEditRequest,
+            PromptType::AvatarEditPrompt,
+            &avatar_edit_entries,
+        )?;
         let _ = maybe_migrate_legacy_template_content(
             app,
             APP_AVATAR_EDIT_TEMPLATE_ID,
@@ -1297,6 +1873,14 @@ pub fn ensure_scene_generation_template(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_SCENE_GENERATION_TEMPLATE_ID,
+            APP_SCENE_GENERATION_TEMPLATE_NAME,
+            PromptTemplateType::SceneGeneration,
+            PromptType::SceneGenerationPrompt,
+            &scene_entries,
+        )?;
         let _ = maybe_migrate_legacy_template_content(
             app,
             APP_SCENE_GENERATION_TEMPLATE_ID,
@@ -1363,6 +1947,49 @@ pub fn ensure_scene_generation_template(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn ensure_scene_prompt_writer_template(app: &AppHandle) -> Result<(), String> {
+    let conn = open_db(app)?;
+    let now = now();
+    let entries = get_base_prompt_entries(PromptType::ScenePromptWriterPrompt);
+
+    if get_template(app, APP_SCENE_PROMPT_WRITER_TEMPLATE_ID)?.is_none() {
+        let content = get_base_prompt(PromptType::ScenePromptWriterPrompt);
+        let entries_json = serde_json::to_string(&entries)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                APP_SCENE_PROMPT_WRITER_TEMPLATE_ID,
+                APP_SCENE_PROMPT_WRITER_TEMPLATE_NAME,
+                prompt_type_to_str(PromptTemplateType::ScenePromptWriter),
+                content,
+                entries_json,
+                now
+            ],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_SCENE_PROMPT_WRITER_TEMPLATE_ID,
+            APP_SCENE_PROMPT_WRITER_TEMPLATE_NAME,
+            PromptTemplateType::ScenePromptWriter,
+            PromptType::ScenePromptWriterPrompt,
+            &entries,
+        )?;
+        let _ = maybe_backfill_entries(
+            app,
+            APP_SCENE_PROMPT_WRITER_TEMPLATE_ID,
+            PromptType::ScenePromptWriterPrompt,
+            entries.clone(),
+        );
+        let _ =
+            backfill_missing_entry_conditions(app, APP_SCENE_PROMPT_WRITER_TEMPLATE_ID, &entries);
+    }
+
+    Ok(())
+}
+
 pub fn ensure_design_reference_template(app: &AppHandle) -> Result<(), String> {
     let conn = open_db(app)?;
     let now = now();
@@ -1385,6 +2012,14 @@ pub fn ensure_design_reference_template(app: &AppHandle) -> Result<(), String> {
         )
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
     } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_DESIGN_REFERENCE_TEMPLATE_ID,
+            APP_DESIGN_REFERENCE_TEMPLATE_NAME,
+            PromptTemplateType::DesignReferenceWriter,
+            PromptType::DesignReferencePrompt,
+            &design_reference_entries,
+        )?;
         let _ = maybe_backfill_entries(
             app,
             APP_DESIGN_REFERENCE_TEMPLATE_ID,
@@ -1411,18 +2046,53 @@ pub fn ensure_design_reference_template(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+pub fn ensure_companion_soul_writer_template(app: &AppHandle) -> Result<(), String> {
+    let conn = open_db(app)?;
+    let now = now();
+    let entries = get_base_prompt_entries(PromptType::CompanionSoulWriterPrompt);
+
+    if get_template(app, APP_COMPANION_SOUL_WRITER_TEMPLATE_ID)?.is_none() {
+        let content = get_base_prompt(PromptType::CompanionSoulWriterPrompt);
+        let entries_json = serde_json::to_string(&entries)
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO prompt_templates (id, name, prompt_type, content, entries, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+            params![
+                APP_COMPANION_SOUL_WRITER_TEMPLATE_ID,
+                APP_COMPANION_SOUL_WRITER_TEMPLATE_NAME,
+                prompt_type_to_str(PromptTemplateType::CompanionSoulWriter),
+                content,
+                entries_json,
+                now
+            ],
+        )
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+    } else {
+        let _ = refresh_unedited_protected_template(
+            app,
+            APP_COMPANION_SOUL_WRITER_TEMPLATE_ID,
+            APP_COMPANION_SOUL_WRITER_TEMPLATE_NAME,
+            PromptTemplateType::CompanionSoulWriter,
+            PromptType::CompanionSoulWriterPrompt,
+            &entries,
+        )?;
+        let _ = maybe_backfill_entries(
+            app,
+            APP_COMPANION_SOUL_WRITER_TEMPLATE_ID,
+            PromptType::CompanionSoulWriterPrompt,
+            entries.clone(),
+        );
+        let _ =
+            backfill_missing_entry_conditions(app, APP_COMPANION_SOUL_WRITER_TEMPLATE_ID, &entries);
+    }
+
+    Ok(())
+}
+
 pub fn reset_help_me_reply_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::HelpMeReplyPrompt);
     let entries = get_base_prompt_entries(PromptType::HelpMeReplyPrompt);
-    update_template(
-        app,
-        APP_HELP_ME_REPLY_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_HELP_ME_REPLY_TEMPLATE_ID, content, entries)
 }
 
 pub fn reset_help_me_reply_conversational_template(
@@ -1430,80 +2100,96 @@ pub fn reset_help_me_reply_conversational_template(
 ) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::HelpMeReplyConversationalPrompt);
     let entries = get_base_prompt_entries(PromptType::HelpMeReplyConversationalPrompt);
-    update_template(
+    reset_protected_template_to_defaults(
         app,
-        APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
+        APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID,
+        content,
+        entries,
+    )
+}
+
+pub fn reset_lorebook_entry_writer_template(
+    app: &AppHandle,
+) -> Result<SystemPromptTemplate, String> {
+    let content = get_base_prompt(PromptType::LorebookEntryWriterPrompt);
+    let entries = get_base_prompt_entries(PromptType::LorebookEntryWriterPrompt);
+    reset_protected_template_to_defaults(
+        app,
+        APP_LOREBOOK_ENTRY_WRITER_TEMPLATE_ID,
+        content,
+        entries,
+    )
+}
+
+pub fn reset_lorebook_keyword_generator_template(
+    app: &AppHandle,
+) -> Result<SystemPromptTemplate, String> {
+    let content = get_base_prompt(PromptType::LorebookKeywordGeneratorPrompt);
+    let entries = get_base_prompt_entries(PromptType::LorebookKeywordGeneratorPrompt);
+    reset_protected_template_to_defaults(
+        app,
+        APP_LOREBOOK_KEYWORD_GENERATOR_TEMPLATE_ID,
+        content,
+        entries,
     )
 }
 
 pub fn reset_avatar_generation_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::AvatarGenerationPrompt);
     let entries = get_base_prompt_entries(PromptType::AvatarGenerationPrompt);
-    update_template(
-        app,
-        APP_AVATAR_GENERATION_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_AVATAR_GENERATION_TEMPLATE_ID, content, entries)
 }
 
 pub fn reset_avatar_edit_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::AvatarEditPrompt);
     let entries = get_base_prompt_entries(PromptType::AvatarEditPrompt);
-    update_template(
-        app,
-        APP_AVATAR_EDIT_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_AVATAR_EDIT_TEMPLATE_ID, content, entries)
 }
 
 pub fn reset_scene_generation_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::SceneGenerationPrompt);
     let entries = get_base_prompt_entries(PromptType::SceneGenerationPrompt);
-    update_template(
-        app,
-        APP_SCENE_GENERATION_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
-    )
+    reset_protected_template_to_defaults(app, APP_SCENE_GENERATION_TEMPLATE_ID, content, entries)
+}
+
+pub fn reset_scene_prompt_writer_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
+    let content = get_base_prompt(PromptType::ScenePromptWriterPrompt);
+    let entries = get_base_prompt_entries(PromptType::ScenePromptWriterPrompt);
+    reset_protected_template_to_defaults(app, APP_SCENE_PROMPT_WRITER_TEMPLATE_ID, content, entries)
 }
 
 pub fn reset_design_reference_template(app: &AppHandle) -> Result<SystemPromptTemplate, String> {
     let content = get_base_prompt(PromptType::DesignReferencePrompt);
     let entries = get_base_prompt_entries(PromptType::DesignReferencePrompt);
-    update_template(
+    reset_protected_template_to_defaults(app, APP_DESIGN_REFERENCE_TEMPLATE_ID, content, entries)
+}
+
+pub fn reset_companion_soul_writer_template(
+    app: &AppHandle,
+) -> Result<SystemPromptTemplate, String> {
+    let content = get_base_prompt(PromptType::CompanionSoulWriterPrompt);
+    let entries = get_base_prompt_entries(PromptType::CompanionSoulWriterPrompt);
+    reset_protected_template_to_defaults(
         app,
-        APP_DESIGN_REFERENCE_TEMPLATE_ID.to_string(),
-        None,
-        None,
-        Some(content.clone()),
-        Some(entries),
-        None,
+        APP_COMPANION_SOUL_WRITER_TEMPLATE_ID,
+        content,
+        entries,
     )
 }
 
 /// Get the Help Me Reply template from DB, falling back to default if not found
-pub fn get_help_me_reply_prompt(app: &AppHandle, style: &str) -> String {
-    let template_id = if style == "conversational" {
-        APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID
-    } else {
-        APP_HELP_ME_REPLY_TEMPLATE_ID
-    };
+pub fn get_help_me_reply_prompt(
+    app: &AppHandle,
+    style: &str,
+    override_template_id: Option<&str>,
+) -> String {
+    let template_id = override_template_id.unwrap_or_else(|| {
+        if style == "conversational" {
+            APP_HELP_ME_REPLY_CONVERSATIONAL_TEMPLATE_ID
+        } else {
+            APP_HELP_ME_REPLY_TEMPLATE_ID
+        }
+    });
 
     let prompt_type = if style == "conversational" {
         PromptType::HelpMeReplyConversationalPrompt

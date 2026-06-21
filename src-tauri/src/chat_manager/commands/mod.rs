@@ -14,7 +14,7 @@ use crate::chat_manager::storage::{
 use crate::chat_manager::turn_builder::{
     append_image_directive_instructions, conversation_window_with_pinned,
     insert_in_chat_prompt_entries, manual_window_size, maybe_swap_message_for_api,
-    partition_prompt_entries,
+    message_visible_to_model, partition_prompt_entries,
 };
 use crate::utils::now_millis;
 
@@ -26,10 +26,12 @@ use super::service::ChatContext;
 use super::storage::default_character_rules;
 use super::types::{
     ChatAddMessageAttachmentArgs, ChatCompletionArgs, ChatContinueArgs,
-    ChatGenerateDesignReferenceDescriptionArgs, ChatGenerateSceneImageArgs,
-    ChatGenerateScenePromptArgs, ChatRegenerateArgs, ChatTurnResult, ContinueResult,
-    ImageAttachment, PromptTemplateType, RegenerateResult, Session, Settings, StoredMessage,
-    SystemPromptEntry, SystemPromptTemplate,
+    ChatGenerateCompanionSoulArgs, ChatGenerateDesignReferenceDescriptionArgs,
+    ChatGenerateLorebookEntryDraftArgs, ChatGenerateLorebookKeywordDraftArgs,
+    ChatGenerateSceneImageArgs, ChatGenerateScenePromptArgs, ChatRegenerateArgs, ChatTurnResult,
+    ContinueResult, ImageAttachment, LorebookEntryDraftResult, LorebookKeywordDraftResult,
+    PromptTemplateType, RegenerateResult, Session, Settings, StoredMessage, SystemPromptEntry,
+    SystemPromptTemplate,
 };
 use crate::storage_manager::sessions::{messages_upsert_batch_typed, session_upsert_meta_typed};
 
@@ -93,7 +95,7 @@ fn infer_debug_operation(session: &Session, message_index: usize) -> DebugMessag
     let previous_non_scene = session.messages[..message_index]
         .iter()
         .rev()
-        .find(|item| item.role == "user" || item.role == "assistant");
+        .find(|item| message_visible_to_model(item) && item.role != "scene");
 
     if previous_non_scene
         .map(|item| item.role.eq_ignore_ascii_case("assistant"))
@@ -213,6 +215,20 @@ fn build_debug_completion_messages(
         )
     };
 
+    let time_stamp_enabled =
+        crate::chat_manager::temporal::companion_time_awareness_enabled(session);
+    let time_frame_delta = if time_stamp_enabled {
+        let latest_created = pinned_msgs
+            .iter()
+            .chain(recent_msgs.iter())
+            .map(|msg| msg.created_at)
+            .max()
+            .unwrap_or(0);
+        crate::chat_manager::temporal::temporal_frame_delta(session, latest_created)
+    } else {
+        0
+    };
+
     let mut chat_messages = Vec::new();
     for msg in &pinned_msgs {
         let msg_with_data = load_attachment_data(app, msg);
@@ -223,6 +239,8 @@ fn build_debug_completion_messages(
             character_name,
             persona_name,
             allow_image_input,
+            time_frame_delta,
+            time_stamp_enabled,
         );
     }
 
@@ -235,6 +253,8 @@ fn build_debug_completion_messages(
             character_name,
             persona_name,
             allow_image_input,
+            time_frame_delta,
+            time_stamp_enabled,
         );
     }
 
@@ -276,6 +296,19 @@ fn build_debug_regenerate_messages(
         .map(|(_, message)| message.clone())
         .collect();
 
+    let time_stamp_enabled =
+        crate::chat_manager::temporal::companion_time_awareness_enabled(session);
+    let time_frame_delta = if time_stamp_enabled {
+        let latest_created = messages_before_target
+            .iter()
+            .map(|msg| msg.created_at)
+            .max()
+            .unwrap_or(0);
+        crate::chat_manager::temporal::temporal_frame_delta(session, latest_created)
+    } else {
+        0
+    };
+
     let mut chat_messages = Vec::new();
     if dynamic_memory_enabled {
         let (pinned_msgs, recent_msgs) = conversation_window_with_pinned(
@@ -291,6 +324,8 @@ fn build_debug_regenerate_messages(
                 character_name,
                 persona_name,
                 allow_image_input,
+                time_frame_delta,
+                time_stamp_enabled,
             );
         }
         for msg in &recent_msgs {
@@ -302,6 +337,8 @@ fn build_debug_regenerate_messages(
                 character_name,
                 persona_name,
                 allow_image_input,
+                time_frame_delta,
+                time_stamp_enabled,
             );
         }
     } else {
@@ -321,6 +358,8 @@ fn build_debug_regenerate_messages(
                 character_name,
                 persona_name,
                 allow_image_input,
+                time_frame_delta,
+                time_stamp_enabled,
             );
         }
     }
@@ -487,7 +526,7 @@ pub fn chat_message_debug_snapshot(
     let persona_name = persona
         .as_ref()
         .map(|item| item.title.as_str())
-        .unwrap_or("");
+        .unwrap_or("user");
     let allow_image_input = model
         .input_scopes
         .iter()
@@ -717,6 +756,10 @@ pub fn chat_template_export_as_usc(template_json: String) -> Result<String, Stri
         .get("promptTemplateId")
         .and_then(|item| item.as_str())
         .map(|item| item.to_string());
+    let lorebook_ids_override = value
+        .get("lorebookIdsOverride")
+        .filter(|item| item.is_array())
+        .map(|item| item.to_string());
     let created_at = value
         .get("createdAt")
         .and_then(|item| item.as_i64())
@@ -728,6 +771,7 @@ pub fn chat_template_export_as_usc(template_json: String) -> Result<String, Stri
         name,
         scene_id,
         prompt_template_id,
+        lorebook_ids_override,
         created_at,
     };
 
@@ -790,6 +834,11 @@ pub fn reset_local_roleplay_template(app: AppHandle) -> Result<SystemPromptTempl
 }
 
 #[tauri::command]
+pub fn reset_companion_template(app: AppHandle) -> Result<SystemPromptTemplate, String> {
+    prompts::reset_companion_template(&app)
+}
+
+#[tauri::command]
 pub fn reset_dynamic_summary_template(app: AppHandle) -> Result<SystemPromptTemplate, String> {
     prompts::reset_dynamic_summary_template(&app)
 }
@@ -827,6 +876,20 @@ pub fn reset_help_me_reply_conversational_template(
 }
 
 #[tauri::command]
+pub fn reset_lorebook_entry_writer_template(
+    app: AppHandle,
+) -> Result<SystemPromptTemplate, String> {
+    prompts::reset_lorebook_entry_writer_template(&app)
+}
+
+#[tauri::command]
+pub fn reset_lorebook_keyword_generator_template(
+    app: AppHandle,
+) -> Result<SystemPromptTemplate, String> {
+    prompts::reset_lorebook_keyword_generator_template(&app)
+}
+
+#[tauri::command]
 pub fn reset_avatar_generation_template(app: AppHandle) -> Result<SystemPromptTemplate, String> {
     prompts::reset_avatar_generation_template(&app)
 }
@@ -842,8 +905,20 @@ pub fn reset_scene_generation_template(app: AppHandle) -> Result<SystemPromptTem
 }
 
 #[tauri::command]
+pub fn reset_scene_prompt_writer_template(app: AppHandle) -> Result<SystemPromptTemplate, String> {
+    prompts::reset_scene_prompt_writer_template(&app)
+}
+
+#[tauri::command]
 pub fn reset_design_reference_template(app: AppHandle) -> Result<SystemPromptTemplate, String> {
     prompts::reset_design_reference_template(&app)
+}
+
+#[tauri::command]
+pub fn reset_companion_soul_writer_template(
+    app: AppHandle,
+) -> Result<SystemPromptTemplate, String> {
+    prompts::reset_companion_soul_writer_template(&app)
 }
 
 #[tauri::command]
@@ -917,12 +992,16 @@ pub fn render_prompt_preview(
             title: "Preview".to_string(),
             background_image_path: None,
             system_prompt: None,
+            mode: character.mode.clone(),
             selected_scene_id: None,
             prompt_template_id: None,
+            lorebook_ids_override: None,
+            author_note: None,
             persona_id: None,
             persona_disabled: false,
             voice_autoplay: None,
             advanced_model_settings: None,
+            companion_state: None,
             messages: vec![],
             archived: false,
             created_at: now,
@@ -944,8 +1023,9 @@ pub fn render_prompt_preview(
     let effective_persona_id = resolve_persona_id(&session, persona_id.as_deref());
     let persona = context.choose_persona(effective_persona_id);
 
-    let rendered =
-        prompt_engine::render_with_context(&app, &content, &character, persona, &session, settings);
+    let rendered = prompt_engine::render_with_context(
+        &app, &content, &character, persona, &session, settings, None,
+    );
     Ok(rendered)
 }
 
@@ -1071,6 +1151,30 @@ pub async fn chat_generate_design_reference_description(
     args: ChatGenerateDesignReferenceDescriptionArgs,
 ) -> Result<String, String> {
     super::scene::chat_generate_design_reference_description(app, args).await
+}
+
+#[tauri::command]
+pub async fn chat_generate_companion_soul(
+    app: AppHandle,
+    args: ChatGenerateCompanionSoulArgs,
+) -> Result<Value, String> {
+    super::companion_soul_writer::chat_generate_companion_soul(app, args).await
+}
+
+#[tauri::command]
+pub async fn chat_generate_lorebook_entry_draft(
+    app: AppHandle,
+    args: ChatGenerateLorebookEntryDraftArgs,
+) -> Result<LorebookEntryDraftResult, String> {
+    super::lorebook_entry_generator::chat_generate_lorebook_entry_draft(app, args).await
+}
+
+#[tauri::command]
+pub async fn chat_generate_lorebook_keyword_draft(
+    app: AppHandle,
+    args: ChatGenerateLorebookKeywordDraftArgs,
+) -> Result<LorebookKeywordDraftResult, String> {
+    super::lorebook_entry_generator::chat_generate_lorebook_keyword_draft(app, args).await
 }
 
 #[tauri::command]

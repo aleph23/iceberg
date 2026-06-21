@@ -124,7 +124,7 @@ fn persist_session(app: &AppHandle, session: &CreationSession) -> Result<(), Str
     Ok(())
 }
 
-fn emit_creation_helper_update(
+pub(crate) fn emit_creation_helper_update(
     app: &AppHandle,
     session_id: &str,
     session: &CreationSession,
@@ -147,11 +147,74 @@ fn emit_creation_helper_update(
     );
 }
 
+pub(crate) fn read_creation_helper_fallback_format(
+    app: &AppHandle,
+) -> crate::creation_helper::agent::CreationHelperFallbackFormat {
+    let Some(settings_json) = internal_read_settings(app).ok().flatten() else {
+        return crate::creation_helper::agent::CreationHelperFallbackFormat::Native;
+    };
+    let Ok(settings): Result<Value, _> = serde_json::from_str(&settings_json) else {
+        return crate::creation_helper::agent::CreationHelperFallbackFormat::Native;
+    };
+    let value = settings
+        .get("advancedSettings")
+        .and_then(|a| a.get("creationHelperToolFallback"))
+        .and_then(|v| v.as_str());
+    crate::creation_helper::agent::CreationHelperFallbackFormat::from_setting(value)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn emit_creation_helper_step(
+    app: &AppHandle,
+    session_id: &str,
+    request_id: &str,
+    step_index: usize,
+    name: &str,
+    arguments: &Value,
+    status: &str,
+    result: Option<&Value>,
+) {
+    let _ = app.emit(
+        "creation-helper-step",
+        json!({
+            "sessionId": session_id,
+            "requestId": request_id,
+            "stepIndex": step_index,
+            "name": name,
+            "arguments": arguments,
+            "status": status,
+            "result": result,
+        }),
+    );
+}
+
+pub(crate) fn emit_creation_helper_turn_start(app: &AppHandle, session_id: &str, request_id: &str) {
+    let _ = app.emit(
+        "creation-helper-turn-start",
+        json!({
+            "sessionId": session_id,
+            "requestId": request_id,
+        }),
+    );
+}
+
+pub(crate) fn emit_creation_segment_boundary(app: &AppHandle, request_id: &str) {
+    let channel = format!("api-normalized://{}", request_id);
+    let _ = app.emit(
+        &channel,
+        json!({
+            "requestId": request_id,
+            "type": "creationSegmentBoundary",
+            "data": Value::Null,
+        }),
+    );
+}
+
 fn is_ollama_provider(provider_id: &str) -> bool {
     provider_id.eq_ignore_ascii_case("ollama")
 }
 
-fn creation_tool_call_payload(
+pub(crate) fn creation_tool_call_payload(
     provider_id: &str,
     id: &str,
     index: usize,
@@ -185,7 +248,7 @@ fn creation_tool_call_payload(
     }
 }
 
-fn creation_tool_result_message(
+pub(crate) fn creation_tool_result_message(
     provider_id: &str,
     tool_call_id: &str,
     tool_name: Option<&str>,
@@ -335,40 +398,69 @@ pub fn get_latest_resumable_session(
     creation_goal: Option<CreationGoal>,
 ) -> Result<Option<CreationSession>, String> {
     let conn = open_db(app)?;
-    let row = if let Some(goal) = creation_goal {
-        conn.query_row(
-            "SELECT session_json, uploaded_images_json
-             FROM creation_helper_sessions
-             WHERE creation_goal = ?1 AND status != 'completed'
-             ORDER BY updated_at DESC
-             LIMIT 1",
-            [serialize_creation_goal(&goal)],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
+    let sql = if creation_goal.is_some() {
+        "SELECT session_json, uploaded_images_json
+         FROM creation_helper_sessions
+         WHERE creation_goal = ?1 AND status != 'completed'
+         ORDER BY updated_at DESC"
     } else {
-        conn.query_row(
-            "SELECT session_json, uploaded_images_json
-             FROM creation_helper_sessions
-             WHERE status != 'completed'
-             ORDER BY updated_at DESC
-             LIMIT 1",
-            [],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
+        "SELECT session_json, uploaded_images_json
+         FROM creation_helper_sessions
+         WHERE status != 'completed'
+         ORDER BY updated_at DESC"
+    };
+    let mut stmt = conn
+        .prepare(sql)
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+
+    let try_decode = |row: (String, String)| -> Option<CreationSession> {
+        let (session_json, images_json) = row;
+        let session = match serde_json::from_str::<CreationSession>(&session_json) {
+            Ok(s) => s,
+            Err(err) => {
+                log_warn(
+                    app,
+                    "creation_helper",
+                    format!("skipping unreadable session row: {}", err),
+                );
+                return None;
+            }
+        };
+        let images: HashMap<String, UploadedImage> =
+            serde_json::from_str(&images_json).unwrap_or_default();
+        hydrate_session_cache(&session, images).ok()?;
+        Some(session)
     };
 
-    match row {
-        Ok((session_json, images_json)) => {
-            let session: CreationSession = serde_json::from_str(&session_json)
-                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-            let images: HashMap<String, UploadedImage> = serde_json::from_str(&images_json)
-                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-            hydrate_session_cache(&session, images)?;
-            Ok(Some(session))
+    let rows: Vec<rusqlite::Result<(String, String)>> = if let Some(goal) = creation_goal {
+        stmt.query_map([serialize_creation_goal(&goal)], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+        .collect()
+    } else {
+        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?
+            .collect()
+    };
+
+    for row in rows {
+        let row = match row {
+            Ok(r) => r,
+            Err(err) => {
+                log_warn(
+                    app,
+                    "creation_helper",
+                    format!("skipping session row read error: {}", err),
+                );
+                continue;
+            }
+        };
+        if let Some(session) = try_decode(row) {
+            return Ok(Some(session));
         }
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(crate::utils::err_to_string(module_path!(), line!(), e)),
     }
+    Ok(None)
 }
 
 fn build_session_summary(session: &CreationSession) -> CreationSessionSummary {
@@ -571,6 +663,17 @@ pub fn list_sessions(
         .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
 
     let mut summaries = Vec::new();
+    let process_row = |session_json: String, summaries: &mut Vec<CreationSessionSummary>| {
+        match serde_json::from_str::<CreationSession>(&session_json) {
+            Ok(session) => summaries.push(build_session_summary(&session)),
+            Err(err) => log_warn(
+                app,
+                "creation_helper",
+                format!("skipping unreadable session row: {}", err),
+            ),
+        }
+    };
+
     if let Some(goal) = creation_goal {
         let rows = stmt
             .query_map([serialize_creation_goal(&goal)], |row| {
@@ -578,22 +681,28 @@ pub fn list_sessions(
             })
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         for row in rows {
-            let session_json =
-                row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-            let session: CreationSession = serde_json::from_str(&session_json)
-                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-            summaries.push(build_session_summary(&session));
+            match row {
+                Ok(session_json) => process_row(session_json, &mut summaries),
+                Err(err) => log_warn(
+                    app,
+                    "creation_helper",
+                    format!("skipping session row read error: {}", err),
+                ),
+            }
         }
     } else {
         let rows = stmt
             .query_map([], |row| row.get::<_, String>(0))
             .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
         for row in rows {
-            let session_json =
-                row.map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-            let session: CreationSession = serde_json::from_str(&session_json)
-                .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
-            summaries.push(build_session_summary(&session));
+            match row {
+                Ok(session_json) => process_row(session_json, &mut summaries),
+                Err(err) => log_warn(
+                    app,
+                    "creation_helper",
+                    format!("skipping session row read error: {}", err),
+                ),
+            }
         }
     }
 
@@ -689,6 +798,10 @@ fn resolve_uploaded_image_id(session_id: &str, image_id: &str) -> Result<Option<
     }
 
     Ok(None)
+}
+
+pub(crate) fn last_generated_image_for_session(session_id: &str) -> Option<String> {
+    get_last_generated_image(session_id).ok().flatten()
 }
 
 fn set_last_generated_image(session_id: &str, image_id: &str) -> Result<(), String> {
@@ -950,21 +1063,10 @@ fn choose_tool_choice(
 }
 
 fn build_turn_guidance(
-    smart_tool_selection: bool,
+    _smart_tool_selection: bool,
     stage: CreationTurnStage,
     tool_names: &[String],
 ) -> String {
-    if !smart_tool_selection {
-        if tool_names.is_empty() {
-            return "Manual tool selection mode is enabled and no tools are available on this turn. Ask at most two short follow-up questions.".to_string();
-        }
-
-        return format!(
-            "Manual tool selection mode is enabled. Use only these tools if they are clearly needed on this turn: {}. Prefer a single tool call, otherwise respond conversationally.",
-            tool_names.join(", ")
-        );
-    }
-
     if tool_names.is_empty() {
         return format!(
             "Current phase: {}. No tools are available on this turn. Ask at most two short follow-up questions, gather missing details, and do not invent IDs or state.",
@@ -1020,144 +1122,120 @@ fn build_creation_turn_plan(
     let lowered = latest_user_message.to_ascii_lowercase();
     let stage = infer_turn_stage(session, latest_user_message);
 
-    let mut tool_names = if smart_tool_selection {
-        let mut planned = Vec::new();
+    let mut tool_names = Vec::new();
 
-        match session.creation_goal {
-            CreationGoal::Character => match stage {
-                CreationTurnStage::Discovery => {}
-                CreationTurnStage::Drafting => {
-                    if !has_text(session.draft.name.as_deref()) {
-                        push_tool_name(&mut planned, "set_character_name");
-                    }
-                    if !has_text(session.draft.definition.as_deref())
-                        && !has_text(session.draft.description.as_deref())
-                    {
-                        push_tool_name(&mut planned, "set_character_definition");
-                    }
-                    if session.draft.scenes.is_empty() {
-                        push_tool_name(&mut planned, "add_scene");
-                    } else if user_requested_scene_work(&lowered)
-                        || session.creation_mode == CreationMode::Edit
-                    {
-                        push_tool_name(&mut planned, "update_scene");
-                    }
+    match session.creation_goal {
+        CreationGoal::Character => match stage {
+            CreationTurnStage::Discovery => {}
+            CreationTurnStage::Drafting => {
+                if !has_text(session.draft.name.as_deref()) {
+                    push_tool_name(&mut tool_names, "set_character_name");
                 }
-                CreationTurnStage::Preview => push_tool_name(&mut planned, "show_preview"),
-                CreationTurnStage::Finalize => push_tool_name(&mut planned, "request_confirmation"),
-            },
-            CreationGoal::Persona => match stage {
-                CreationTurnStage::Discovery => {}
-                CreationTurnStage::Drafting => push_tool_name(&mut planned, "upsert_persona"),
-                CreationTurnStage::Preview => push_tool_name(&mut planned, "show_preview"),
-                CreationTurnStage::Finalize => push_tool_name(&mut planned, "request_confirmation"),
-            },
-            CreationGoal::Lorebook => match stage {
-                CreationTurnStage::Discovery => {}
-                CreationTurnStage::Drafting => {
-                    push_tool_name(&mut planned, "upsert_lorebook");
-                    if session.target_id.is_some() || has_text(session.draft.name.as_deref()) {
-                        push_tool_name(&mut planned, "upsert_lorebook_entry");
-                        push_tool_name(&mut planned, "create_blank_lorebook_entry");
-                    }
+                if !has_text(session.draft.definition.as_deref())
+                    && !has_text(session.draft.description.as_deref())
+                {
+                    push_tool_name(&mut tool_names, "set_character_definition");
                 }
-                CreationTurnStage::Preview => push_tool_name(&mut planned, "show_preview"),
-                CreationTurnStage::Finalize => push_tool_name(&mut planned, "request_confirmation"),
-            },
-        }
-
-        if user_requested_visuals(&lowered) {
-            push_tool_name(&mut planned, "generate_image");
-            if infer_default_image_id(session).is_some() {
-                match session.creation_goal {
-                    CreationGoal::Character => {
-                        push_tool_name(&mut planned, "use_uploaded_image_as_avatar");
-                        if lowered.contains("background") {
-                            push_tool_name(&mut planned, "use_uploaded_image_as_chat_background");
-                        }
-                    }
-                    CreationGoal::Persona => {
-                        push_tool_name(&mut planned, "use_uploaded_image_as_persona_avatar");
-                    }
-                    CreationGoal::Lorebook => {}
+                if session.draft.scenes.is_empty() {
+                    push_tool_name(&mut tool_names, "add_scene");
+                } else if user_requested_scene_work(&lowered)
+                    || session.creation_mode == CreationMode::Edit
+                {
+                    push_tool_name(&mut tool_names, "update_scene");
                 }
             }
-            if lowered.contains("gradient") && session.creation_goal == CreationGoal::Character {
-                push_tool_name(&mut planned, "toggle_avatar_gradient");
+            CreationTurnStage::Preview => push_tool_name(&mut tool_names, "show_preview"),
+            CreationTurnStage::Finalize => push_tool_name(&mut tool_names, "request_confirmation"),
+        },
+        CreationGoal::Persona => match stage {
+            CreationTurnStage::Discovery => {}
+            CreationTurnStage::Drafting => push_tool_name(&mut tool_names, "upsert_persona"),
+            CreationTurnStage::Preview => push_tool_name(&mut tool_names, "show_preview"),
+            CreationTurnStage::Finalize => push_tool_name(&mut tool_names, "request_confirmation"),
+        },
+        CreationGoal::Lorebook => match stage {
+            CreationTurnStage::Discovery => {}
+            CreationTurnStage::Drafting => {
+                push_tool_name(&mut tool_names, "upsert_lorebook");
+                if session.target_id.is_some() || has_text(session.draft.name.as_deref()) {
+                    push_tool_name(&mut tool_names, "upsert_lorebook_entry");
+                    push_tool_name(&mut tool_names, "create_blank_lorebook_entry");
+                }
+            }
+            CreationTurnStage::Preview => push_tool_name(&mut tool_names, "show_preview"),
+            CreationTurnStage::Finalize => push_tool_name(&mut tool_names, "request_confirmation"),
+        },
+    }
+
+    if user_requested_visuals(&lowered) {
+        push_tool_name(&mut tool_names, "generate_image");
+        if infer_default_image_id(session).is_some() {
+            match session.creation_goal {
+                CreationGoal::Character => {
+                    push_tool_name(&mut tool_names, "use_uploaded_image_as_avatar");
+                    if lowered.contains("background") {
+                        push_tool_name(&mut tool_names, "use_uploaded_image_as_chat_background");
+                    }
+                }
+                CreationGoal::Persona => {
+                    push_tool_name(&mut tool_names, "use_uploaded_image_as_persona_avatar");
+                }
+                CreationGoal::Lorebook => {}
             }
         }
-
-        if user_requested_model_tools(&lowered) && session.creation_goal == CreationGoal::Character
-        {
-            push_tool_name(&mut planned, "get_model_list");
-            push_tool_name(&mut planned, "set_default_model");
+        if lowered.contains("gradient") && session.creation_goal == CreationGoal::Character {
+            push_tool_name(&mut tool_names, "toggle_avatar_gradient");
         }
+    }
 
-        if user_requested_prompt_tools(&lowered) && session.creation_goal == CreationGoal::Character
-        {
-            push_tool_name(&mut planned, "get_system_prompt_list");
-            push_tool_name(&mut planned, "set_system_prompt");
+    if user_requested_model_tools(&lowered) && session.creation_goal == CreationGoal::Character {
+        push_tool_name(&mut tool_names, "get_model_list");
+        push_tool_name(&mut tool_names, "set_default_model");
+    }
+
+    if user_requested_prompt_tools(&lowered) && session.creation_goal == CreationGoal::Character {
+        push_tool_name(&mut tool_names, "get_system_prompt_list");
+        push_tool_name(&mut tool_names, "set_system_prompt");
+    }
+
+    if session.creation_goal == CreationGoal::Character
+        && session.target_type == Some(CreationGoal::Character)
+        && session.target_id.is_some()
+        && user_requested_lorebooks(&lowered)
+    {
+        push_tool_name(&mut tool_names, "list_character_lorebooks");
+        push_tool_name(&mut tool_names, "set_character_lorebooks");
+    }
+
+    if session.creation_goal == CreationGoal::Persona && user_requested_persona_admin(&lowered) {
+        push_tool_name(&mut tool_names, "list_personas");
+        push_tool_name(&mut tool_names, "get_default_persona");
+        if lowered.contains("delete") {
+            push_tool_name(&mut tool_names, "delete_persona");
         }
+    }
 
-        if session.creation_goal == CreationGoal::Character
-            && session.target_type == Some(CreationGoal::Character)
-            && session.target_id.is_some()
-            && user_requested_lorebooks(&lowered)
-        {
-            push_tool_name(&mut planned, "list_character_lorebooks");
-            push_tool_name(&mut planned, "set_character_lorebooks");
+    if session.creation_goal == CreationGoal::Lorebook && user_requested_lorebook_admin(&lowered) {
+        push_tool_name(&mut tool_names, "list_lorebooks");
+        if session.target_id.is_some() {
+            push_tool_name(&mut tool_names, "list_lorebook_entries");
         }
-
-        if session.creation_goal == CreationGoal::Persona && user_requested_persona_admin(&lowered)
-        {
-            push_tool_name(&mut planned, "list_personas");
-            push_tool_name(&mut planned, "get_default_persona");
-            if lowered.contains("delete") {
-                push_tool_name(&mut planned, "delete_persona");
-            }
+        if lowered.contains("reorder") {
+            push_tool_name(&mut tool_names, "reorder_lorebook_entries");
         }
-
-        if session.creation_goal == CreationGoal::Lorebook
-            && user_requested_lorebook_admin(&lowered)
-        {
-            push_tool_name(&mut planned, "list_lorebooks");
-            if session.target_id.is_some() {
-                push_tool_name(&mut planned, "list_lorebook_entries");
-            }
-            if lowered.contains("reorder") {
-                push_tool_name(&mut planned, "reorder_lorebook_entries");
-            }
-            if lowered.contains("delete") {
-                push_tool_name(&mut planned, "delete_lorebook");
-                push_tool_name(&mut planned, "delete_lorebook_entry");
-            }
+        if lowered.contains("delete") {
+            push_tool_name(&mut tool_names, "delete_lorebook");
+            push_tool_name(&mut tool_names, "delete_lorebook_entry");
         }
-
-        planned
-    } else {
-        all_tools.iter().map(|tool| tool.name.clone()).collect()
-    };
+    }
 
     if let Some(enabled) = enabled_tools {
         let enabled_set: HashSet<&str> = enabled.iter().map(|tool| tool.as_str()).collect();
         tool_names.retain(|tool| enabled_set.contains(tool.as_str()));
     }
 
-    let tools = if smart_tool_selection {
-        filter_tools_by_name(all_tools, &tool_names)
-    } else {
-        let enabled: HashSet<&str> = tool_names.iter().map(|name| name.as_str()).collect();
-        all_tools
-            .into_iter()
-            .filter(|tool| enabled.contains(tool.name.as_str()))
-            .collect()
-    };
-
-    let choice = if smart_tool_selection {
-        choose_tool_choice(stage, &tool_names, latest_user_message)
-    } else {
-        None
-    };
+    let tools = filter_tools_by_name(all_tools, &tool_names);
+    let choice = choose_tool_choice(stage, &tool_names, latest_user_message);
 
     CreationTurnPlan {
         stage,
@@ -1361,7 +1439,7 @@ fn tool_config_with_auto_choice(tool_config: &ToolConfig) -> ToolConfig {
     cloned
 }
 
-async fn send_creation_api_request(
+pub(crate) async fn send_creation_api_request(
     app: &AppHandle,
     session_id: &str,
     stream_request_id: &str,
@@ -1488,7 +1566,7 @@ fn record_image_generation_usage(
 
     let usage = RequestUsage {
         id: request_id,
-        timestamp: now_ms() as u64,
+        timestamp: now_ms(),
         session_id: session_id.to_string(),
         character_id: "creation_helper".to_string(),
         character_name: if character_name.is_empty() {
@@ -1500,7 +1578,7 @@ fn record_image_generation_usage(
         model_name: model_name.to_string(),
         provider_id: provider_id.to_string(),
         provider_label: provider_label.to_string(),
-        operation_type: UsageOperationType::AICreator,
+        operation_type: UsageOperationType::ImageGeneration,
         finish_reason: None,
         prompt_tokens: None,
         completion_tokens: None,
@@ -1528,7 +1606,7 @@ fn record_image_generation_usage(
     }
 }
 
-async fn execute_tool(
+pub(crate) async fn execute_tool(
     app: &AppHandle,
     session: &mut CreationSession,
     tool_call_id: &str,
@@ -2217,29 +2295,35 @@ fn build_image_request(
         .ok_or_else(|| "Image model provider missing".to_string())?;
     let provider_label = model.get("providerLabel").and_then(|v| v.as_str());
 
-    let credentials = settings
-        .get("providerCredentials")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "No provider credentials configured".to_string())?;
-    let credential = credentials
-        .iter()
-        .find(|cred| {
-            let matches_label = provider_label
-                .map(|label| cred.get("label").and_then(|v| v.as_str()) == Some(label))
-                .unwrap_or(true);
-            cred.get("providerId").and_then(|v| v.as_str()) == Some(provider_id) && matches_label
-        })
-        .or_else(|| {
-            credentials
-                .iter()
-                .find(|cred| cred.get("providerId").and_then(|v| v.as_str()) == Some(provider_id))
-        })
-        .ok_or_else(|| "No credentials found for image model provider".to_string())?;
+    let credential_id = if provider_id.eq_ignore_ascii_case(crate::local_diffusion::PROVIDER_ID) {
+        "builtin-localdiffusion".to_string()
+    } else {
+        let credentials = settings
+            .get("providerCredentials")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "No provider credentials configured".to_string())?;
+        let credential = credentials
+            .iter()
+            .find(|cred| {
+                let matches_label = provider_label
+                    .map(|label| cred.get("label").and_then(|v| v.as_str()) == Some(label))
+                    .unwrap_or(true);
+                cred.get("providerId").and_then(|v| v.as_str()) == Some(provider_id)
+                    && matches_label
+            })
+            .or_else(|| {
+                credentials.iter().find(|cred| {
+                    cred.get("providerId").and_then(|v| v.as_str()) == Some(provider_id)
+                })
+            })
+            .ok_or_else(|| "No credentials found for image model provider".to_string())?;
 
-    let credential_id = credential
-        .get("id")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| "Credential ID missing".to_string())?;
+        credential
+            .get("id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "Credential ID missing".to_string())?
+            .to_string()
+    };
 
     let provider_label_value = provider_label.unwrap_or(provider_id);
     Ok((
@@ -2250,6 +2334,7 @@ fn build_image_request(
             credential_id: credential_id.to_string(),
             advanced_model_settings: None,
             input_images: None,
+            output_modalities: None,
             size: arguments
                 .get("size")
                 .and_then(|v| v.as_str())
@@ -2264,6 +2349,10 @@ fn build_image_request(
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string()),
             n: Some(1),
+            session_id: None,
+            character_id: None,
+            character_name: None,
+            usage_source: Some("creation_helper".to_string()),
         },
         ImageGenerationMeta {
             model_id: model_id.to_string(),
@@ -2272,6 +2361,128 @@ fn build_image_request(
             provider_label: provider_label_value.to_string(),
         },
     ))
+}
+
+pub(crate) async fn run_avatar_edit(
+    app: &AppHandle,
+    session_id: &str,
+    character_name: &str,
+    source_image_id: &str,
+    polished_prompt: String,
+) -> Result<(String, bool), String> {
+    let resolved_id = resolve_uploaded_image_id(session_id, source_image_id)?
+        .ok_or_else(|| format!("source image '{}' not found in session", source_image_id))?;
+
+    let source_image = get_uploaded_image(app, session_id, &resolved_id)?
+        .ok_or_else(|| format!("source image data missing for '{}'", resolved_id))?;
+    let source_data_url = if is_renderable_data_url(&source_image.data) {
+        source_image.data.clone()
+    } else if let Some(asset_id) = source_image.asset_id.as_deref() {
+        match storage_read_image_data(app, asset_id) {
+            Ok(bytes) => {
+                use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+                format!(
+                    "data:{};base64,{}",
+                    source_image.mime_type,
+                    BASE64.encode(&bytes)
+                )
+            }
+            Err(_) => source_image.data.clone(),
+        }
+    } else {
+        source_image.data.clone()
+    };
+
+    let (mut request, meta) = build_image_request(app, &polished_prompt, &serde_json::Value::Null)?;
+
+    let supports_image_input = image_model_supports_image_input(app, &meta.model_id);
+    if supports_image_input {
+        request.input_images = Some(vec![source_data_url]);
+    }
+
+    let response =
+        match crate::image_generator::commands::generate_image(app.clone(), request).await {
+            Ok(r) => r,
+            Err(err) => {
+                record_image_generation_usage(
+                    app,
+                    session_id,
+                    &meta.model_id,
+                    &meta.model_name,
+                    &meta.provider_id,
+                    &meta.provider_label,
+                    character_name,
+                    false,
+                    Some(err.clone()),
+                );
+                return Err(err);
+            }
+        };
+
+    let Some(image) = response.images.into_iter().next() else {
+        record_image_generation_usage(
+            app,
+            session_id,
+            &meta.model_id,
+            &meta.model_name,
+            &meta.provider_id,
+            &meta.provider_label,
+            character_name,
+            false,
+            Some("No image returned".to_string()),
+        );
+        return Err("No image returned".to_string());
+    };
+
+    let new_image_id = short_image_id();
+    save_uploaded_image_asset_ref(
+        session_id,
+        new_image_id.clone(),
+        image.asset_id.clone(),
+        image.mime_type.clone(),
+    )?;
+    let _ = set_last_generated_image(session_id, &new_image_id);
+    record_image_generation_usage(
+        app,
+        session_id,
+        &meta.model_id,
+        &meta.model_name,
+        &meta.provider_id,
+        &meta.provider_label,
+        character_name,
+        true,
+        None,
+    );
+
+    Ok((new_image_id, supports_image_input))
+}
+
+fn is_renderable_data_url(s: &str) -> bool {
+    s.starts_with("data:image/") && s.contains(";base64,")
+}
+
+fn image_model_supports_image_input(app: &AppHandle, model_id: &str) -> bool {
+    let Some(settings_json) = internal_read_settings(app).ok().flatten() else {
+        return false;
+    };
+    let Ok(settings): Result<Value, _> = serde_json::from_str(&settings_json) else {
+        return false;
+    };
+    let Some(models) = settings.get("models").and_then(|v| v.as_array()) else {
+        return false;
+    };
+    models
+        .iter()
+        .find(|m| m.get("id").and_then(|v| v.as_str()) == Some(model_id))
+        .and_then(|m| m.get("inputScopes").and_then(|v| v.as_array()))
+        .map(|scopes| {
+            scopes.iter().any(|s| {
+                s.as_str()
+                    .map(|x| x.eq_ignore_ascii_case("image"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn should_force_post_tool_summary(initial_content: &str, final_content: &str) -> bool {
@@ -2408,6 +2619,7 @@ pub async fn send_message(
         content: user_message.clone(),
         tool_calls: vec![],
         tool_results: vec![],
+        blocks: vec![],
         created_at: now,
     };
     session.messages.push(user_msg);
@@ -2466,6 +2678,150 @@ async fn process_assistant_turn(
     mut session: CreationSession,
     request_id: Option<String>,
 ) -> Result<CreationSession, String> {
+    let stream_request_id =
+        request_id.unwrap_or_else(|| format!("creation-helper-{}-{}", session_id, Uuid::new_v4()));
+
+    let user_message = session
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == CreationMessageRole::User)
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    let fallback_format = read_creation_helper_fallback_format(&app);
+
+    let turn_result = crate::creation_helper::agent::run_agent_turn(
+        &app,
+        &mut session,
+        &user_message,
+        &stream_request_id,
+        fallback_format,
+    )
+    .await;
+
+    let turn = match turn_result {
+        Ok(t) => t,
+        Err(err) => {
+            log_error(
+                &app,
+                "creation_helper",
+                format!("agent turn failed: {}", err),
+            );
+            return Err(err);
+        }
+    };
+
+    let content = turn.user_segments.join("\n\n");
+    let mut tool_calls = Vec::new();
+    let mut tool_results = Vec::new();
+    for step in &turn.plan {
+        let call_id = if step.tool_call_id.is_empty() {
+            format!("step-{}", step.index)
+        } else {
+            step.tool_call_id.clone()
+        };
+        let arguments = if step.raw_args.is_null() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            step.raw_args.clone()
+        };
+        tool_calls.push(CreationToolCall {
+            id: call_id.clone(),
+            name: step.verb.clone(),
+            arguments,
+        });
+        let success = matches!(
+            step.status,
+            crate::creation_helper::agent::state::StepStatus::Completed
+        );
+        let mut result_payload = match &step.extra {
+            Value::Object(m) => m.clone(),
+            _ => serde_json::Map::new(),
+        };
+        result_payload.insert("success".to_string(), Value::Bool(success));
+        if !result_payload.contains_key("message") {
+            if let Some(s) = &step.after_summary {
+                result_payload.insert("message".to_string(), Value::String(s.clone()));
+            }
+        }
+        if let Some(n) = &step.note {
+            result_payload
+                .entry("note".to_string())
+                .or_insert(Value::String(n.clone()));
+        }
+        match step.verb.as_str() {
+            "PREVIEW" => {
+                result_payload
+                    .entry("action".to_string())
+                    .or_insert(Value::String("show_preview".to_string()));
+            }
+            "CONFIRM" => {
+                result_payload
+                    .entry("action".to_string())
+                    .or_insert(Value::String("request_confirmation".to_string()));
+            }
+            _ => {}
+        }
+        tool_results.push(CreationToolResult {
+            tool_call_id: call_id,
+            result: Value::Object(result_payload),
+            success,
+        });
+    }
+
+    if content.trim().is_empty() && tool_calls.is_empty() {
+        return Err("Model returned empty response".to_string());
+    }
+
+    let mut blocks: Vec<crate::creation_helper::types::CreationBlock> = Vec::new();
+    for block in &turn.blocks {
+        match block {
+            crate::creation_helper::agent::state::TurnBlock::Text(t) => {
+                blocks.push(crate::creation_helper::types::CreationBlock::Text {
+                    content: t.clone(),
+                });
+            }
+            crate::creation_helper::agent::state::TurnBlock::Tool(id) => {
+                blocks.push(crate::creation_helper::types::CreationBlock::Tool {
+                    tool_call_id: id.clone(),
+                });
+            }
+        }
+    }
+
+    let assistant_msg = CreationMessage {
+        id: Uuid::new_v4().to_string(),
+        role: CreationMessageRole::Assistant,
+        content,
+        tool_calls,
+        tool_results,
+        blocks,
+        created_at: now_ms() as i64,
+    };
+    session.messages.push(assistant_msg);
+    session.updated_at = now_ms() as i64;
+
+    {
+        let mut sessions = SESSIONS
+            .lock()
+            .map_err(|e| crate::utils::err_to_string(module_path!(), line!(), e))?;
+        sessions.insert(session_id.clone(), session.clone());
+    }
+
+    persist_session(&app, &session)?;
+    emit_creation_helper_update(&app, &session_id, &session, None, None);
+
+    Ok(session)
+}
+
+#[allow(dead_code)]
+async fn process_assistant_turn_legacy(
+    app: AppHandle,
+    session_id: String,
+    mut session: CreationSession,
+    request_id: Option<String>,
+) -> Result<CreationSession, String> {
     let settings_json =
         internal_read_settings(&app)?.ok_or_else(|| "No settings found".to_string())?;
     let settings: Value = serde_json::from_str(&settings_json)
@@ -2501,31 +2857,37 @@ async fn process_assistant_turn(
         .unwrap_or("");
     let model_name = model.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
-    let credentials = settings
+    let credential = settings
         .get("providerCredentials")
-        .and_then(|v| v.as_array());
-    let credential = credentials
-        .and_then(|c| {
-            c.iter()
+        .and_then(|v| v.as_array())
+        .and_then(|credentials| {
+            credentials
+                .iter()
                 .find(|cred| cred.get("providerId").and_then(|v| v.as_str()) == Some(provider_id))
-        })
-        .ok_or_else(|| "No credentials found for provider".to_string())?;
+        });
 
     let api_key = credential
-        .get("apiKey")
+        .and_then(|cred| cred.get("apiKey"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let base_url = credential.get("baseUrl").and_then(|v| v.as_str());
+    let base_url = credential.and_then(|cred| cred.get("baseUrl").and_then(|v| v.as_str()));
 
     let provider_label = credential
-        .get("label")
+        .and_then(|cred| cred.get("label"))
         .and_then(|v| v.as_str())
-        .unwrap_or(provider_id);
+        .unwrap_or_else(|| {
+            if provider_id.eq_ignore_ascii_case("llamacpp") {
+                "llama.cpp (Local)"
+            } else {
+                provider_id
+            }
+        });
 
-    let smart_tool_selection = advanced_settings
-        .and_then(|a| a.get("creationHelperSmartToolSelection"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
+    if credential.is_none() && !provider_id.eq_ignore_ascii_case("llamacpp") {
+        return Err("No credentials found for provider".to_string());
+    }
+
+    let smart_tool_selection = true;
 
     let enabled_tools: Option<Vec<String>> = advanced_settings
         .and_then(|a| a.get("creationHelperEnabledTools"))
@@ -2597,24 +2959,26 @@ async fn process_assistant_turn(
 
     let cred = crate::chat_manager::types::ProviderCredential {
         id: credential
-            .get("id")
+            .and_then(|cred| cred.get("id"))
             .and_then(|v| v.as_str())
-            .unwrap_or("")
+            .unwrap_or_else(|| {
+                if provider_id.eq_ignore_ascii_case("llamacpp") {
+                    "builtin-llamacpp"
+                } else {
+                    ""
+                }
+            })
             .to_string(),
         provider_id: provider_id.to_string(),
-        label: credential
-            .get("label")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
+        label: provider_label.to_string(),
         api_key: Some(api_key.to_string()),
         base_url: base_url.map(|s| s.to_string()),
         default_model: None,
         headers: credential
-            .get("headers")
+            .and_then(|cred| cred.get("headers"))
             .cloned()
             .and_then(|value| serde_json::from_value(value).ok()),
-        config: credential.get("config").cloned(),
+        config: credential.and_then(|cred| cred.get("config")).cloned(),
     };
 
     let streaming_enabled = effective_streaming_enabled(&cred, streaming_enabled);
@@ -2763,6 +3127,10 @@ async fn process_assistant_turn(
                 iteration
             ),
         );
+
+        if streaming_enabled && !current_step_content.trim().is_empty() {
+            emit_creation_segment_boundary(&app, &stream_request_id);
+        }
 
         let current_batch_calls: Vec<CreationToolCall> = tool_calls
             .iter()
@@ -2956,15 +3324,6 @@ async fn process_assistant_turn(
         }
         if !current_step_content.is_empty() {
             if !final_content.is_empty() {
-                if streaming_enabled {
-                    crate::transport::emit_normalized(
-                        &app,
-                        &stream_request_id,
-                        crate::chat_manager::types::NormalizedEvent::Delta {
-                            text: "\n\n".to_string(),
-                        },
-                    );
-                }
                 final_content.push_str("\n\n");
             }
             final_content.push_str(&current_step_content);
@@ -2973,11 +3332,7 @@ async fn process_assistant_turn(
     }
 
     if iteration >= MAX_TOOL_ITERATIONS {
-        log_info(
-            &app,
-            "creation_helper",
-            "Max tool iterations reached".to_string(),
-        );
+        log_info(&app, "creation_helper", "Max tool iterations reached");
     }
 
     if !all_tool_calls.is_empty()
@@ -2986,8 +3341,12 @@ async fn process_assistant_turn(
         log_info(
             &app,
             "creation_helper",
-            "Running finalization pass without tools to get user-facing response".to_string(),
+            "Running finalization pass without tools to get user-facing response",
         );
+
+        if streaming_enabled && !final_content.trim().is_empty() {
+            emit_creation_segment_boundary(&app, &stream_request_id);
+        }
 
         let mut finalize_messages = api_messages.clone();
         finalize_messages.push(json!({
@@ -3117,6 +3476,7 @@ async fn process_assistant_turn(
         content: final_content,
         tool_calls: all_tool_calls,
         tool_results: all_tool_results,
+        blocks: vec![],
         created_at: now_ms() as i64,
     };
     session.messages.push(assistant_msg);
@@ -3380,7 +3740,7 @@ pub fn cleanup_old_sessions(max_age_ms: i64) -> Result<usize, String> {
     Ok(count)
 }
 
-async fn record_creation_usage(
+pub(crate) async fn record_creation_usage(
     app: &AppHandle,
     response_data: &Value,
     session_id: &str,
@@ -3398,7 +3758,7 @@ async fn record_creation_usage(
 
     let mut usage = RequestUsage {
         id: request_id,
-        timestamp: now_ms() as u64,
+        timestamp: now_ms(),
         session_id: session_id.to_string(),
         character_id: "creation_helper".to_string(),
         character_name: if character_name.is_empty() {

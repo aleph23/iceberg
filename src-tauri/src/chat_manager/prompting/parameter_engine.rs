@@ -33,6 +33,54 @@ fn variable(variable: &str, label: &str, description: &str) -> PromptVariableDef
     }
 }
 
+fn time_variables() -> Vec<PromptVariableDefinition> {
+    vec![
+        variable(
+            "{{date}}",
+            "Date",
+            "Current local date in YYYY-MM-DD format.",
+        ),
+        variable(
+            "{{date_full}}",
+            "Full Date",
+            "Current local date in a long readable format.",
+        ),
+        variable("{{weekday}}", "Weekday", "Current local weekday name."),
+        variable(
+            "{{time_hour}}",
+            "Hour",
+            "Current local hour in 24-hour format.",
+        ),
+        variable("{{time_minute}}", "Minute", "Current local minute."),
+        variable("{{time_second}}", "Second", "Current local second."),
+        variable(
+            "{{time_full}}",
+            "Full Time",
+            "Current local time with UTC offset.",
+        ),
+        variable(
+            "{{time_12hour_format}}",
+            "12-Hour Time",
+            "Current local time in 12-hour format.",
+        ),
+        variable(
+            "{{time_timezone}}",
+            "Timezone Offset",
+            "Current local UTC offset.",
+        ),
+        variable(
+            "{{time_timezone_name}}",
+            "Timezone Name",
+            "Current local timezone abbreviation.",
+        ),
+        variable(
+            "{{datetime_iso}}",
+            "ISO Timestamp",
+            "Current local timestamp in RFC3339 format.",
+        ),
+    ]
+}
+
 fn direct_chat_variables() -> Vec<PromptVariableDefinition> {
     vec![
         variable(
@@ -63,11 +111,26 @@ fn direct_chat_variables() -> Vec<PromptVariableDefinition> {
             "Dynamic conversation summary.",
         ),
         variable(
+            "{{companion_state}}",
+            "Companion State",
+            "Rendered emotional and relationship state for companion chats.",
+        ),
+        variable(
+            "{{scheduled_notes}}",
+            "Scheduled Notes",
+            "Active companion-only scheduled background notes.",
+        ),
+        variable(
             "{{key_memories}}",
             "Key Memories",
             "Relevant long-term memory facts.",
         ),
         variable("{{lorebook}}", "Lorebook", "Matched lorebook content."),
+        variable(
+            "{{author_note}}",
+            "Author Note",
+            "Private session note for the current chat.",
+        ),
         variable("{{rules}}", "Rules", "Legacy behavioral rules block."),
         variable(
             "{{content_rules}}",
@@ -207,6 +270,185 @@ fn reply_helper_variables() -> Vec<PromptVariableDefinition> {
     ]
 }
 
+fn lorebook_entry_writer_variables() -> Vec<PromptVariableDefinition> {
+    vec![
+        variable(
+            "{{lorebook_name}}",
+            "Lorebook Name",
+            "Name of the target lorebook.",
+        ),
+        variable(
+            "{{character_name}}",
+            "Character Name",
+            "Name of the character whose session is being mined.",
+        ),
+        variable(
+            "{{session_title}}",
+            "Session Title",
+            "Title of the selected session.",
+        ),
+        variable(
+            "{{selected_messages}}",
+            "Selected Messages",
+            "Chronological transcript of the selected messages (messages source mode).",
+        ),
+        variable(
+            "{{memory_summary}}",
+            "Memory Summary",
+            "Dynamic memory context summary for the session (memory source mode).",
+        ),
+        variable(
+            "{{selected_memories}}",
+            "Selected Memories",
+            "Selected memory entries from dynamic memory (memory source mode).",
+        ),
+        variable(
+            "{{direction_prompt}}",
+            "Direction Prompt",
+            "Optional user guidance for the extraction focus.",
+        ),
+        variable(
+            "{{existing_entries}}",
+            "Existing Entries",
+            "Existing lorebook entry summaries for duplicate avoidance.",
+        ),
+    ]
+}
+
+fn lorebook_keyword_generator_variables() -> Vec<PromptVariableDefinition> {
+    vec![
+        variable(
+            "{{entry_title}}",
+            "Entry Title",
+            "Current lorebook entry title.",
+        ),
+        variable(
+            "{{entry_content}}",
+            "Entry Content",
+            "Current lorebook entry content.",
+        ),
+        variable(
+            "{{existing_keywords}}",
+            "Existing Keywords",
+            "Current keywords already attached to the entry.",
+        ),
+        variable(
+            "{{direction_prompt}}",
+            "Direction Prompt",
+            "Optional user guidance for keyword selection.",
+        ),
+    ]
+}
+
+fn lorebook_generator_planner_variables() -> Vec<PromptVariableDefinition> {
+    vec![
+        variable(
+            "{{brief}}",
+            "Brief",
+            "User-written brief describing the world or topic.",
+        ),
+        variable(
+            "{{target_count}}",
+            "Target Count",
+            "Number of entries the planner must produce.",
+        ),
+        variable(
+            "{{source_excerpts}}",
+            "Source Excerpts",
+            "Concatenated excerpts from user-supplied sources, each tagged with a source id.",
+        ),
+    ]
+}
+
+fn lorebook_generator_writer_variables() -> Vec<PromptVariableDefinition> {
+    vec![
+        variable(
+            "{{brief}}",
+            "Brief",
+            "User-written brief describing the world or topic.",
+        ),
+        variable(
+            "{{outline}}",
+            "Outline",
+            "Full planned outline (titles + categories + keys) for context.",
+        ),
+        variable(
+            "{{entry_title}}",
+            "Entry Title",
+            "Title of the entry being written.",
+        ),
+        variable(
+            "{{entry_category}}",
+            "Entry Category",
+            "Category of the entry being written.",
+        ),
+        variable(
+            "{{entry_proposed_keys}}",
+            "Entry Proposed Keys",
+            "Keys proposed by the planner for this entry.",
+        ),
+        variable(
+            "{{entry_rationale}}",
+            "Entry Rationale",
+            "Planner rationale for why this entry exists.",
+        ),
+        variable(
+            "{{relevant_excerpts}}",
+            "Relevant Excerpts",
+            "Source excerpts relevant to this specific entry.",
+        ),
+    ]
+}
+
+fn lorebook_generator_refine_variables() -> Vec<PromptVariableDefinition> {
+    vec![
+        variable(
+            "{{brief}}",
+            "Brief",
+            "User-written brief describing the world or topic.",
+        ),
+        variable(
+            "{{outline}}",
+            "Outline",
+            "Full planned outline for context.",
+        ),
+        variable("{{entry_title}}", "Entry Title", "Current entry title."),
+        variable(
+            "{{entry_keywords}}",
+            "Entry Keywords",
+            "Current entry keywords.",
+        ),
+        variable(
+            "{{entry_always_active}}",
+            "Entry Always Active",
+            "Current alwaysActive flag value.",
+        ),
+        variable(
+            "{{entry_content}}",
+            "Entry Content",
+            "Current entry content body.",
+        ),
+        variable(
+            "{{user_feedback}}",
+            "User Feedback",
+            "Feedback message describing the requested changes.",
+        ),
+        variable(
+            "{{relevant_excerpts}}",
+            "Relevant Excerpts",
+            "Source excerpts relevant to this entry.",
+        ),
+    ]
+}
+
+fn lorebook_generator_coherence_variables() -> Vec<PromptVariableDefinition> {
+    vec![variable(
+        "{{drafted_entries}}",
+        "Drafted Entries",
+        "Full set of drafted entries with title, keys, content, alwaysActive.",
+    )]
+}
+
 fn avatar_generation_variables() -> Vec<PromptVariableDefinition> {
     vec![
         variable(
@@ -343,6 +585,41 @@ fn design_reference_writer_variables() -> Vec<PromptVariableDefinition> {
     ]
 }
 
+fn companion_soul_writer_variables() -> Vec<PromptVariableDefinition> {
+    vec![
+        variable(
+            "{{char.name}}",
+            "Character Name",
+            "Name of the companion character.",
+        ),
+        variable(
+            "{{char.definition}}",
+            "Character Definition",
+            "Full character definition or card text.",
+        ),
+        variable(
+            "{{char.description}}",
+            "Character Description",
+            "Shorter public-facing character description.",
+        ),
+        variable(
+            "{{opening_context}}",
+            "Opening Context",
+            "Starting scene or context used to infer companion grounding.",
+        ),
+        variable(
+            "{{current_soul}}",
+            "Current Soul",
+            "Existing companion Soul draft as JSON.",
+        ),
+        variable(
+            "{{user_notes}}",
+            "User Notes",
+            "User direction for how the Soul should be drafted or revised.",
+        ),
+    ]
+}
+
 fn dedupe_variables(
     groups: impl IntoIterator<Item = Vec<PromptVariableDefinition>>,
 ) -> Vec<PromptVariableDefinition> {
@@ -362,16 +639,25 @@ pub fn prompt_type_label(prompt_type: PromptTemplateType) -> &'static str {
     match prompt_type {
         PromptTemplateType::Undefined => "Undefined",
         PromptTemplateType::DirectChat => "Direct Chat",
+        PromptTemplateType::CompanionChat => "Companion Chat",
         PromptTemplateType::GroupChatRoleplay => "Group Chat (Roleplay)",
         PromptTemplateType::GroupChatConversational => "Group Chat (Conversation)",
         PromptTemplateType::DynamicMemorySummarizer => "Dynamic Memory Summarizer",
         PromptTemplateType::DynamicMemoryManager => "Dynamic Memory Manager",
         PromptTemplateType::ReplyHelperRoleplay => "Reply Helper (Roleplay)",
         PromptTemplateType::ReplyHelperConversational => "Reply Helper (Conversational)",
+        PromptTemplateType::LorebookEntryWriter => "Lorebook Entry Writer",
+        PromptTemplateType::LorebookKeywordGenerator => "Lorebook Keyword Generator",
+        PromptTemplateType::LorebookGeneratorPlanner => "Lorebook Generator: Planner",
+        PromptTemplateType::LorebookGeneratorWriter => "Lorebook Generator: Writer",
+        PromptTemplateType::LorebookGeneratorRefine => "Lorebook Generator: Refine",
+        PromptTemplateType::LorebookGeneratorCoherence => "Lorebook Generator: Coherence",
         PromptTemplateType::AvatarGeneration => "Avatar Generation",
         PromptTemplateType::AvatarEditRequest => "Avatar Edit Request",
         PromptTemplateType::SceneGeneration => "Scene Generation",
+        PromptTemplateType::ScenePromptWriter => "Scene Prompt Writer",
         PromptTemplateType::DesignReferenceWriter => "Design Reference Writer",
+        PromptTemplateType::CompanionSoulWriter => "Companion Soul Writer",
     }
 }
 
@@ -380,6 +666,7 @@ pub fn allowed_variables_for_prompt_type(
 ) -> Vec<PromptVariableDefinition> {
     match prompt_type {
         PromptTemplateType::Undefined => dedupe_variables([
+            time_variables(),
             direct_chat_variables(),
             group_chat_conversational_variables(),
             group_chat_roleplay_variables(),
@@ -389,19 +676,70 @@ pub fn allowed_variables_for_prompt_type(
             avatar_generation_variables(),
             avatar_edit_request_variables(),
             scene_generation_variables(),
+            scene_generation_variables(),
             design_reference_writer_variables(),
+            companion_soul_writer_variables(),
         ]),
-        PromptTemplateType::DirectChat => direct_chat_variables(),
-        PromptTemplateType::GroupChatRoleplay => group_chat_roleplay_variables(),
-        PromptTemplateType::GroupChatConversational => group_chat_conversational_variables(),
-        PromptTemplateType::DynamicMemorySummarizer => dynamic_memory_summarizer_variables(),
-        PromptTemplateType::DynamicMemoryManager => dynamic_memory_manager_variables(),
-        PromptTemplateType::ReplyHelperRoleplay => reply_helper_variables(),
-        PromptTemplateType::ReplyHelperConversational => reply_helper_variables(),
-        PromptTemplateType::AvatarGeneration => avatar_generation_variables(),
-        PromptTemplateType::AvatarEditRequest => avatar_edit_request_variables(),
-        PromptTemplateType::SceneGeneration => scene_generation_variables(),
-        PromptTemplateType::DesignReferenceWriter => design_reference_writer_variables(),
+        PromptTemplateType::DirectChat => {
+            dedupe_variables([time_variables(), direct_chat_variables()])
+        }
+        PromptTemplateType::CompanionChat => {
+            dedupe_variables([time_variables(), direct_chat_variables()])
+        }
+        PromptTemplateType::GroupChatRoleplay => {
+            dedupe_variables([time_variables(), group_chat_roleplay_variables()])
+        }
+        PromptTemplateType::GroupChatConversational => {
+            dedupe_variables([time_variables(), group_chat_conversational_variables()])
+        }
+        PromptTemplateType::DynamicMemorySummarizer => {
+            dedupe_variables([time_variables(), dynamic_memory_summarizer_variables()])
+        }
+        PromptTemplateType::DynamicMemoryManager => {
+            dedupe_variables([time_variables(), dynamic_memory_manager_variables()])
+        }
+        PromptTemplateType::ReplyHelperRoleplay => {
+            dedupe_variables([time_variables(), reply_helper_variables()])
+        }
+        PromptTemplateType::ReplyHelperConversational => {
+            dedupe_variables([time_variables(), reply_helper_variables()])
+        }
+        PromptTemplateType::LorebookEntryWriter => {
+            dedupe_variables([time_variables(), lorebook_entry_writer_variables()])
+        }
+        PromptTemplateType::LorebookKeywordGenerator => {
+            dedupe_variables([time_variables(), lorebook_keyword_generator_variables()])
+        }
+        PromptTemplateType::LorebookGeneratorPlanner => {
+            dedupe_variables([time_variables(), lorebook_generator_planner_variables()])
+        }
+        PromptTemplateType::LorebookGeneratorWriter => {
+            dedupe_variables([time_variables(), lorebook_generator_writer_variables()])
+        }
+        PromptTemplateType::LorebookGeneratorRefine => {
+            dedupe_variables([time_variables(), lorebook_generator_refine_variables()])
+        }
+        PromptTemplateType::LorebookGeneratorCoherence => {
+            dedupe_variables([time_variables(), lorebook_generator_coherence_variables()])
+        }
+        PromptTemplateType::AvatarGeneration => {
+            dedupe_variables([time_variables(), avatar_generation_variables()])
+        }
+        PromptTemplateType::AvatarEditRequest => {
+            dedupe_variables([time_variables(), avatar_edit_request_variables()])
+        }
+        PromptTemplateType::SceneGeneration => {
+            dedupe_variables([time_variables(), scene_generation_variables()])
+        }
+        PromptTemplateType::ScenePromptWriter => {
+            dedupe_variables([time_variables(), scene_generation_variables()])
+        }
+        PromptTemplateType::DesignReferenceWriter => {
+            dedupe_variables([time_variables(), design_reference_writer_variables()])
+        }
+        PromptTemplateType::CompanionSoulWriter => {
+            dedupe_variables([time_variables(), companion_soul_writer_variables()])
+        }
     }
 }
 
@@ -411,6 +749,14 @@ pub fn required_variables_for_prompt_type(prompt_type: PromptTemplateType) -> Ve
         PromptTemplateType::DirectChat => vec![
             "{{scene}}".to_string(),
             "{{scene_direction}}".to_string(),
+            "{{char.name}}".to_string(),
+            "{{char.desc}}".to_string(),
+            "{{persona.name}}".to_string(),
+            "{{persona.desc}}".to_string(),
+            "{{context_summary}}".to_string(),
+            "{{key_memories}}".to_string(),
+        ],
+        PromptTemplateType::CompanionChat => vec![
             "{{char.name}}".to_string(),
             "{{char.desc}}".to_string(),
             "{{persona.name}}".to_string(),
@@ -447,12 +793,22 @@ pub fn required_variables_for_prompt_type(prompt_type: PromptTemplateType) -> Ve
                 "{{current_draft}}".to_string(),
             ]
         }
+        PromptTemplateType::LorebookEntryWriter => vec![
+            "{{selected_messages}}".to_string(),
+            "{{memory_summary}}".to_string(),
+            "{{selected_memories}}".to_string(),
+            "{{direction_prompt}}".to_string(),
+        ],
+        PromptTemplateType::LorebookKeywordGenerator => vec![
+            "{{entry_content}}".to_string(),
+            "{{direction_prompt}}".to_string(),
+        ],
         PromptTemplateType::AvatarGeneration => vec!["{{avatar_request}}".to_string()],
         PromptTemplateType::AvatarEditRequest => vec![
             "{{current_avatar_prompt}}".to_string(),
             "{{edit_request}}".to_string(),
         ],
-        PromptTemplateType::SceneGeneration => vec![
+        PromptTemplateType::SceneGeneration | PromptTemplateType::ScenePromptWriter => vec![
             "{{recent_messages}}".to_string(),
             "{{scene_request}}".to_string(),
         ],
@@ -460,6 +816,29 @@ pub fn required_variables_for_prompt_type(prompt_type: PromptTemplateType) -> Ve
             "{{subject_name}}".to_string(),
             "{{image[avatar]}}".to_string(),
         ],
+        PromptTemplateType::CompanionSoulWriter => vec!["{{char.name}}".to_string()],
+        PromptTemplateType::LorebookGeneratorPlanner => vec![
+            "{{brief}}".to_string(),
+            "{{target_count}}".to_string(),
+            "{{source_excerpts}}".to_string(),
+        ],
+        PromptTemplateType::LorebookGeneratorWriter => vec![
+            "{{brief}}".to_string(),
+            "{{outline}}".to_string(),
+            "{{entry_title}}".to_string(),
+            "{{entry_category}}".to_string(),
+            "{{entry_proposed_keys}}".to_string(),
+            "{{entry_rationale}}".to_string(),
+            "{{relevant_excerpts}}".to_string(),
+        ],
+        PromptTemplateType::LorebookGeneratorRefine => vec![
+            "{{entry_title}}".to_string(),
+            "{{entry_keywords}}".to_string(),
+            "{{entry_content}}".to_string(),
+            "{{entry_always_active}}".to_string(),
+            "{{user_feedback}}".to_string(),
+        ],
+        PromptTemplateType::LorebookGeneratorCoherence => vec!["{{drafted_entries}}".to_string()],
     }
 }
 
@@ -474,7 +853,7 @@ pub fn allowed_image_slots_for_prompt_type(
             PromptEntryImageSlot::Avatar,
             PromptEntryImageSlot::References,
         ],
-        PromptTemplateType::SceneGeneration => vec![
+        PromptTemplateType::SceneGeneration | PromptTemplateType::ScenePromptWriter => vec![
             PromptEntryImageSlot::Character,
             PromptEntryImageSlot::Persona,
             PromptEntryImageSlot::ChatBackground,
@@ -485,6 +864,7 @@ pub fn allowed_image_slots_for_prompt_type(
                 PromptEntryImageSlot::References,
             ]
         }
+        PromptTemplateType::CompanionSoulWriter => Vec::new(),
         _ => Vec::new(),
     }
 }
@@ -509,16 +889,21 @@ pub fn build_parameter_engine() -> PromptParameterEngine {
     let prompt_types = [
         PromptTemplateType::Undefined,
         PromptTemplateType::DirectChat,
+        PromptTemplateType::CompanionChat,
         PromptTemplateType::GroupChatRoleplay,
         PromptTemplateType::GroupChatConversational,
         PromptTemplateType::DynamicMemorySummarizer,
         PromptTemplateType::DynamicMemoryManager,
         PromptTemplateType::ReplyHelperRoleplay,
         PromptTemplateType::ReplyHelperConversational,
+        PromptTemplateType::LorebookEntryWriter,
+        PromptTemplateType::LorebookKeywordGenerator,
         PromptTemplateType::AvatarGeneration,
         PromptTemplateType::AvatarEditRequest,
         PromptTemplateType::SceneGeneration,
+        PromptTemplateType::ScenePromptWriter,
         PromptTemplateType::DesignReferenceWriter,
+        PromptTemplateType::CompanionSoulWriter,
     ]
     .into_iter()
     .map(|prompt_type| PromptTypeDefinition {

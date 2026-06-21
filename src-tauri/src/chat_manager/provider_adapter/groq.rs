@@ -17,6 +17,15 @@ impl ProviderAdapter for GroqAdapter {
         }
     }
 
+    fn list_models_endpoint(&self, base_url: &str) -> String {
+        let trimmed = base_url.trim_end_matches('/');
+        if trimmed.ends_with("/openai") {
+            format!("{}/v1/models", trimmed)
+        } else {
+            format!("{}/openai/v1/models", trimmed)
+        }
+    }
+
     fn system_role(&self) -> std::borrow::Cow<'static, str> {
         "system".into()
     }

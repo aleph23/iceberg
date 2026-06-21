@@ -10,16 +10,25 @@ pub enum PromptTemplateType {
     #[default]
     Undefined,
     DirectChat,
+    CompanionChat,
     GroupChatRoleplay,
     GroupChatConversational,
     DynamicMemorySummarizer,
     DynamicMemoryManager,
     ReplyHelperRoleplay,
     ReplyHelperConversational,
+    LorebookEntryWriter,
+    LorebookKeywordGenerator,
+    LorebookGeneratorPlanner,
+    LorebookGeneratorWriter,
+    LorebookGeneratorRefine,
+    LorebookGeneratorCoherence,
     AvatarGeneration,
     AvatarEditRequest,
     SceneGeneration,
+    ScenePromptWriter,
     DesignReferenceWriter,
+    CompanionSoulWriter,
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -32,17 +41,13 @@ pub enum PromptEntryRole {
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[derive(Default)]
 pub enum PromptEntryPosition {
+    #[default]
     Relative,
     InChat,
     Conditional,
     Interval,
-}
-
-impl Default for PromptEntryPosition {
-    fn default() -> Self {
-        PromptEntryPosition::Relative
-    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
@@ -68,11 +73,22 @@ pub enum PromptEntryChatMode {
     Group,
 }
 
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PromptEntryInfoSource {
+    Messages,
+    Memory,
+    Mixed,
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum PromptEntryCondition {
     ChatMode {
         value: PromptEntryChatMode,
+    },
+    InfoSource {
+        value: PromptEntryInfoSource,
     },
     SceneGenerationEnabled {
         value: bool,
@@ -116,6 +132,12 @@ pub enum PromptEntryCondition {
     HasLorebookContent {
         value: bool,
     },
+    DoesAuthorNoteExists {
+        value: bool,
+    },
+    HasActiveScheduledNote {
+        value: bool,
+    },
     HasSubjectDescription {
         value: bool,
     },
@@ -150,6 +172,12 @@ pub enum PromptEntryCondition {
         value: bool,
     },
     VisionEnabled {
+        value: bool,
+    },
+    IsTimeAwarenessEnabled {
+        value: bool,
+    },
+    IsCompanionMode {
         value: bool,
     },
     All {
@@ -284,6 +312,14 @@ pub struct Settings {
 #[serde(rename_all = "camelCase")]
 pub struct AdvancedSettings {
     #[serde(default)]
+    pub llama_default_context_length: Option<u32>,
+    #[serde(default)]
+    pub llama_default_kv_cache_type: Option<String>,
+    #[serde(default)]
+    pub sd_default_offload_mode: Option<String>,
+    #[serde(default)]
+    pub sd_default_size: Option<String>,
+    #[serde(default)]
     pub summarisation_model_id: Option<String>,
     #[serde(default)]
     pub developer_mode_enabled: Option<bool>,
@@ -304,9 +340,19 @@ pub struct AdvancedSettings {
     #[serde(default)]
     pub scene_writer_model_id: Option<String>,
     #[serde(default)]
+    pub app_update_checks_enabled: Option<bool>,
+    #[serde(default)]
     pub creation_helper_enabled: Option<bool>,
     #[serde(default)]
     pub creation_helper_model_id: Option<String>,
+    #[serde(default)]
+    pub creation_helper_streaming: Option<bool>,
+    #[serde(default)]
+    pub creation_helper_image_model_id: Option<String>,
+    #[serde(default)]
+    pub creation_helper_smart_tool_selection: Option<bool>,
+    #[serde(default)]
+    pub creation_helper_enabled_tools: Option<Vec<String>>,
     #[serde(default)]
     pub help_me_reply_enabled: Option<bool>,
     #[serde(default)]
@@ -316,7 +362,52 @@ pub struct AdvancedSettings {
     #[serde(default)]
     pub help_me_reply_max_tokens: Option<u32>,
     #[serde(default)]
+    pub help_me_reply_history_count: Option<u32>,
+    #[serde(default)]
     pub help_me_reply_style: Option<String>,
+    #[serde(default)]
+    pub help_me_reply_roleplay_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub help_me_reply_conversational_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_entry_generator_model_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_entry_generator_structured_fallback_format:
+        Option<DynamicMemoryStructuredFallbackFormat>,
+    #[serde(default)]
+    pub lorebook_entry_generator_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_keyword_generator_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_generator_model_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_generator_structured_fallback_format:
+        Option<DynamicMemoryStructuredFallbackFormat>,
+    #[serde(default)]
+    pub lorebook_generator_default_target_count: Option<u32>,
+    #[serde(default)]
+    pub lorebook_generator_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub lorebook_generator_planner_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_generator_writer_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_generator_refine_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_generator_coherence_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub companion_soul_writer_model_id: Option<String>,
+    #[serde(default)]
+    pub companion_soul_writer_fallback_model_id: Option<String>,
+    #[serde(default)]
+    pub companion_soul_writer_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub companion_soul_writer_structured_fallback_format:
+        Option<DynamicMemoryStructuredFallbackFormat>,
+    #[serde(default)]
+    pub dynamic_memory_summarizer_prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub dynamic_memory_manager_prompt_template_id: Option<String>,
     #[serde(default)]
     pub dynamic_memory: Option<DynamicMemorySettings>,
     #[serde(default)]
@@ -327,9 +418,17 @@ pub struct AdvancedSettings {
     #[serde(default)]
     pub embedding_max_tokens: Option<u32>,
     #[serde(default)]
+    pub embedding_model_version: Option<String>,
+    #[serde(default)]
+    pub embedding_dimensions: Option<u32>,
+    #[serde(default)]
+    pub embedding_keep_model_loaded: Option<bool>,
+    #[serde(default)]
     pub host_api: Option<HostApiSettings>,
     #[serde(default)]
     pub accessibility: Option<AccessibilitySettings>,
+    #[serde(default)]
+    pub chat_appearance: Option<Value>,
 }
 
 #[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -500,6 +599,12 @@ pub struct AdvancedModelSettings {
     pub sd_denoising_strength: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sd_size: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sd_offload_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sd_extra_prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sd_prompt_writer_instructions: Option<String>,
     pub llama_gpu_layers: Option<u32>,
     pub llama_threads: Option<u32>,
     pub llama_threads_batch: Option<u32>,
@@ -512,6 +617,8 @@ pub struct AdvancedModelSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_flash_attention: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_swa_full: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_chat_template_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_mmproj_path: Option<String>,
@@ -522,6 +629,14 @@ pub struct AdvancedModelSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_strict_mode: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_mtp_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_mtp_draft_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_mtp_model_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_streaming_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_sampler_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_sampler_order: Option<Vec<String>>,
@@ -529,6 +644,16 @@ pub struct AdvancedModelSettings {
     pub llama_min_p: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_typical_p: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_dry_multiplier: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_dry_base: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_dry_allowed_length: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_dry_penalty_last_n: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub llama_dry_sequence_breakers: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llama_last_runtime_report: Option<serde_json::Value>,
     pub ollama_num_ctx: Option<u32>,
@@ -553,6 +678,8 @@ pub struct AdvancedModelSettings {
     pub reasoning_effort: Option<String>, // "low", "medium", "high"
     #[serde(default)]
     pub reasoning_budget_tokens: Option<u32>,
+    #[serde(default)]
+    pub force_send_thinking_state: Option<bool>,
     // Caching settings
     #[serde(default)]
     pub prompt_caching_enabled: Option<bool>,
@@ -570,6 +697,9 @@ impl Default for AdvancedModelSettings {
             presence_penalty: None,
             top_k: None,
             sd_steps: None,
+            sd_offload_mode: None,
+            sd_extra_prompt: None,
+            sd_prompt_writer_instructions: None,
             sd_cfg_scale: None,
             sd_sampler: None,
             sd_seed: None,
@@ -586,15 +716,25 @@ impl Default for AdvancedModelSettings {
             llama_batch_size: None,
             llama_kv_type: None,
             llama_flash_attention: None,
+            llama_swa_full: None,
             llama_chat_template_override: None,
             llama_mmproj_path: None,
             llama_chat_template_preset: None,
             llama_raw_completion_fallback: None,
             llama_strict_mode: None,
+            llama_mtp_enabled: None,
+            llama_mtp_draft_tokens: None,
+            llama_mtp_model_path: None,
+            llama_streaming_enabled: None,
             llama_sampler_profile: None,
             llama_sampler_order: None,
             llama_min_p: None,
             llama_typical_p: None,
+            llama_dry_multiplier: None,
+            llama_dry_base: None,
+            llama_dry_allowed_length: None,
+            llama_dry_penalty_last_n: None,
+            llama_dry_sequence_breakers: None,
             llama_last_runtime_report: None,
             ollama_num_ctx: None,
             ollama_num_predict: None,
@@ -614,6 +754,7 @@ impl Default for AdvancedModelSettings {
             reasoning_enabled: None,
             reasoning_effort: None,
             reasoning_budget_tokens: None,
+            force_send_thinking_state: None,
             prompt_caching_enabled: Some(false),
             prompt_caching_ttl: Some("5min".to_string()),
         }
@@ -643,6 +784,10 @@ pub struct StoredMessage {
     pub role: String,
     pub content: String,
     pub created_at: u64,
+    #[serde(default)]
+    pub visible_in_chat: bool,
+    #[serde(default)]
+    pub scene_edited: bool,
     #[serde(default)]
     pub usage: Option<UsageSummary>,
     #[serde(default)]
@@ -685,6 +830,17 @@ pub struct MessageVariant {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
+pub struct MemoryEntityAnchor {
+    pub label: String,
+    pub surface: String,
+    pub canonical_key: String,
+    pub canonical_name: String,
+    #[serde(default)]
+    pub confidence: f32,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
 pub struct MemoryEmbedding {
     pub id: String,
     pub text: String,
@@ -702,22 +858,71 @@ pub struct MemoryEmbedding {
     /// Importance score (0.0-1.0) - decays over time, memories below threshold go cold
     #[serde(default = "default_importance_score")]
     pub importance_score: f32,
+    /// Long-term persistence importance for contradiction-safe retention.
+    #[serde(default = "default_importance_score")]
+    pub persistence_importance: f32,
+    /// Prompt-worthiness for hot retrieval and context injection.
+    #[serde(default = "default_importance_score")]
+    pub prompt_importance: f32,
+    /// Volatility of the memory; higher values decay faster.
+    #[serde(default = "default_memory_volatility")]
+    pub volatility: f32,
     /// If true, this memory never decays (user/LLM marked as critical)
     #[serde(default)]
     pub is_pinned: bool,
     /// Number of times this memory was retrieved for context
     #[serde(default)]
     pub access_count: u32,
+    /// Embedding source version used to create this vector, e.g. v3 or v4.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_source_version: Option<String>,
+    /// Embedding dimension used to create this vector.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub embedding_dimensions: Option<usize>,
     /// Ephemeral match score (similarity) from retrieval
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_score: Option<f32>,
     /// Category tag for clustering (e.g. character_trait, relationship, plot_event)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// When the remembered event happened, if the session supplied time grounding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_at: Option<u64>,
+    /// Precision of `observed_at` (for now, usually "turn").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_time_precision: Option<String>,
+    /// Canonicalized named entities and anchors used by companion memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub canonical_entities: Vec<MemoryEntityAnchor>,
+    /// Stable signature for contradiction/supersession checks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_signature: Option<String>,
+    /// Coarse memory polarity for contradiction handling (-1 negative, 1 positive).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fact_polarity: Option<i8>,
+    /// Message role that produced the memory, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_role: Option<String>,
+    /// Message id that produced the memory, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_message_id: Option<String>,
+    /// If present, this memory has been superseded by a newer one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<String>,
+    /// When the memory was superseded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_at: Option<u64>,
+    /// IDs of older memories this memory replaced.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<String>,
 }
 
 fn default_importance_score() -> f32 {
     1.0
+}
+
+fn default_memory_volatility() -> f32 {
+    0.4
 }
 
 #[derive(Deserialize, Serialize, Clone)]
@@ -737,6 +942,8 @@ pub struct Scene {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub direction: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_image_path: Option<String>,
     pub created_at: u64,
     #[serde(default)]
     pub variants: Vec<SceneVariant>,
@@ -756,10 +963,16 @@ pub struct Session {
     #[serde(default, skip_serializing)]
     #[allow(dead_code)]
     pub system_prompt: Option<String>,
+    #[serde(default = "default_character_mode")]
+    pub mode: String,
     #[serde(default)]
     pub selected_scene_id: Option<String>,
     #[serde(default)]
     pub prompt_template_id: Option<String>,
+    #[serde(default)]
+    pub lorebook_ids_override: Option<Vec<String>>,
+    #[serde(default)]
+    pub author_note: Option<String>,
     #[serde(default)]
     pub persona_id: Option<String>,
     #[serde(default)]
@@ -768,6 +981,8 @@ pub struct Session {
     pub voice_autoplay: Option<bool>,
     #[serde(default)]
     pub advanced_model_settings: Option<AdvancedModelSettings>,
+    #[serde(default)]
+    pub companion_state: Option<Value>,
     #[serde(default)]
     pub memories: Vec<String>,
     #[serde(default)]
@@ -803,6 +1018,10 @@ pub struct Character {
     pub design_description: Option<String>,
     #[serde(default)]
     pub design_reference_image_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora_strength: Option<f64>,
     #[serde(default)]
     pub background_image_path: Option<String>,
     #[serde(default)]
@@ -819,8 +1038,14 @@ pub struct Character {
     pub default_model_id: Option<String>,
     #[serde(default)]
     pub fallback_model_id: Option<String>,
+    #[serde(default = "default_character_mode")]
+    pub mode: String,
+    #[serde(default)]
+    pub companion: Option<Value>,
     #[serde(default = "default_memory_type")]
     pub memory_type: String,
+    #[serde(default)]
+    pub active_lorebook_ids: Vec<String>,
     /// Reference to a character-specific system prompt template (if any)
     #[serde(default)]
     pub prompt_template_id: Option<String>,
@@ -840,6 +1065,10 @@ fn default_memory_type() -> String {
     "manual".to_string()
 }
 
+fn default_character_mode() -> String {
+    "roleplay".to_string()
+}
+
 #[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Persona {
@@ -853,6 +1082,12 @@ pub struct Persona {
     pub design_description: Option<String>,
     #[serde(default)]
     pub design_reference_image_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lora_strength: Option<f64>,
+    #[serde(default)]
+    pub active_lorebook_ids: Vec<String>,
     #[serde(default)]
     pub is_default: bool,
     pub created_at: u64,
@@ -927,6 +1162,8 @@ pub struct ChatRegenerateArgs {
     pub message_id: String,
     #[serde(default, alias = "swapPlaces")]
     pub swap_places: Option<bool>,
+    #[serde(default)]
+    pub guidance: Option<String>,
     pub stream: Option<bool>,
     #[serde(alias = "requestId")]
     pub request_id: Option<String>,
@@ -1012,6 +1249,88 @@ pub struct ChatGenerateDesignReferenceDescriptionArgs {
     pub request_id: Option<String>,
     #[serde(default)]
     pub stream: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGenerateCompanionSoulArgs {
+    #[serde(alias = "characterName")]
+    pub character_name: String,
+    #[serde(alias = "characterDefinition")]
+    pub character_definition: Option<String>,
+    #[serde(alias = "characterDescription")]
+    pub character_description: Option<String>,
+    #[serde(alias = "openingContext")]
+    pub opening_context: Option<String>,
+    #[serde(alias = "currentSoul")]
+    pub current_soul: Option<Value>,
+    #[serde(alias = "userNotes")]
+    pub user_notes: Option<String>,
+    #[serde(alias = "modelId")]
+    pub model_id: Option<String>,
+    #[serde(alias = "requestId")]
+    pub request_id: Option<String>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    pub stream: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGenerateLorebookEntryDraftArgs {
+    #[serde(alias = "lorebookId")]
+    pub lorebook_id: String,
+    #[serde(alias = "sessionId")]
+    pub session_id: String,
+    #[serde(default, alias = "messageIds")]
+    pub message_ids: Vec<String>,
+    #[serde(default, alias = "memoryIds")]
+    pub memory_ids: Vec<String>,
+    #[serde(default, alias = "source")]
+    pub source: Option<String>,
+    #[serde(default, alias = "includeMemorySummary")]
+    pub include_memory_summary: Option<bool>,
+    #[serde(default, alias = "directionPrompt")]
+    pub direction_prompt: Option<String>,
+    #[serde(default, alias = "force")]
+    pub force: bool,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LorebookEntryDraft {
+    pub title: String,
+    pub keywords: Vec<String>,
+    pub content: String,
+    pub always_active: bool,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LorebookEntryDraftResult {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<LorebookEntryDraft>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatGenerateLorebookKeywordDraftArgs {
+    #[serde(default)]
+    pub title: Option<String>,
+    pub content: String,
+    #[serde(default, alias = "directionPrompt")]
+    pub direction_prompt: Option<String>,
+    #[serde(default, alias = "existingKeywords")]
+    pub existing_keywords: Vec<String>,
+}
+
+#[derive(Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct LorebookKeywordDraftResult {
+    pub keywords: Vec<String>,
 }
 
 #[derive(Serialize)]

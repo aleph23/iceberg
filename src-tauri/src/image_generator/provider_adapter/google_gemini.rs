@@ -128,10 +128,21 @@ impl ImageProviderAdapter for GoogleGeminiAdapter {
             parts,
         };
 
+        let supports_text = request
+            .output_modalities
+            .as_ref()
+            .map(|scopes| scopes.iter().any(|s| s.eq_ignore_ascii_case("text")))
+            .unwrap_or(false);
+        let mut response_modalities = Vec::new();
+        if supports_text {
+            response_modalities.push("TEXT".to_string());
+        }
+        response_modalities.push("IMAGE".to_string());
+
         let req = GeminiRequest {
             contents: vec![content],
             generation_config: Some(GeminiGenerationConfig {
-                response_modalities: vec!["TEXT".to_string(), "IMAGE".to_string()],
+                response_modalities,
             }),
         };
 

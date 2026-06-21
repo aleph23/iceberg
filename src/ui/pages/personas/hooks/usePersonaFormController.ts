@@ -2,9 +2,10 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import { getPersona, savePersona } from "../../../../core/storage/repo";
-import { loadAvatar, saveAvatar } from "../../../../core/storage/avatars";
+import { loadAvatar, saveAvatar, recalculateGradient } from "../../../../core/storage/avatars";
 import { convertToImageRef, deleteImageRef } from "../../../../core/storage/images";
 import { invalidateAvatarCache } from "../../../hooks/useAvatar";
+import { useI18n } from "../../../../core/i18n/context";
 import type { AvatarCrop } from "../../../../core/storage/schemas";
 
 type PersonaFormState = {
@@ -20,6 +21,9 @@ type PersonaFormState = {
   avatarRoundPath: string | null;
   designDescription: string;
   designReferenceImageIds: string[];
+  loraName: string | null;
+  loraStrength: number | null;
+  activeLorebookIds: string[];
 };
 
 type Action =
@@ -44,6 +48,9 @@ const initialState: PersonaFormState = {
   avatarRoundPath: null,
   designDescription: "",
   designReferenceImageIds: [],
+  loraName: null,
+  loraStrength: null,
+  activeLorebookIds: [],
 };
 
 function reducer(state: PersonaFormState, action: Action): PersonaFormState {
@@ -63,6 +70,7 @@ function reducer(state: PersonaFormState, action: Action): PersonaFormState {
 
 export function usePersonaFormController(personaId: string | undefined) {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [state, dispatch] = useReducer(reducer, initialState);
 
   // Track initial state for change detection
@@ -76,6 +84,9 @@ export function usePersonaFormController(personaId: string | undefined) {
     avatarRoundPath: string;
     designDescription: string;
     designReferenceImageIds: string;
+    loraName: string | null;
+    loraStrength: number | null;
+    activeLorebookIds: string;
   } | null>(null);
   const persistedAvatarRef = useRef<{ filename?: string; url?: string }>({});
 
@@ -124,6 +135,11 @@ export function usePersonaFormController(personaId: string | undefined) {
           designReferenceImageIds: Array.isArray(persona.designReferenceImageIds)
             ? persona.designReferenceImageIds
             : [],
+          loraName: persona.loraName ?? null,
+          loraStrength: persona.loraStrength ?? null,
+          activeLorebookIds: Array.isArray(persona.activeLorebookIds)
+            ? persona.activeLorebookIds
+            : [],
         },
       });
 
@@ -138,18 +154,21 @@ export function usePersonaFormController(personaId: string | undefined) {
         avatarRoundPath: JSON.stringify(avatarRoundDataUrl ?? null),
         designDescription: persona.designDescription ?? "",
         designReferenceImageIds: JSON.stringify(persona.designReferenceImageIds ?? []),
+        loraName: persona.loraName ?? null,
+        loraStrength: persona.loraStrength ?? null,
+        activeLorebookIds: JSON.stringify(persona.activeLorebookIds ?? []),
       };
       dispatch({ type: "set_error", payload: null });
     } catch (error) {
       console.error("Failed to load persona:", error);
       dispatch({
         type: "set_error",
-        payload: "Failed to load persona",
+        payload: t("personas.errors.loadFailed"),
       });
     } finally {
       dispatch({ type: "set_loading", payload: false });
     }
-  }, [personaId, navigate]);
+  }, [personaId, navigate, t]);
 
   useEffect(() => {
     void loadPersona();
@@ -191,6 +210,14 @@ export function usePersonaFormController(personaId: string | undefined) {
     dispatch({ type: "set_fields", payload: { designReferenceImageIds: value } });
   }, []);
 
+  const setActiveLorebookIds = useCallback((value: string[]) => {
+    dispatch({ type: "set_fields", payload: { activeLorebookIds: value } });
+  }, []);
+
+  const setLora = useCallback((name: string | null, strength: number | null) => {
+    dispatch({ type: "set_fields", payload: { loraName: name, loraStrength: strength } });
+  }, []);
+
   const handleSave = useCallback(async () => {
     if (!personaId) {
       return;
@@ -206,6 +233,9 @@ export function usePersonaFormController(personaId: string | undefined) {
       avatarRoundPath,
       designDescription,
       designReferenceImageIds: rawDesignReferenceImageIds,
+      loraName,
+      loraStrength,
+      activeLorebookIds,
     } = state;
     if (!title.trim() || !description.trim()) {
       return;
@@ -222,12 +252,21 @@ export function usePersonaFormController(personaId: string | undefined) {
       // Save avatar if provided
       let avatarFilename: string | undefined = undefined;
       if (avatarPath) {
-        if (avatarPath.startsWith("data:")) {
-          avatarFilename = await saveAvatar("persona", personaId, avatarPath, avatarRoundPath);
+        const hasNewAvatarData = avatarPath.startsWith("data:");
+        const hasNewRoundAvatarData = avatarRoundPath?.startsWith("data:") ?? false;
+        if (hasNewAvatarData || hasNewRoundAvatarData) {
+          avatarFilename = await saveAvatar(
+            "persona",
+            personaId,
+            avatarPath,
+            avatarRoundPath,
+            undefined,
+          );
           if (!avatarFilename) {
             console.error("[EditPersona] Failed to save avatar image");
           } else {
             invalidateAvatarCache("persona", personaId);
+            await recalculateGradient("persona", personaId);
           }
         } else {
           avatarFilename =
@@ -261,6 +300,9 @@ export function usePersonaFormController(personaId: string | undefined) {
         designDescription: designDescription.trim() || undefined,
         designReferenceImageIds:
           designReferenceImageIds.length > 0 ? designReferenceImageIds : undefined,
+        loraName: loraName ?? undefined,
+        loraStrength: loraName ? (loraStrength ?? undefined) : undefined,
+        activeLorebookIds,
       });
 
       // Update initial state to match current (for change detection)
@@ -274,6 +316,9 @@ export function usePersonaFormController(personaId: string | undefined) {
         avatarRoundPath: JSON.stringify(avatarRoundPath ?? null),
         designDescription: designDescription.trim(),
         designReferenceImageIds: JSON.stringify(designReferenceImageIds),
+        loraName: loraName ?? null,
+        loraStrength: loraStrength ?? null,
+        activeLorebookIds: JSON.stringify(activeLorebookIds),
       };
 
       // Sync trimmed values
@@ -285,6 +330,7 @@ export function usePersonaFormController(personaId: string | undefined) {
           nickname: nickname.trim(),
           designDescription: designDescription.trim(),
           designReferenceImageIds,
+          activeLorebookIds,
         },
       });
 
@@ -298,12 +344,12 @@ export function usePersonaFormController(personaId: string | undefined) {
       console.error("Failed to save persona:", error);
       dispatch({
         type: "set_error",
-        payload: error?.message || "Failed to save persona",
+        payload: error?.message || t("personas.errors.saveFailed"),
       });
     } finally {
       dispatch({ type: "set_saving", payload: false });
     }
-  }, [personaId, state]);
+  }, [personaId, state, t]);
 
   const resetToInitial = useCallback(() => {
     const initial = initialStateRef.current;
@@ -320,6 +366,7 @@ export function usePersonaFormController(personaId: string | undefined) {
         avatarRoundPath: JSON.parse(initial.avatarRoundPath) as string | null,
         designDescription: initial.designDescription,
         designReferenceImageIds: JSON.parse(initial.designReferenceImageIds) as string[],
+        activeLorebookIds: JSON.parse(initial.activeLorebookIds) as string[],
       },
     });
     dispatch({ type: "set_error", payload: null });
@@ -344,7 +391,8 @@ export function usePersonaFormController(personaId: string | undefined) {
       JSON.stringify(state.avatarCrop ?? null) !== initial.avatarCrop ||
       JSON.stringify(state.avatarRoundPath ?? null) !== initial.avatarRoundPath ||
       state.designDescription !== initial.designDescription ||
-      JSON.stringify(state.designReferenceImageIds) !== initial.designReferenceImageIds;
+      JSON.stringify(state.designReferenceImageIds) !== initial.designReferenceImageIds ||
+      JSON.stringify(state.activeLorebookIds) !== initial.activeLorebookIds;
 
     return hasChanges;
   })();
@@ -360,6 +408,8 @@ export function usePersonaFormController(personaId: string | undefined) {
     setAvatarRoundPath,
     setDesignDescription,
     setDesignReferenceImageIds,
+    setLora,
+    setActiveLorebookIds,
     handleSave,
     resetToInitial,
     canSave,

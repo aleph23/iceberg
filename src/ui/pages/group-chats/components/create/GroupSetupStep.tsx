@@ -1,7 +1,6 @@
 import { motion } from "framer-motion";
 import {
   MessageSquare,
-  Sparkles,
   Theater,
   Image as ImageIcon,
   X,
@@ -9,28 +8,50 @@ import {
   BarChart3,
   RefreshCw,
   BookOpen,
+  Clapperboard,
 } from "lucide-react";
 import { useI18n } from "../../../../../core/i18n/context";
-import { typography, radius, spacing, interactive, shadows, cn } from "../../../../design-tokens";
+import type { Character } from "../../../../../core/storage/schemas";
+import { typography, radius, spacing, interactive, cn } from "../../../../design-tokens";
 import { processBackgroundImage } from "../../../../../core/utils/image";
+import { AvatarImage } from "../../../../components/AvatarImage";
+import { useAvatar } from "../../../../hooks/useAvatar";
+import { FieldLabel, OptionRow } from "../OptionRow";
+
+type SpeakerSelectionMethod = "llm" | "heuristic" | "round_robin" | "director" | "director_action";
 
 interface GroupSetupStepProps {
+  selectedCharacters: Character[];
   chatType: "conversation" | "roleplay";
   onChatTypeChange: (value: "conversation" | "roleplay") => void;
   memoryType: "manual" | "dynamic";
   onMemoryTypeChange: (value: "manual" | "dynamic") => void;
-  speakerSelectionMethod: "llm" | "heuristic" | "round_robin";
-  onSpeakerSelectionMethodChange: (value: "llm" | "heuristic" | "round_robin") => void;
+  speakerSelectionMethod: SpeakerSelectionMethod;
+  onSpeakerSelectionMethodChange: (value: SpeakerSelectionMethod) => void;
   groupName: string;
   onGroupNameChange: (value: string) => void;
   backgroundImagePath: string;
   onBackgroundImageChange: (value: string) => void;
   namePlaceholder: string;
-  onContinue: () => void;
-  canContinue: boolean;
+}
+
+function CastAvatar({ character }: { character: Character }) {
+  const avatarUrl = useAvatar("character", character.id, character.avatarPath, "round");
+  return (
+    <div className="h-9 w-9 shrink-0 overflow-hidden rounded-full bg-linear-to-br from-fg/8 to-fg/4 ring-2 ring-surface">
+      {avatarUrl ? (
+        <AvatarImage src={avatarUrl} alt={character.name} crop={character.avatarCrop} applyCrop />
+      ) : (
+        <div className="flex h-full w-full items-center justify-center text-[10px] font-bold text-fg/60">
+          {character.name.slice(0, 2).toUpperCase()}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function GroupSetupStep({
+  selectedCharacters,
   chatType,
   onChatTypeChange,
   memoryType,
@@ -42,10 +63,13 @@ export function GroupSetupStep({
   backgroundImagePath,
   onBackgroundImageChange,
   namePlaceholder,
-  onContinue,
-  canContinue,
 }: GroupSetupStepProps) {
   const { t } = useI18n();
+  const isDirector =
+    speakerSelectionMethod === "director" || speakerSelectionMethod === "director_action";
+  const visibleCast = selectedCharacters.slice(0, 6);
+  const hiddenCastCount = selectedCharacters.length - visibleCast.length;
+
   const handleBackgroundImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -69,467 +93,238 @@ export function GroupSetupStep({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -16 }}
       transition={{ duration: 0.2, ease: "easeOut" }}
-      className={spacing.section}
+      className="grid items-start gap-6 lg:grid-cols-2 lg:gap-x-10"
     >
-      {/* Title */}
-      <div className={spacing.tight}>
-        <div className="flex items-center gap-2">
-          <div className="rounded-lg border border-secondary/30 bg-secondary/10 p-1.5">
-            <MessageSquare className="h-4 w-4 text-secondary" />
-          </div>
-          <h2 className={cn(typography.h1.size, typography.h1.weight, "text-fg")}>
+      <div className={spacing.section}>
+        <div>
+          <h1 className={cn(typography.h1.size, typography.h1.weight, "text-fg")}>
             {t("groupChats.create.groupSetup.title")}
-          </h2>
-        </div>
-        <p className={cn(typography.body.size, "mt-2 text-fg/50")}>
-          {t("groupChats.create.groupSetup.subtitle")}
-        </p>
-      </div>
-
-      {/* Chat Type Selection */}
-      <div className={spacing.field}>
-        <label
-          className={cn(
-            typography.label.size,
-            typography.label.weight,
-            typography.label.tracking,
-            "uppercase text-fg/70",
-          )}
-        >
-          {t("groupChats.create.groupSetup.chatType")}
-        </label>
-
-        <div className="grid grid-cols-2 gap-3">
-          {/* Conversation Option */}
-          <button
-            onClick={() => onChatTypeChange("conversation")}
-            className={cn(
-              "relative flex flex-col items-center gap-2 p-4",
-              radius.lg,
-              "border text-center",
-              interactive.transition.fast,
-              chatType === "conversation"
-                ? "border-accent/40 bg-accent/10"
-                : "border-fg/10 bg-fg/5 hover:border-fg/20",
-            )}
-          >
-            <div
-              className={cn(
-                "flex h-12 w-12 items-center justify-center",
-                radius.lg,
-                chatType === "conversation"
-                  ? "border border-accent/30 bg-accent/20"
-                  : "border border-fg/10 bg-fg/5",
-              )}
-            >
-              <MessageSquare
-                className={cn(
-                  "h-6 w-6",
-                  chatType === "conversation" ? "text-accent/80" : "text-fg/50",
-                )}
-              />
-            </div>
-            <div>
-              <div
-                className={cn(
-                  "text-sm font-semibold",
-                  chatType === "conversation" ? "text-accent" : "text-fg/80",
-                )}
-              >
-                {t("groupChats.create.groupSetup.conversation")}
-              </div>
-              <div className="mt-0.5 text-xs text-fg/40">{t("groupChats.create.groupSetup.casualChat")}</div>
-            </div>
-            {chatType === "conversation" && (
-              <motion.div
-                layoutId="chatTypeIndicator"
-                className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent"
-              >
-                <Sparkles className="h-3 w-3 text-surface" />
-              </motion.div>
-            )}
-          </button>
-
-          {/* Roleplay Option */}
-          <button
-            onClick={() => onChatTypeChange("roleplay")}
-            className={cn(
-              "relative flex flex-col items-center gap-2 p-4",
-              radius.lg,
-              "border text-center",
-              interactive.transition.fast,
-              chatType === "roleplay"
-                ? "border-accent/40 bg-accent/10"
-                : "border-fg/10 bg-fg/5 hover:border-fg/20",
-            )}
-          >
-            <div
-              className={cn(
-                "flex h-12 w-12 items-center justify-center",
-                radius.lg,
-                chatType === "roleplay"
-                  ? "border border-accent/30 bg-accent/20"
-                  : "border border-fg/10 bg-fg/5",
-              )}
-            >
-              <Theater
-                className={cn(
-                  "h-6 w-6",
-                  chatType === "roleplay" ? "text-accent/80" : "text-fg/50",
-                )}
-              />
-            </div>
-            <div>
-              <div
-                className={cn(
-                  "text-sm font-semibold",
-                  chatType === "roleplay" ? "text-accent" : "text-fg/80",
-                )}
-              >
-                {t("groupChats.create.groupSetup.roleplay")}
-              </div>
-              <div className="mt-0.5 text-xs text-fg/40">{t("groupChats.create.groupSetup.withScenes")}</div>
-            </div>
-            {chatType === "roleplay" && (
-              <motion.div
-                layoutId="chatTypeIndicator"
-                className="absolute -top-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent"
-              >
-                <Sparkles className="h-3 w-3 text-surface" />
-              </motion.div>
-            )}
-          </button>
+          </h1>
+          <p className={cn(typography.body.size, "mt-1 text-fg/50")}>
+            {t("groupChats.create.groupSetup.subtitle")}
+          </p>
         </div>
 
-        <p className={cn(typography.bodySmall.size, "mt-2 text-fg/40")}>
-          {chatType === "conversation"
-            ? t("groupChats.create.groupSetup.conversationDesc")
-            : t("groupChats.create.groupSetup.roleplayDesc")}
-        </p>
-      </div>
-
-      {/* Speaker Selection Method */}
-      <div className={spacing.field}>
-        <label
-          className={cn(
-            typography.label.size,
-            typography.label.weight,
-            typography.label.tracking,
-            "uppercase text-fg/70",
-          )}
-        >
-          {t("groupChats.create.groupSetup.speakerSelection")}
-        </label>
-
-        <div className="grid grid-cols-3 gap-2">
-          {(
-            [
-              {
-                value: "llm" as const,
-                label: t("groupChats.create.groupSetup.llm"),
-                desc: t("groupChats.create.groupSetup.aiPicks"),
-                icon: Brain,
-              },
-              {
-                value: "heuristic" as const,
-                label: t("groupChats.create.groupSetup.heuristic"),
-                desc: t("groupChats.create.groupSetup.scoreBased"),
-                icon: BarChart3,
-              },
-              {
-                value: "round_robin" as const,
-                label: t("groupChats.create.groupSetup.roundRobin"),
-                desc: t("groupChats.create.groupSetup.takeTurns"),
-                icon: RefreshCw,
-              },
-            ] as const
-          ).map((option) => (
-            <button
-              key={option.value}
-              onClick={() => onSpeakerSelectionMethodChange(option.value)}
-              className={cn(
-                "relative flex flex-col items-center gap-1.5 p-3",
-                radius.lg,
-                "border text-center",
-                interactive.transition.fast,
-                speakerSelectionMethod === option.value
-                  ? "border-accent/40 bg-accent/10"
-                  : "border-fg/10 bg-fg/5 hover:border-fg/20",
-              )}
-            >
-              <option.icon
-                className={cn(
-                  "h-5 w-5",
-                  speakerSelectionMethod === option.value ? "text-accent/80" : "text-fg/50",
+        <div className={spacing.field}>
+          <FieldLabel>
+            {t("groupChats.create.groupSetup.groupName")}{" "}
+            <span className="text-fg/40">{t("groupChats.create.groupSetup.optional")}</span>
+          </FieldLabel>
+          <div className={cn("border border-fg/10 bg-surface-el/85", radius.lg)}>
+            <div className="flex items-center gap-3 border-b border-fg/10 px-3 py-2.5">
+              <div className="flex -space-x-2.5">
+                {visibleCast.map((character) => (
+                  <CastAvatar key={character.id} character={character} />
+                ))}
+                {hiddenCastCount > 0 && (
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-fg/10 text-[10px] font-bold text-fg/60 ring-2 ring-surface">
+                    +{hiddenCastCount}
+                  </div>
                 )}
-              />
-              <div
-                className={cn(
-                  "text-xs font-semibold",
-                  speakerSelectionMethod === option.value ? "text-accent" : "text-fg/80",
-                )}
-              >
-                {option.label}
               </div>
-              <div className="text-[10px] text-fg/40">{option.desc}</div>
-              {speakerSelectionMethod === option.value && (
-                <motion.div
-                  layoutId="selectionMethodIndicator"
-                  className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent"
+              <p className={cn(typography.caption.size, "text-fg/50")}>
+                {t("groupChats.create.groupSetup.castCount", {
+                  count: String(selectedCharacters.length),
+                })}
+              </p>
+            </div>
+            <input
+              value={groupName}
+              onChange={(e) => onGroupNameChange(e.target.value)}
+              placeholder={namePlaceholder}
+              inputMode="text"
+              className={cn(
+                "w-full bg-transparent px-3 py-3 text-fg placeholder:text-fg/40",
+                typography.body.size,
+                "focus:outline-none",
+              )}
+            />
+          </div>
+          <p className={cn(typography.bodySmall.size, "text-fg/40")}>
+            {t("groupChats.create.groupSetup.groupNameAutoGenerate")}
+          </p>
+        </div>
+
+        <div className={spacing.field}>
+          <FieldLabel>{t("groupChats.create.groupSetup.chatType")}</FieldLabel>
+          <div className="space-y-2">
+            <OptionRow
+              selected={chatType === "conversation"}
+              onSelect={() => onChatTypeChange("conversation")}
+              icon={MessageSquare}
+              label={t("groupChats.create.groupSetup.conversation")}
+              description={t("groupChats.create.groupSetup.conversationDesc")}
+            />
+            <OptionRow
+              selected={chatType === "roleplay"}
+              onSelect={() => onChatTypeChange("roleplay")}
+              icon={Theater}
+              label={t("groupChats.create.groupSetup.roleplay")}
+              description={t("groupChats.create.groupSetup.roleplayDesc")}
+            />
+          </div>
+        </div>
+
+        <div className={spacing.field}>
+          <FieldLabel>
+            {t("groupChats.create.groupSetup.chatBackground")}{" "}
+            <span className="text-fg/40">{t("groupChats.create.groupSetup.optional")}</span>
+          </FieldLabel>
+          <div
+            className={cn(
+              "overflow-hidden border border-fg/10",
+              radius.lg,
+              !backgroundImagePath && "bg-surface-el/85",
+            )}
+          >
+            {backgroundImagePath ? (
+              <div className="relative">
+                <img
+                  src={backgroundImagePath}
+                  alt={t("groupChats.create.groupSetup.chatBackground")}
+                  className="h-28 w-full object-cover"
+                />
+                <button
+                  onClick={() => onBackgroundImageChange("")}
+                  className={cn(
+                    "absolute right-2 top-2 flex h-7 w-7 items-center justify-center border border-fg/20 bg-surface/70 text-fg/80 backdrop-blur-sm",
+                    radius.full,
+                    interactive.transition.fast,
+                    "active:scale-95",
+                  )}
+                  aria-label={t("groupChats.create.groupSetup.removeBackground")}
                 >
-                  <Sparkles className="h-2.5 w-2.5 text-surface" />
-                </motion.div>
-              )}
-            </button>
-          ))}
-        </div>
-
-        <p className={cn(typography.bodySmall.size, "mt-2 text-fg/40")}>
-          {speakerSelectionMethod === "llm"
-            ? t("groupChats.create.groupSetup.llmDesc")
-            : speakerSelectionMethod === "heuristic"
-              ? t("groupChats.create.groupSetup.heuristicDesc")
-              : t("groupChats.create.groupSetup.roundRobinDesc")}
-        </p>
-      </div>
-
-      {/* Memory Mode */}
-      <div className={spacing.field}>
-        <label
-          className={cn(
-            typography.label.size,
-            typography.label.weight,
-            typography.label.tracking,
-            "uppercase text-fg/70",
-          )}
-        >
-          Memory Mode
-        </label>
-
-        <div className="grid grid-cols-2 gap-3">
-          <button
-            onClick={() => onMemoryTypeChange("manual")}
-            className={cn(
-              "relative flex flex-col items-center gap-1.5 p-3",
-              radius.lg,
-              "border text-center",
-              interactive.transition.fast,
-              memoryType === "manual"
-                ? "border-accent/40 bg-accent/10"
-                : "border-fg/10 bg-fg/5 hover:border-fg/20",
-            )}
-          >
-            <BookOpen
-              className={cn(
-                "h-5 w-5",
-                memoryType === "manual" ? "text-accent/80" : "text-fg/50",
-              )}
-            />
-            <div
-              className={cn(
-                "text-xs font-semibold",
-                memoryType === "manual" ? "text-accent" : "text-fg/80",
-              )}
-            >
-              Manual
-            </div>
-            <div className="text-[10px] text-fg/40">Manage notes yourself</div>
-            {memoryType === "manual" && (
-              <motion.div
-                layoutId="memoryTypeIndicator"
-                className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent"
-              >
-                <Sparkles className="h-2.5 w-2.5 text-surface" />
-              </motion.div>
-            )}
-          </button>
-
-          <button
-            onClick={() => onMemoryTypeChange("dynamic")}
-            className={cn(
-              "relative flex flex-col items-center gap-1.5 p-3",
-              radius.lg,
-              "border text-center",
-              interactive.transition.fast,
-              memoryType === "dynamic"
-                ? "border-accent/40 bg-accent/10"
-                : "border-fg/10 bg-fg/5 hover:border-fg/20",
-            )}
-          >
-            <Brain
-              className={cn(
-                "h-5 w-5",
-                memoryType === "dynamic" ? "text-accent/80" : "text-fg/50",
-              )}
-            />
-            <div
-              className={cn(
-                "text-xs font-semibold",
-                memoryType === "dynamic" ? "text-accent" : "text-fg/80",
-              )}
-            >
-              Dynamic
-            </div>
-            <div className="text-[10px] text-fg/40">Automatic summaries & recall</div>
-            {memoryType === "dynamic" && (
-              <motion.div
-                layoutId="memoryTypeIndicator"
-                className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-accent"
-              >
-                <Sparkles className="h-2.5 w-2.5 text-surface" />
-              </motion.div>
-            )}
-          </button>
-        </div>
-
-        <p className={cn(typography.bodySmall.size, "mt-2 text-fg/40")}>
-          {memoryType === "manual"
-            ? "You add and manage memory notes yourself"
-            : "AI automatically creates and retrieves memories from conversations"}
-        </p>
-      </div>
-
-      {/* Background Image */}
-      <div className={spacing.field}>
-        <label
-          className={cn(
-            typography.label.size,
-            typography.label.weight,
-            typography.label.tracking,
-            "uppercase text-fg/70",
-          )}
-        >
-          {t("groupChats.create.groupSetup.chatBackground")} <span className="text-fg/40">{t("groupChats.create.groupSetup.optional")}</span>
-        </label>
-
-        <div
-          className={cn(
-            "overflow-hidden border",
-            radius.md,
-            backgroundImagePath
-              ? "border-secondary/30 bg-secondary/5"
-              : "border-fg/10 bg-surface-el/20",
-          )}
-        >
-          {backgroundImagePath ? (
-            <div className="relative">
-              <img
-                src={backgroundImagePath}
-                alt="Background preview"
-                className="h-24 w-full object-cover"
-              />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
-              <button
-                onClick={() => onBackgroundImageChange("")}
-                className={cn(
-                  "absolute top-2 right-2 flex h-6 w-6 items-center justify-center border border-fg/20 bg-surface-el/50 text-fg/70",
-                  radius.full,
-                  interactive.transition.fast,
-                  "active:scale-95 active:bg-surface-el/70",
-                )}
-                aria-label={t("groupChats.create.groupSetup.removeBackground")}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          ) : (
-            <label
-              className={cn(
-                "flex cursor-pointer items-center justify-center gap-2 py-6",
-                interactive.transition.default,
-                "hover:bg-fg/5",
-              )}
-            >
-              <ImageIcon className="h-5 w-5 text-fg/40" />
-              <span className={cn(typography.body.size, "text-fg/50")}>
-                {t("groupChats.create.groupSetup.uploadBackground")}
-              </span>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handleBackgroundImageUpload}
-                className="hidden"
-              />
-            </label>
-          )}
-        </div>
-
-        <p className={cn(typography.bodySmall.size, "text-fg/40")}>
-          {t("groupChats.create.groupSetup.backgroundDesc")}
-        </p>
-      </div>
-
-      {/* Group Name Input */}
-      <div className={spacing.field}>
-        <label
-          className={cn(
-            typography.label.size,
-            typography.label.weight,
-            typography.label.tracking,
-            "uppercase text-fg/70",
-          )}
-        >
-          {t("groupChats.create.groupSetup.groupName")} <span className="text-fg/40">{t("groupChats.create.groupSetup.optional")}</span>
-        </label>
-        <div className="relative">
-          <input
-            value={groupName}
-            onChange={(e) => onGroupNameChange(e.target.value)}
-            placeholder={namePlaceholder}
-            inputMode="text"
-            className={cn(
-              "w-full border bg-surface-el/20 px-4 py-3.5 text-fg placeholder-fg/40 backdrop-blur-xl",
-              radius.md,
-              typography.body.size,
-              interactive.transition.default,
-              "focus:border-fg/30 focus:bg-surface-el/30 focus:outline-none",
-              groupName.trim() ? "border-accent/30 bg-accent/5" : "border-fg/10",
-            )}
-          />
-          {groupName.trim() && (
-            <motion.div
-              initial={{ scale: 0, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2"
-            >
-              <div
-                className={cn(
-                  "flex h-6 w-6 items-center justify-center",
-                  radius.full,
-                  "bg-accent/20",
-                )}
-              >
-                <Sparkles className="h-3 w-3 text-accent/80" />
+                  <X className="h-3.5 w-3.5" />
+                </button>
               </div>
-            </motion.div>
-          )}
+            ) : (
+              <label
+                className={cn(
+                  "flex cursor-pointer items-center justify-center gap-2 py-6",
+                  interactive.transition.default,
+                  "hover:bg-fg/5",
+                )}
+              >
+                <ImageIcon className="h-5 w-5 text-fg/40" />
+                <span className={cn(typography.body.size, "text-fg/50")}>
+                  {t("groupChats.create.groupSetup.uploadBackground")}
+                </span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={handleBackgroundImageUpload}
+                  className="hidden"
+                />
+              </label>
+            )}
+          </div>
+          <p className={cn(typography.bodySmall.size, "text-fg/40")}>
+            {t("groupChats.create.groupSetup.backgroundDesc")}
+          </p>
         </div>
-        <p className={cn(typography.bodySmall.size, "text-fg/40")}>
-          {t("groupChats.create.groupSetup.groupNameAutoGenerate")}
-        </p>
       </div>
 
-      {/* Continue Button */}
-      <div className="pt-2">
-        <motion.button
-          disabled={!canContinue}
-          onClick={onContinue}
-          whileTap={{ scale: canContinue ? 0.97 : 1 }}
-          className={cn(
-            "w-full py-4 text-base font-semibold",
-            radius.md,
-            interactive.transition.fast,
-            canContinue
-              ? cn(
-                  "border border-accent/40 bg-accent/20 text-accent",
-                  shadows.glow,
-                  "active:border-accent/60 active:bg-accent/30",
-                )
-              : "cursor-not-allowed border border-fg/5 bg-fg/5 text-fg/30",
-          )}
-        >
-          {chatType === "roleplay" ? t("groupChats.create.groupSetup.continueToScene") : t("groupChats.create.groupSetup.createGroupChat")}
-        </motion.button>
+      <div className={spacing.section}>
+        <div className={spacing.field}>
+          <FieldLabel>{t("groupChats.create.groupSetup.speakerSelection")}</FieldLabel>
+          <div className="space-y-2">
+            <OptionRow
+              selected={speakerSelectionMethod === "llm"}
+              onSelect={() => onSpeakerSelectionMethodChange("llm")}
+              icon={Brain}
+              label={t("groupChats.create.groupSetup.llm")}
+              description={t("groupChats.create.groupSetup.llmDesc")}
+            />
+            <OptionRow
+              selected={speakerSelectionMethod === "heuristic"}
+              onSelect={() => onSpeakerSelectionMethodChange("heuristic")}
+              icon={BarChart3}
+              label={t("groupChats.create.groupSetup.heuristic")}
+              description={t("groupChats.create.groupSetup.heuristicDesc")}
+            />
+            <OptionRow
+              selected={speakerSelectionMethod === "round_robin"}
+              onSelect={() => onSpeakerSelectionMethodChange("round_robin")}
+              icon={RefreshCw}
+              label={t("groupChats.create.groupSetup.roundRobin")}
+              description={t("groupChats.create.groupSetup.roundRobinDesc")}
+            />
+            <OptionRow
+              selected={isDirector}
+              onSelect={() => {
+                if (!isDirector) onSpeakerSelectionMethodChange("director");
+              }}
+              icon={Clapperboard}
+              label={t("groupChats.sessionSettings.director")}
+              description={t("groupChats.create.groupSetup.directorRowDesc")}
+            />
+            {isDirector && (
+              <div className="grid grid-cols-2 gap-2 pl-4">
+                {(
+                  [
+                    {
+                      value: "director" as const,
+                      label: t("groupChats.sessionSettings.directorCue"),
+                      desc: t("groupChats.sessionSettings.directorCueShort"),
+                    },
+                    {
+                      value: "director_action" as const,
+                      label: t("groupChats.sessionSettings.directorAction"),
+                      desc: t("groupChats.sessionSettings.directorActionShort"),
+                    },
+                  ] as const
+                ).map((option) => {
+                  const selected = speakerSelectionMethod === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      onClick={() => onSpeakerSelectionMethodChange(option.value)}
+                      className={cn(
+                        "flex flex-col items-center gap-0.5 px-3 py-2",
+                        radius.lg,
+                        "border text-center",
+                        interactive.transition.fast,
+                        selected
+                          ? "border-accent/40 bg-accent/10"
+                          : "border-fg/10 bg-surface-el/85 hover:border-fg/20",
+                      )}
+                    >
+                      <div
+                        className={cn(
+                          "text-xs font-semibold",
+                          selected ? "text-accent" : "text-fg/80",
+                        )}
+                      >
+                        {option.label}
+                      </div>
+                      <div className="text-[10px] text-fg/40">{option.desc}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className={spacing.field}>
+          <FieldLabel>{t("groupChats.groupSettings.memoryMode")}</FieldLabel>
+          <div className="space-y-2">
+            <OptionRow
+              selected={memoryType === "manual"}
+              onSelect={() => onMemoryTypeChange("manual")}
+              icon={BookOpen}
+              label={t("groupChats.groupSettings.manual")}
+              description={t("groupChats.groupSettings.memoryManualInfo")}
+            />
+            <OptionRow
+              selected={memoryType === "dynamic"}
+              onSelect={() => onMemoryTypeChange("dynamic")}
+              icon={Brain}
+              label={t("groupChats.groupSettings.dynamic")}
+              description={t("groupChats.groupSettings.memoryDynamicInfo")}
+            />
+          </div>
+        </div>
       </div>
     </motion.div>
   );

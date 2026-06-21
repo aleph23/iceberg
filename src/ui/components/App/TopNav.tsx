@@ -1,5 +1,6 @@
 import { useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
+import { resolveBackTarget } from "../../navigation";
 import {
   ArrowLeft,
   Filter,
@@ -15,14 +16,11 @@ import {
   Grid3X3,
   Upload,
   Eye,
-  Minus,
-  Square,
-  X,
+  RefreshCw,
 } from "lucide-react";
-import { motion, AnimatePresence } from "framer-motion";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invoke } from "@tauri-apps/api/core";
+import { motion } from "framer-motion";
 import { typography, interactive, cn } from "../../design-tokens";
+import { dragRegionAttr } from "./TitleBar";
 import { toast } from "../toast";
 import { openDocs } from "../../../core/utils/docs";
 import { type TranslationKey, useI18n } from "../../../core/i18n/context";
@@ -33,58 +31,20 @@ interface TopNavProps {
   onBackOverride?: () => void;
   titleOverride?: string;
   rightAction?: React.ReactNode;
-  suppressWindowControls?: boolean;
 }
 
 const appPlatform = getPlatform();
 const isDesktop = appPlatform.type === "desktop";
 const isMacOS = appPlatform.os === "macos";
-/** Custom in-app window controls are disabled; use OS-decorated windows instead. */
-export const hasCustomWindowControls = false;
-
-// Cache window chrome flags from CLI args (--osdecorations, --nobuttons).
-let _chromeFlags: { osDecorations: boolean; noButtons: boolean } | null = {
-  osDecorations: true,
-  noButtons: true,
-};
-const chromeFlagsPromise = isDesktop
-  ? invoke<[boolean, boolean]>("get_window_chrome_flags")
-      .then(([osDecorations, noButtons]) => {
-        _chromeFlags = { osDecorations, noButtons };
-        return _chromeFlags;
-      })
-      .catch(() => ({ osDecorations: true, noButtons: true }))
-  : Promise.resolve({ osDecorations: true, noButtons: true });
-
-function useChromeFlags() {
-  const [flags, setFlags] = useState(_chromeFlags);
-  useEffect(() => {
-    if (_chromeFlags) {
-      setFlags(_chromeFlags);
-    } else {
-      chromeFlagsPromise.then((f) => setFlags(f));
-    }
-  }, []);
-  return flags;
-}
 
 export function TopNav({
   currentPath,
   onBackOverride,
   titleOverride,
   rightAction,
-  suppressWindowControls = false,
 }: TopNavProps) {
   const navigate = useNavigate();
   const { t } = useI18n();
-  const chromeFlags = useChromeFlags();
-  const showWindowControls =
-    isDesktop &&
-    !isMacOS &&
-    !chromeFlags?.osDecorations &&
-    !chromeFlags?.noButtons &&
-    !suppressWindowControls;
-  const showDragRegion = isDesktop && !chromeFlags?.osDecorations;
   const basePath = useMemo(() => currentPath.split("?")[0], [currentPath]);
   const hasAdvancedView = useMemo(() => currentPath.includes("view=advanced"), [currentPath]);
   const wasUnsavedRef = useRef(false);
@@ -109,10 +69,13 @@ export function TopNav({
         titleKey: "common.nav.models",
       },
       { match: (p) => p === "/settings/security", titleKey: "common.nav.security" },
-      { match: (p) => p === "/settings/accessibility", titleKey: "common.nav.accessibility" },
+      { match: (p) => p === "/settings/customization", titleKey: "common.nav.accessibility" },
+      {
+        match: (p) => p === "/settings/speech-recognition",
+        titleKey: "common.nav.speechRecognition",
+      },
       { match: (p) => p === "/settings/reset", titleKey: "common.nav.reset" },
       { match: (p) => p === "/settings/backup", titleKey: "common.nav.backupRestore" },
-      { match: (p) => p === "/settings/convert", titleKey: "common.nav.convertFiles" },
       {
         match: (p) => p.startsWith("/settings/usage/activity"),
         titleKey: "common.nav.usageAnalytics",
@@ -127,6 +90,14 @@ export function TopNav({
       { match: (p) => p === "/settings/developer", titleKey: "common.nav.developer" },
       { match: (p) => p === "/settings/advanced", titleKey: "common.nav.advanced" },
       { match: (p) => p === "/settings/characters", titleKey: "common.nav.characters" },
+      {
+        match: (p) => p === "/settings/advanced/lorebooks",
+        titleKey: "common.nav.lorebooks",
+      },
+      {
+        match: (p) => p === "/settings/advanced/companion-soul-writer",
+        titleKey: "common.nav.companionSoulWriter",
+      },
       { match: (p) => p.includes("/lorebook"), titleKey: "common.nav.lorebooks" },
       { match: (p) => p === "/settings/personas", titleKey: "common.nav.personas" },
       { match: (p) => p === "/settings/advanced/memory", titleKey: "common.nav.dynamicMemory" },
@@ -187,6 +158,8 @@ export function TopNav({
         titleKey: "common.nav.engineSettings",
       },
       { match: (p) => p.startsWith("/settings/engine/"), titleKey: "common.nav.lettuceEngine" },
+      { match: (p) => p === "/settings/image-generation", titleKey: "common.nav.imageGeneration" },
+      { match: (p) => p === "/settings/voices", titleKey: "common.nav.voices" },
       { match: (p) => p.startsWith("/settings"), titleKey: "common.nav.settings" },
       { match: (p) => p.startsWith("/create"), titleKey: "common.nav.create" },
       { match: (p) => p.startsWith("/onboarding"), titleKey: "common.nav.setup" },
@@ -241,7 +214,12 @@ export function TopNav({
   }, [basePath]);
 
   const showLayoutToggle = useMemo(() => {
-    return basePath === "/chat" || basePath === "/" || basePath === "/settings/models";
+    return (
+      basePath === "/chat" ||
+      basePath === "/" ||
+      basePath === "/settings/models" ||
+      basePath === "/settings/models/browse"
+    );
   }, [basePath]);
 
   const [layoutViewMode, setLayoutViewMode] = useState<string>("hero");
@@ -253,12 +231,23 @@ export function TopNav({
         if (mode) setLayoutViewMode(mode);
         return;
       }
+      if (basePath === "/settings/models/browse") {
+        const mode =
+          (window as any).__hfBrowserViewMode ||
+          window.localStorage.getItem("hfBrowser:viewMode");
+        if (mode) setLayoutViewMode(mode);
+        return;
+      }
       const mode = (window as any).__chatsViewMode;
       if (mode) setLayoutViewMode(mode);
     };
     sync();
     const eventName =
-      basePath === "/settings/models" ? "models:viewModeChanged" : "chats:viewModeChanged";
+      basePath === "/settings/models"
+        ? "models:viewModeChanged"
+        : basePath === "/settings/models/browse"
+          ? "hfBrowser:viewModeChanged"
+          : "chats:viewModeChanged";
     window.addEventListener(eventName, sync);
     return () => window.removeEventListener(eventName, sync);
   }, [basePath, showLayoutToggle]);
@@ -268,11 +257,17 @@ export function TopNav({
       ? layoutViewMode === "grid"
         ? LayoutList
         : LayoutGrid
-      : layoutViewMode === "hero"
-        ? LayoutGrid
-        : layoutViewMode === "gallery"
-          ? Grid3X3
-          : LayoutList;
+      : basePath === "/settings/models/browse"
+        ? layoutViewMode === "list"
+          ? LayoutList
+          : layoutViewMode === "grid"
+            ? LayoutGrid
+            : Grid3X3
+        : layoutViewMode === "hero"
+          ? LayoutGrid
+          : layoutViewMode === "gallery"
+            ? Grid3X3
+            : LayoutList;
 
   const showAddButton = useMemo(() => {
     if (basePath.startsWith("/settings/providers")) return true;
@@ -280,6 +275,9 @@ export function TopNav({
     if (basePath === "/settings/models" && !hasAdvancedView) return true;
     if (basePath === "/settings/prompts") return true;
     if (/^\/settings\/characters\/[^/]+\/templates$/.test(basePath)) return true;
+    if (basePath === "/settings/advanced/lorebooks") return false;
+    if (basePath === "/settings/advanced/companion-soul-writer") return false;
+    if (basePath === "/library/lorebook/generate") return false;
     if (basePath.includes("/lorebook")) return true;
     return false;
   }, [basePath, hasAdvancedView]);
@@ -288,6 +286,11 @@ export function TopNav({
     () =>
       basePath === "/settings/models" ||
       /^\/settings\/characters\/[^/]+\/templates$/.test(basePath),
+    [basePath],
+  );
+
+  const showRefreshButton = useMemo(
+    () => basePath === "/settings/speech-recognition",
     [basePath],
   );
 
@@ -314,7 +317,7 @@ export function TopNav({
       (basePath.startsWith("/settings/personas/") && basePath.endsWith("/edit"))
     )
       return "personas";
-    if (basePath === "/settings/accessibility") return "accessibility";
+    if (basePath === "/settings/customization") return "accessibility";
     if (basePath === "/settings/sync") return "sync";
     if (basePath === "/settings/advanced/memory") return "memorySystem";
     if (basePath.includes("/lorebook")) return "lorebooks";
@@ -325,7 +328,10 @@ export function TopNav({
 
   const isCenteredTitle = useMemo(() => {
     return (
-      basePath.startsWith("/settings") ||
+      (basePath.startsWith("/settings") &&
+        (!basePath.includes("/lorebook") ||
+          basePath === "/settings/advanced/lorebooks" ||
+          basePath === "/settings/advanced/companion-soul-writer")) ||
       (basePath.startsWith("/personas/") && basePath.endsWith("/edit"))
     );
   }, [basePath]);
@@ -354,11 +360,11 @@ export function TopNav({
   );
   const isPromptNew = useMemo(() => basePath === "/settings/prompts/new", [basePath]);
   const isChatAppearanceEdit = useMemo(
-    () => basePath === "/settings/accessibility/chat",
+    () => basePath === "/settings/customization/chat",
     [basePath],
   );
   const isColorCustomizationEdit = useMemo(
-    () => basePath === "/settings/accessibility/colors",
+    () => basePath === "/settings/customization/colors",
     [basePath],
   );
   const isTemplateEdit = useMemo(
@@ -477,6 +483,50 @@ export function TopNav({
     };
   }, [isUnsaved]);
 
+  const triggerActiveSave = useCallback(() => {
+    const globalWindow = window as any;
+    if (isCharacterEdit && typeof globalWindow.__saveCharacter === "function") {
+      globalWindow.__saveCharacter();
+    } else if (isPersonaEdit && typeof globalWindow.__savePersona === "function") {
+      globalWindow.__savePersona();
+    } else if (
+      (isModelEdit || isModelNew) &&
+      typeof globalWindow.__saveModel === "function"
+    ) {
+      globalWindow.__saveModel();
+    } else if (isPromptEdit || isPromptNew) {
+      window.dispatchEvent(new CustomEvent("prompt:save"));
+    } else if (
+      isChatAppearanceEdit &&
+      typeof globalWindow.__saveChatAppearance === "function"
+    ) {
+      globalWindow.__saveChatAppearance();
+    } else if (
+      isColorCustomizationEdit &&
+      typeof globalWindow.__saveColorCustomization === "function"
+    ) {
+      globalWindow.__saveColorCustomization();
+    } else if (isTemplateEdit && typeof globalWindow.__saveCharacter === "function") {
+      globalWindow.__saveCharacter();
+    }
+  }, [
+    isCharacterEdit,
+    isPersonaEdit,
+    isModelEdit,
+    isModelNew,
+    isPromptEdit,
+    isPromptNew,
+    isChatAppearanceEdit,
+    isColorCustomizationEdit,
+    isTemplateEdit,
+  ]);
+
+  useEffect(() => {
+    const handler = () => triggerActiveSave();
+    window.addEventListener("unsaved:save", handler);
+    return () => window.removeEventListener("unsaved:save", handler);
+  }, [triggerActiveSave]);
+
   const ensureUnsavedToast = useCallback(() => {
     if (!toast.isVisible("unsaved-changes")) {
       toast.warningSticky(
@@ -485,9 +535,13 @@ export function TopNav({
         t("common.buttons.discard"),
         () => window.dispatchEvent(new CustomEvent("unsaved:discard")),
         "unsaved-changes",
+        {
+          label: t("topNav.save"),
+          onAction: () => triggerActiveSave(),
+        },
       );
     }
-  }, [t]);
+  }, [t, triggerActiveSave]);
 
   useEffect(() => {
     if (isUnsaved && !wasUnsavedRef.current) {
@@ -505,6 +559,44 @@ export function TopNav({
     }
     if (onBackOverride) {
       onBackOverride();
+      return;
+    }
+    if (basePath.startsWith("/settings/")) {
+      const segments = basePath.split("/").filter(Boolean);
+      if (segments.length <= 2) {
+        navigate("/");
+        return;
+      }
+      const templateEditorMatch = basePath.match(
+        /^\/settings\/characters\/([^/]+)\/templates\/.+$/,
+      );
+      if (templateEditorMatch) {
+        navigate(`/settings/characters/${templateEditorMatch[1]}/templates`);
+        return;
+      }
+      const templateListMatch = basePath.match(
+        /^\/settings\/characters\/([^/]+)\/templates$/,
+      );
+      if (templateListMatch) {
+        navigate(`/settings/characters/${templateListMatch[1]}/edit`);
+        return;
+      }
+      const kokoroBlendMatch = basePath.match(/^\/settings\/voices\/kokoro\/([^/]+)\/blend/);
+      if (kokoroBlendMatch) {
+        navigate(`/settings/voices/kokoro/${kokoroBlendMatch[1]}`);
+        return;
+      }
+      if (/^\/settings\/voices\/kokoro\/[^/]+$/.test(basePath)) {
+        navigate("/settings/providers?tab=audio");
+        return;
+      }
+      const mapped = resolveBackTarget(currentPath);
+      if (mapped && mapped.startsWith("/settings")) {
+        navigate(mapped);
+        return;
+      }
+      segments.pop();
+      navigate("/" + segments.join("/"));
       return;
     }
     navigate(-1);
@@ -567,27 +659,46 @@ export function TopNav({
     }
   };
 
+  const handleRefreshClick = () => {
+    if (basePath === "/settings/speech-recognition") {
+      window.dispatchEvent(new CustomEvent("asr:refresh"));
+    }
+  };
+
+  const headerRef = useRef<HTMLElement | null>(null);
+  useEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const publish = () => {
+      document.documentElement.style.setProperty("--topnav-h", `${el.offsetHeight}px`);
+    };
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+    };
+  }, []);
+
   return (
     <header
-      className="fixed top-0 left-0 right-0 z-40 border-b border-fg/10 backdrop-blur-md bg-nav/80"
+      ref={headerRef}
+      className="fixed left-0 right-0 top-[var(--titlebar-h,0px)] z-40 border-b border-fg/10 backdrop-blur-md bg-nav/80"
       style={{
         paddingTop: isDesktop ? "8px" : "calc(env(safe-area-inset-top) + 12px)",
         paddingBottom: isDesktop ? "8px" : "12px",
       }}
-      {...(showDragRegion ? { "data-tauri-drag-region": "" } : {})}
+      {...dragRegionAttr}
     >
       <div
-        className={cn(
-          "relative mx-auto flex w-full max-w-md lg:max-w-none items-center justify-between px-3 h-10",
-          showWindowControls ? "lg:pl-8 lg:pr-0" : "lg:px-8",
-        )}
+        className="relative mx-auto flex h-10 w-full max-w-md items-center justify-between px-3 lg:max-w-none lg:px-8"
         style={isMacOS ? { paddingLeft: "72px" } : undefined}
-        {...(showDragRegion ? { "data-tauri-drag-region": "" } : {})}
+        {...dragRegionAttr}
       >
         {/* Left side: */}
         <div
           className="flex items-center gap-1 overflow-hidden h-full"
-          {...(showDragRegion ? { "data-tauri-drag-region": "" } : {})}
+          {...dragRegionAttr}
         >
           <div
             className={cn(
@@ -595,27 +706,20 @@ export function TopNav({
               showBackButton ? "w-10" : "w-0",
             )}
           >
-            <AnimatePresence mode="wait" initial={false}>
-              {showBackButton && (
-                <motion.button
-                  key="back"
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  exit={{ opacity: 0, scale: 0.8 }}
-                  transition={{ duration: 0.2 }}
-                  onClick={handleBack}
-                  className={cn(
-                    "flex items-center px-[0.6em] py-[0.3em] justify-center rounded-full p-2",
-                    "text-fg/70 hover:text-fg hover:bg-fg/10",
-                    interactive.transition.fast,
-                    interactive.active.scale,
-                  )}
-                  aria-label={t("topNav.goBack")}
-                >
-                  <ArrowLeft size={20} strokeWidth={2.5} />
-                </motion.button>
-              )}
-            </AnimatePresence>
+            {showBackButton && (
+              <button
+                onClick={handleBack}
+                className={cn(
+                  "flex items-center px-[0.6em] py-[0.3em] justify-center rounded-full p-2",
+                  "text-fg/70 hover:text-fg hover:bg-fg/10",
+                  interactive.transition.fast,
+                  interactive.active.scale,
+                )}
+                aria-label={t("topNav.goBack")}
+              >
+                <ArrowLeft size={20} strokeWidth={2.5} />
+              </button>
+            )}
           </div>
 
           <motion.h1
@@ -623,7 +727,7 @@ export function TopNav({
             initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.3, ease: "easeOut" }}
-            {...(showDragRegion ? { "data-tauri-drag-region": "" } : {})}
+            {...dragRegionAttr}
             className={cn(
               typography.h1.size,
               "font-bold text-fg tracking-tight truncate leading-none",
@@ -636,7 +740,7 @@ export function TopNav({
 
         <div
           className="flex items-center justify-end gap-1 shrink-0 min-w-10 h-full"
-          {...(showDragRegion ? { "data-tauri-drag-region": "" } : {})}
+          {...dragRegionAttr}
         >
           {showLayoutToggle && (
             <button
@@ -645,7 +749,9 @@ export function TopNav({
                   new CustomEvent(
                     basePath === "/settings/models"
                       ? "models:cycleViewMode"
-                      : "chats:cycleViewMode",
+                      : basePath === "/settings/models/browse"
+                        ? "hfBrowser:cycleViewMode"
+                        : "chats:cycleViewMode",
                   ),
                 )
               }
@@ -713,8 +819,8 @@ export function TopNav({
                 interactive.transition.fast,
                 interactive.active.scale,
               )}
-              aria-label="Installed Models"
-              title="Installed Models"
+              aria-label={t("topNav.extra.installedModels")}
+              title={t("topNav.extra.installedModels")}
             >
               <HardDrive size={18} strokeWidth={2.2} className="text-fg/75" />
             </button>
@@ -731,6 +837,21 @@ export function TopNav({
               aria-label={t("common.buttons.import")}
             >
               <Upload size={20} strokeWidth={2.5} className="text-fg" />
+            </button>
+          )}
+          {showRefreshButton && (
+            <button
+              data-tour-id="asr-refresh"
+              onClick={handleRefreshClick}
+              className={cn(
+                "flex items-center px-[0.6em] py-[0.3em] justify-center rounded-full",
+                "text-fg/70 hover:text-fg hover:bg-fg/10",
+                interactive.transition.fast,
+                interactive.active.scale,
+              )}
+              aria-label={t("topNav.extra.refresh")}
+            >
+              <RefreshCw size={18} strokeWidth={2.4} className="text-fg" />
             </button>
           )}
           {showChatAppearancePreviewButton && (
@@ -783,33 +904,7 @@ export function TopNav({
           )}
           {showSaveButton && (
             <button
-              onClick={() => {
-                const globalWindow = window as any;
-                if (isCharacterEdit && typeof globalWindow.__saveCharacter === "function") {
-                  globalWindow.__saveCharacter();
-                } else if (isPersonaEdit && typeof globalWindow.__savePersona === "function") {
-                  globalWindow.__savePersona();
-                } else if (
-                  (isModelEdit || isModelNew) &&
-                  typeof globalWindow.__saveModel === "function"
-                ) {
-                  globalWindow.__saveModel();
-                } else if (isPromptEdit || isPromptNew) {
-                  window.dispatchEvent(new CustomEvent("prompt:save"));
-                } else if (
-                  isChatAppearanceEdit &&
-                  typeof globalWindow.__saveChatAppearance === "function"
-                ) {
-                  globalWindow.__saveChatAppearance();
-                } else if (
-                  isColorCustomizationEdit &&
-                  typeof globalWindow.__saveColorCustomization === "function"
-                ) {
-                  globalWindow.__saveColorCustomization();
-                } else if (isTemplateEdit && typeof globalWindow.__saveCharacter === "function") {
-                  globalWindow.__saveCharacter();
-                }
-              }}
+              onClick={() => triggerActiveSave()}
               disabled={!canSave || isSaving}
               className={cn(
                 "flex items-center justify-center gap-1.5 rounded-lg px-2.5 py-1.5",
@@ -825,168 +920,8 @@ export function TopNav({
             </button>
           )}
           {rightAction}
-
-          {showWindowControls && (
-            <div className="ml-1 flex items-center">
-              <button
-                type="button"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  await getCurrentWindow().minimize();
-                }}
-                className="flex h-8 w-10 items-center justify-center text-fg/45 transition hover:bg-fg/10 hover:text-fg"
-                aria-label="Minimize"
-              >
-                <Minus size={15} strokeWidth={1.5} />
-              </button>
-              <button
-                type="button"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  await getCurrentWindow().toggleMaximize();
-                }}
-                className="flex h-8 w-10 items-center justify-center text-fg/45 transition hover:bg-fg/10 hover:text-fg"
-                aria-label="Maximize"
-              >
-                <Square size={12} strokeWidth={1.5} />
-              </button>
-              <button
-                type="button"
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={async (e) => {
-                  e.stopPropagation();
-                  await getCurrentWindow().close();
-                }}
-                className="flex h-8 w-10 items-center justify-center text-fg/45 transition hover:bg-red-500/80 hover:text-white"
-                aria-label="Close"
-              >
-                <X size={15} strokeWidth={1.5} />
-              </button>
-            </div>
-          )}
         </div>
       </div>
     </header>
-  );
-}
-
-/**
- * Just the minimize/maximize/close buttons. Import this into custom headers
- * (e.g. discovery pages) that don't use TopNav.
- */
-export function WindowControlButtons() {
-  const chromeFlags = useChromeFlags();
-  const show = isDesktop && !isMacOS && !chromeFlags?.osDecorations && !chromeFlags?.noButtons;
-  if (!show) return null;
-
-  return (
-    <div className="ml-1 flex items-center">
-      <button
-        type="button"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={async (e) => {
-          e.stopPropagation();
-          await getCurrentWindow().minimize();
-        }}
-        className="flex h-8 w-10 items-center justify-center text-fg/45 transition hover:bg-fg/10 hover:text-fg"
-        aria-label="Minimize"
-      >
-        <Minus size={15} strokeWidth={1.5} />
-      </button>
-      <button
-        type="button"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={async (e) => {
-          e.stopPropagation();
-          await getCurrentWindow().toggleMaximize();
-        }}
-        className="flex h-8 w-10 items-center justify-center text-fg/45 transition hover:bg-fg/10 hover:text-fg"
-        aria-label="Maximize"
-      >
-        <Square size={12} strokeWidth={1.5} />
-      </button>
-      <button
-        type="button"
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={async (e) => {
-          e.stopPropagation();
-          await getCurrentWindow().close();
-        }}
-        className="flex h-8 w-10 items-center justify-center text-fg/45 transition hover:bg-red-500/80 hover:text-white"
-        aria-label="Close"
-      >
-        <X size={15} strokeWidth={1.5} />
-      </button>
-    </div>
-  );
-}
-
-/** Returns props to spread onto a header element to make it a drag region. */
-export function useDragRegionProps(): Record<string, string> {
-  const chromeFlags = useChromeFlags();
-  const showDrag = isDesktop && !chromeFlags?.osDecorations;
-  return showDrag ? { "data-tauri-drag-region": "" } : {};
-}
-
-/**
- * Compact window controls strip for pages that don't render TopNav.
- * Renders as a thin bar in document flow (not floating) with drag region + buttons.
- */
-export function WindowControls() {
-  const chromeFlags = useChromeFlags();
-  const showButtons =
-    isDesktop && !isMacOS && !chromeFlags?.osDecorations && !chromeFlags?.noButtons;
-  const showDrag = isDesktop && !chromeFlags?.osDecorations;
-
-  if (!showButtons && !showDrag) return null;
-
-  return (
-    <div
-      className="pointer-events-none fixed top-0 right-0 z-60 flex h-10 items-center justify-end pr-1"
-      {...(showDrag ? { "data-tauri-drag-region": "" } : {})}
-    >
-      {showButtons && (
-        <div className="pointer-events-auto flex items-center">
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={async (e) => {
-              e.stopPropagation();
-              await getCurrentWindow().minimize();
-            }}
-            className="flex h-7 w-10 items-center justify-center text-fg/45 transition hover:bg-fg/10 hover:text-fg"
-            aria-label="Minimize"
-          >
-            <Minus size={15} strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={async (e) => {
-              e.stopPropagation();
-              await getCurrentWindow().toggleMaximize();
-            }}
-            className="flex h-7 w-10 items-center justify-center text-fg/45 transition hover:bg-fg/10 hover:text-fg"
-            aria-label="Maximize"
-          >
-            <Square size={12} strokeWidth={1.5} />
-          </button>
-          <button
-            type="button"
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={async (e) => {
-              e.stopPropagation();
-              await getCurrentWindow().close();
-            }}
-            className="flex h-7 w-10 items-center justify-center text-fg/45 transition hover:bg-red-500/80 hover:text-white"
-            aria-label="Close"
-          >
-            <X size={15} strokeWidth={1.5} />
-          </button>
-        </div>
-      )}
-    </div>
   );
 }

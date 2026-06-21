@@ -11,15 +11,19 @@ import { useProviderController } from "./hooks/useProviderController";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { getPlatform } from "../../../core/utils/platform";
 import { useI18n } from "../../../core/i18n/context";
+import type { TranslationKey, TranslateParams } from "../../../core/i18n/context";
+
+type TFunction = (key: TranslationKey, params?: TranslateParams) => string;
 
 // Standard provider card for mobile
 interface ProviderCardProps {
   provider: ProviderCapabilitiesCamel;
   isActive: boolean;
   onClick: () => void;
+  t: TFunction;
 }
 
-function ProviderCard({ provider, isActive, onClick }: ProviderCardProps) {
+function ProviderCard({ provider, isActive, onClick, t }: ProviderCardProps) {
   return (
     <button
       className={`relative group min-h-22 rounded-2xl border px-3 py-3 text-left transition-all duration-200 ${
@@ -45,9 +49,9 @@ function ProviderCard({ provider, isActive, onClick }: ProviderCardProps) {
           </div>
         </div>
         <div className="space-y-0.5">
-          <h3 className="text-sm font-semibold text-white leading-tight">{provider.name}</h3>
-          <p className="text-[11px] text-gray-400 leading-snug line-clamp-2">
-            {getProviderDescription(provider.id)}
+          <h3 className="text-[15px] font-semibold text-white leading-tight">{provider.name}</h3>
+          <p className="text-[12px] text-white/70 leading-snug line-clamp-2">
+            {getProviderDescription(provider.id, t)}
           </p>
         </div>
       </div>
@@ -55,7 +59,7 @@ function ProviderCard({ provider, isActive, onClick }: ProviderCardProps) {
   );
 }
 
-function ProviderCardCompact({ provider, isActive, onClick }: ProviderCardProps) {
+function ProviderCardCompact({ provider, isActive, onClick, t }: ProviderCardProps) {
   return (
     <button
       className={`relative group rounded-xl border px-4 py-3 text-left transition-all duration-200 ${
@@ -75,12 +79,12 @@ function ProviderCardCompact({ provider, isActive, onClick }: ProviderCardProps)
         </div>
         <div className="flex-1 min-w-0">
           <h3
-            className={`text-sm font-medium leading-tight truncate ${isActive ? "text-emerald-100" : "text-white"}`}
+            className={`text-[15px] font-medium leading-tight truncate ${isActive ? "text-emerald-100" : "text-white"}`}
           >
             {provider.name}
           </h3>
-          <p className="text-xs text-gray-500 leading-snug truncate">
-            {getProviderDescriptionShort(provider.id)}
+          <p className="text-[13px] text-white/55 leading-snug truncate">
+            {getProviderDescriptionShort(provider.id, t)}
           </p>
         </div>
         <div
@@ -144,7 +148,8 @@ export function ProviderSetupPage() {
 
   const visibleCapabilities = React.useMemo(
     () =>
-      isDesktop ? capabilities : capabilities.filter((provider) => provider.id !== "llamacpp"),
+      (isDesktop ? capabilities : capabilities.filter((provider) => provider.id !== "llamacpp"))
+        .filter((provider) => provider.id !== "lettuce-engine"),
     [capabilities, isDesktop],
   );
   const selectedProvider = visibleCapabilities.find((p) => p.id === selectedProviderId);
@@ -157,7 +162,7 @@ export function ProviderSetupPage() {
   const configFormContent = (
     <div className="space-y-4">
       <div className="space-y-2">
-        <label className="text-xs font-medium text-white/70">Display Label</label>
+        <label className="text-[13px] font-medium text-white/70">{t("onboarding.provider.fields.displayLabel")}</label>
         <input
           type="text"
           value={label}
@@ -167,39 +172,47 @@ export function ProviderSetupPage() {
             const pastedText = e.clipboardData.getData("text");
             handleLabelChange(pastedText);
           }}
-          placeholder={`My ${selectedProvider?.name}`}
-          className="w-full min-h-11 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
+          placeholder={t("onboarding.provider.fields.displayLabelPlaceholder", {
+            name: selectedProvider?.name ?? t("onboarding.provider.fields.defaultLabelFallback"),
+          })}
+          className="w-full min-h-11 rounded-xl border border-white/15 bg-black/50 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
         />
-        <p className="text-[11px] text-gray-500">How this provider will appear in your menus</p>
+        <p className="text-[12px] text-white/55">{t("onboarding.provider.fields.displayLabelHint")}</p>
       </div>
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <label className="text-xs font-medium text-white/70">
-            API Key{isLocalProvider ? " (Optional)" : ""}
+          <label className="text-[13px] font-medium text-white/70">
+            {isLocalProvider
+              ? t("onboarding.provider.fields.apiKeyOptional")
+              : t("onboarding.provider.fields.apiKey")}
           </label>
           <button
             onClick={() =>
               navigate(`/wheretofind${selectedProviderId ? `?provider=${selectedProviderId}` : ""}`)
             }
-            className="text-[11px] text-gray-400 hover:text-white transition-colors"
+            className="text-[12px] text-white/70 hover:text-white transition-colors"
           >
-            Where to find it
+            {t("onboarding.provider.fields.whereToFind")}
           </button>
         </div>
         <input
           type="text"
           value={apiKey}
           onChange={(e) => handleApiKeyChange(e.target.value)}
-          placeholder={isLocalProvider ? "Usually not required" : "sk-..."}
-          className="w-full min-h-11 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
+          placeholder={
+            isLocalProvider
+              ? t("onboarding.provider.fields.apiKeyPlaceholderLocal")
+              : t("onboarding.provider.fields.apiKeyPlaceholderRemote")
+          }
+          className="w-full min-h-11 rounded-xl border border-white/15 bg-black/50 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
         />
-        <p className="text-[11px] text-gray-500">Keys are encrypted locally</p>
+        <p className="text-[12px] text-white/55">{t("onboarding.provider.fields.apiKeyHint")}</p>
       </div>
 
       {showBaseUrl && (
         <div className="space-y-2">
-          <label className="text-xs font-medium text-white/70">Base URL</label>
+          <label className="text-[13px] font-medium text-white/70">{t("onboarding.provider.fields.baseUrl")}</label>
           <input
             type="text"
             value={baseUrl}
@@ -211,28 +224,28 @@ export function ProviderSetupPage() {
             }}
             placeholder={
               selectedProviderId === "intenserp"
-                ? "http://127.0.0.1:7777/v1"
+                ? t("onboarding.provider.fields.baseUrlPlaceholderIntenseRP")
                 : isHostProvider
-                  ? "http://192.168.1.10:3333"
+                  ? t("onboarding.provider.fields.baseUrlPlaceholderHost")
                   : isLocalProvider
-                    ? "http://localhost:11434"
-                    : "https://api.provider.com"
+                    ? t("onboarding.provider.fields.baseUrlPlaceholderLocal")
+                    : t("onboarding.provider.fields.baseUrlPlaceholderRemote")
             }
-            className="w-full min-h-11 rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
+            className="w-full min-h-11 rounded-xl border border-white/15 bg-black/50 px-3 py-2 text-white placeholder-white/40 transition-colors focus:border-white/30 focus:outline-none"
           />
-          <p className="text-[11px] text-gray-500">
+          <p className="text-[12px] text-white/55">
             {isLocalProvider
-              ? "Your local server address with port"
+              ? t("onboarding.provider.fields.baseUrlHintLocal")
               : isHostProvider
-                ? "Enter the desktop host URL shown by your host device"
-                : "Override the default endpoint if needed"}
+                ? t("onboarding.provider.fields.baseUrlHintHost")
+                : t("onboarding.provider.fields.baseUrlHintRemote")}
           </p>
         </div>
       )}
 
       {testResult && (
         <div
-          className={`rounded-xl border px-4 py-3 text-sm ${
+          className={`rounded-xl border px-4 py-3 text-[15px] ${
             testResult.success
               ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-200"
               : "border-amber-400/40 bg-amber-400/10 text-amber-200"
@@ -246,17 +259,17 @@ export function ProviderSetupPage() {
         <button
           onClick={handleTestConnection}
           disabled={!canTest || isTesting}
-          className="w-full min-h-11 rounded-xl border border-white/20 bg-white/10 px-4 py-3 font-medium text-white transition-all duration-200 hover:border-white/30 hover:bg-white/15 active:scale-[0.98] disabled:cursor-not-allowed disabled:border-white/5 disabled:bg-white/5 disabled:text-gray-500"
+          className="w-full min-h-11 rounded-xl border border-white/25 bg-white/20 px-4 py-3 font-medium text-white transition-all duration-200 hover:border-white/35 hover:bg-white/25 active:scale-[0.98] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-white/10 disabled:text-white/55"
         >
           {isTesting ? (
             <div className="flex items-center justify-center gap-2">
               <Loader size={14} className="animate-spin" />
-              Testing...
+              {t("onboarding.provider.buttons.testing")}
             </div>
           ) : (
             <div className="flex items-center justify-center gap-2">
               <AlertCircle size={14} />
-              Test Connection
+              {t("onboarding.provider.buttons.testConnection")}
             </div>
           )}
         </button>
@@ -264,15 +277,15 @@ export function ProviderSetupPage() {
         <button
           onClick={handleSaveProvider}
           disabled={!canSave || isSubmitting}
-          className="w-full min-h-12 rounded-xl border border-emerald-400/40 bg-emerald-400/20 px-4 py-3 font-semibold text-emerald-100 transition-all duration-200 hover:border-emerald-300/80 hover:bg-emerald-400/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:border-emerald-400/10 disabled:bg-emerald-400/5 disabled:text-emerald-400"
+          className="w-full min-h-12 rounded-xl border border-emerald-400/60 bg-emerald-500/40 px-4 py-3 font-semibold text-emerald-50 transition-all duration-200 hover:border-emerald-300/90 hover:bg-emerald-500/50 active:scale-[0.98] disabled:cursor-not-allowed disabled:border-emerald-400/20 disabled:bg-emerald-400/10 disabled:text-emerald-400"
         >
           {isSubmitting ? (
             <div className="flex items-center justify-center gap-2">
               <Loader size={14} className="animate-spin" />
-              Verifying...
+              {t("onboarding.common.verifying")}
             </div>
           ) : (
-            "Continue"
+            t("onboarding.common.continue")
           )}
         </button>
       </div>
@@ -291,10 +304,10 @@ export function ProviderSetupPage() {
             <ArrowLeft size={18} />
           </button>
           <div className="text-center">
-            <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-gray-500">
-              Step 1 of 3
+            <p className="text-[11px] font-medium uppercase tracking-[0.25em] text-white/55">
+              {t("onboarding.stepIndicator", { current: 1, total: 3 })}
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">Provider Setup</p>
+            <p className="text-[13px] text-white/70 mt-0.5">{t("onboarding.steps.provider")}</p>
           </div>
           <div className="w-10" />
         </div>
@@ -304,16 +317,17 @@ export function ProviderSetupPage() {
           {/* Left Panel */}
           <div className="flex-1 flex flex-col border-r border-white/10">
             <div className="p-6 pb-3">
-              <h2 className="text-sm font-medium text-white/70">Available Providers</h2>
-              <p className="text-xs text-gray-500 mt-0.5">Click to select a provider</p>
+              <h2 className="text-[15px] font-medium text-white/70">{t("onboarding.provider.availableProviders")}</h2>
+              <p className="text-[13px] text-white/55 mt-0.5">{t("onboarding.common.clickToSelectProvider")}</p>
             </div>
-            <div className="flex-1 overflow-y-auto px-6">
+            <div className="flex-1 overflow-y-auto px-6 pb-10">
               <div className="grid grid-cols-2 xl:grid-cols-3 gap-2">
                 {visibleCapabilities.map((provider) => (
                   <ProviderCardCompact
                     key={provider.id}
                     provider={provider}
                     isActive={selectedProviderId === provider.id}
+                    t={t}
                     onClick={() =>
                       handleSelectProvider({
                         id: provider.id,
@@ -330,13 +344,15 @@ export function ProviderSetupPage() {
           {/* Right Panel */}
           <div className="w-100 shrink-0 p-8 overflow-y-auto">
             <div className="space-y-1 mb-6">
-              <h1 className="text-xl font-bold text-white">
-                {selectedProvider ? `Configure ${selectedProvider.name}` : "Choose a provider"}
-              </h1>
-              <p className="text-sm text-gray-400 leading-relaxed">
+              <h1 className="text-[21px] font-bold text-white">
                 {selectedProvider
-                  ? "Enter your API key to enable AI chat functionality."
-                  : "Select a provider from the list to get started."}
+                  ? t("onboarding.provider.configureProvider", { name: selectedProvider.name })
+                  : t("onboarding.provider.chooseProvider")}
+              </h1>
+              <p className="text-[15px] text-white/70 leading-relaxed">
+                {selectedProvider
+                  ? t("onboarding.common.enterApiKey")
+                  : t("onboarding.common.selectProviderFromList")}
               </p>
             </div>
 
@@ -344,7 +360,7 @@ export function ProviderSetupPage() {
               configFormContent
             ) : (
               <div className="rounded-xl border border-dashed border-white/20 bg-white/5 p-6 text-center">
-                <p className="text-sm text-gray-500">Select a provider to configure</p>
+                <p className="text-[15px] text-white/55">{t("onboarding.common.selectAProvider")}</p>
               </div>
             )}
           </div>
@@ -366,20 +382,19 @@ export function ProviderSetupPage() {
             <ArrowLeft size={16} />
           </button>
           <div className="text-center">
-            <p className="text-[10px] font-medium uppercase tracking-[0.25em] text-gray-500">
-              Step 1 of 3
+            <p className="text-[11px] font-medium uppercase tracking-[0.25em] text-white/55">
+              {t("onboarding.stepIndicator", { current: 1, total: 3 })}
             </p>
-            <p className="text-xs text-gray-400 mt-0.5">Provider Setup</p>
+            <p className="text-[13px] text-white/70 mt-0.5">{t("onboarding.steps.provider")}</p>
           </div>
           <div className="w-10" />
         </div>
 
         {/* Title */}
         <div className="text-center space-y-2 mb-8">
-          <h1 className="text-2xl font-bold text-white">{t("onboarding.steps.provider")}</h1>
-          <p className="text-sm text-gray-400 max-w-sm leading-relaxed">
-            Select an AI provider to get started. Your API keys are securely encrypted on your
-            device. No account signup needed.
+          <h1 className="text-[25px] font-bold text-white">{t("onboarding.steps.provider")}</h1>
+          <p className="text-[15px] text-white/70 max-w-sm leading-relaxed">
+            {t("onboarding.provider.descMobile")}
           </p>
         </div>
 
@@ -391,6 +406,7 @@ export function ProviderSetupPage() {
                 key={provider.id}
                 provider={provider}
                 isActive={selectedProviderId === provider.id}
+                t={t}
                 onClick={() =>
                   handleSelectProvider({
                     id: provider.id,
@@ -408,10 +424,9 @@ export function ProviderSetupPage() {
           className={`config-form-section w-full max-w-sm transition-all duration-300 ${showForm && selectedProvider ? "opacity-100 max-h-500" : "opacity-0 max-h-0 overflow-hidden pointer-events-none"}`}
         >
           <div className="text-center space-y-2 mb-6">
-            <h2 className="text-lg font-semibold text-white">Connect {selectedProvider?.name}</h2>
-            <p className="text-xs text-gray-400 leading-relaxed">
-              Paste your API key below to enable chats. Need a key? Get one from the provider
-              dashboard.
+            <h2 className="text-[19px] font-semibold text-white">{t("onboarding.provider.connectProvider", { name: selectedProvider?.name ?? "" })}</h2>
+            <p className="text-[13px] text-white/70 leading-relaxed">
+              {t("onboarding.provider.connectProviderDesc")}
             </p>
           </div>
 
@@ -423,78 +438,84 @@ export function ProviderSetupPage() {
   );
 }
 
-function getProviderDescription(providerId: string): string {
+function getProviderDescription(providerId: string, t: TFunction): string {
   switch (providerId) {
     case "chutes":
-      return "OpenAI-compatible inference for top open-source models";
+      return t("onboarding.provider.descriptions.chutes");
     case "openai":
-      return "GPT-5, GPT-4.1, and GPT-4o models for expressive RP";
+      return t("onboarding.provider.descriptions.openai");
+    case "cerebras":
+      return t("onboarding.provider.descriptions.cerebras");
     case "lettuce-host":
-      return "Connect to your own desktop Lettuce Host over LAN with OpenAI-style API";
+      return t("onboarding.provider.descriptions.lettuceHost");
     case "anthropic":
-      return "Claude 4.5 Sonnet & Haiku for deep, emotional dialogue";
+      return t("onboarding.provider.descriptions.anthropic");
     case "nanogpt":
     case "featherless":
     case "openrouter":
     case "pollinations":
       return "Access models like GPT-5, Claude 4.5, Grok-3, Mixtral, and more";
+      return t("onboarding.provider.descriptions.aggregator");
     case "openai-compatible":
-      return "Use any OpenAI-style API endpoint";
+      return t("onboarding.provider.descriptions.openaiCompatible");
     case "mistral":
-      return "Mistral Small 3.2, Mixtral 8x22B, and other Mistral models";
+      return t("onboarding.provider.descriptions.mistral");
     case "deepseek":
-      return "DeepSeek-V3.2-Exp, DeepSeek-R1, and other high-efficiency models";
+      return t("onboarding.provider.descriptions.deepseek");
     case "xai":
-      return "Grok-1.5, Grok-3, and newer xAI models";
+      return t("onboarding.provider.descriptions.xai");
     case "zai":
-      return "GLM-4.5, GLM-4.6, and Air variants";
+      return t("onboarding.provider.descriptions.zai");
     case "moonshot":
-      return "Kimi-K2 Thinking and Kimi-K1 models";
+      return t("onboarding.provider.descriptions.moonshot");
     case "gemini":
-      return "Gemini 2.5 Flash, 2.5 Pro, and more";
+      return t("onboarding.provider.descriptions.gemini");
     case "qwen":
-      return "Qwen3-VL and newer Qwen models";
+      return t("onboarding.provider.descriptions.qwen");
     case "custom":
-      return "Point LettuceAI to any custom model endpoint";
+      return t("onboarding.provider.descriptions.custom");
     default:
-      return "AI model provider";
+      return t("onboarding.provider.descriptions.fallback");
   }
 }
 
-function getProviderDescriptionShort(providerId: string): string {
+function getProviderDescriptionShort(providerId: string, t: TFunction): string {
   switch (providerId) {
     case "chutes":
-      return "Open-source model inference";
+      return t("onboarding.provider.descriptionsShort.chutes");
     case "openai":
-      return "GPT-5, GPT-4o, GPT-4.1";
+      return t("onboarding.provider.descriptionsShort.openai");
+    case "cerebras":
+      return t("onboarding.provider.descriptionsShort.cerebras");
     case "lettuce-host":
-      return "Your own LAN host";
+      return t("onboarding.provider.descriptionsShort.lettuceHost");
     case "anthropic":
-      return "Claude 4.5 Sonnet & Haiku";
+      return t("onboarding.provider.descriptionsShort.anthropic");
     case "nanogpt":
     case "featherless":
     case "openrouter":
     case "pollinations":
       return "Multi-model aggregator";
+      return t("onboarding.provider.descriptionsShort.aggregator");
     case "openai-compatible":
-      return "Custom OpenAI endpoint";
+      return t("onboarding.provider.descriptionsShort.openaiCompatible");
     case "mistral":
-      return "Mistral & Mixtral models";
+      return t("onboarding.provider.descriptionsShort.mistral");
     case "deepseek":
-      return "DeepSeek-V3, R1";
+      return t("onboarding.provider.descriptionsShort.deepseek");
     case "xai":
-      return "Grok-1.5, Grok-3";
+      return t("onboarding.provider.descriptionsShort.xai");
     case "zai":
-      return "GLM-4.5, GLM-4.6";
+      return t("onboarding.provider.descriptionsShort.zai");
     case "moonshot":
-      return "Kimi-K2 Thinking";
+      return t("onboarding.provider.descriptionsShort.moonshot");
     case "gemini":
-      return "Gemini 2.5 Flash & Pro";
+      return t("onboarding.provider.descriptionsShort.gemini");
     case "qwen":
-      return "Qwen3-VL models";
+      return t("onboarding.provider.descriptionsShort.qwen");
     case "custom":
-      return "Custom endpoint";
+      return t("onboarding.provider.descriptionsShort.custom");
     default:
-      return "AI provider";
+      return t("onboarding.provider.descriptionsShort.fallback");
   }
 }

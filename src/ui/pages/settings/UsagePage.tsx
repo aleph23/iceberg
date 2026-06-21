@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -8,9 +8,7 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  PieChart,
-  Pie,
-  Cell,
+  CartesianGrid,
 } from "recharts";
 import {
   useUsageTracking,
@@ -22,29 +20,32 @@ import {
   Download,
   TrendingUp,
   TrendingDown,
-  Zap,
-  DollarSign,
   Activity,
   Clock,
   Filter,
   ChevronRight,
   Calendar,
+  RefreshCw,
+  X,
+  Loader2,
+  ChevronDown,
 } from "lucide-react";
 import { BottomMenu } from "../../components";
 import { useI18n } from "../../../core/i18n/context";
-import { ActivityItem, formatCompactNumber, formatCurrency } from "./UsageActivityShared";
-import { typography, colors, components, cn, animations, radius } from "../../design-tokens";
+import {
+  UsageRequestDetailSheet,
+  formatCompactNumber,
+  formatCurrency,
+  getEffectiveTotalCost,
+  getOperationColor,
+  getOperationLabel,
+  getRelativeTime,
+} from "./UsageActivityShared";
+import { cn } from "../../design-tokens";
 
-// ============================================================================
-// Utilities
-// ============================================================================
-
-function formatNumber(value: number): string {
-  if (value === 0) return "0";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return value.toLocaleString();
-}
+// =============================================================================
+// Helpers
+// =============================================================================
 
 function formatDurationMs(durationMs: number): string {
   if (durationMs <= 0) return "0s";
@@ -53,12 +54,10 @@ function formatDurationMs(durationMs: number): string {
   const hours = Math.floor((totalSeconds % 86400) / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
-
   if (days > 0) return `${days}d ${hours}h`;
   if (hours > 0) return `${hours}h ${minutes}m`;
   if (minutes > 0) return `${minutes}m ${seconds}s`;
-  if (seconds > 0) return `${seconds}s`;
-  return `${minutes}m`;
+  return `${seconds}s`;
 }
 
 function dayKeyFromDate(date: Date): string {
@@ -68,28 +67,23 @@ function dayKeyFromDate(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-// ============================================================================
-// Date Range Presets
-// ============================================================================
-
 type DatePreset = "today" | "week" | "month" | "all" | "custom";
+type ViewMode = "dashboard" | "appTime";
 
 function getDateRange(preset: DatePreset): { start: Date; end: Date } {
   const now = new Date();
   const end = new Date(now);
   end.setHours(23, 59, 59, 999);
-
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
-
   switch (preset) {
     case "today":
       break;
     case "week":
-      start.setDate(start.getDate() - 7);
+      start.setDate(start.getDate() - 6);
       break;
     case "month":
-      start.setDate(start.getDate() - 30);
+      start.setDate(start.getDate() - 29);
       break;
     case "all":
       start.setFullYear(start.getFullYear() - 10);
@@ -97,177 +91,390 @@ function getDateRange(preset: DatePreset): { start: Date; end: Date } {
     case "custom":
       break;
   }
-
   return { start, end };
 }
 
-// ============================================================================
-// Chart Tooltip
-// ============================================================================
+// =============================================================================
+// Chart tooltip
+// =============================================================================
 
-const ChartTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload?.length) return null;
-
-  return (
-    <div className={cn(
-      "max-w-[70vw] px-3 py-2.5 shadow-xl",
-      components.card.base,
-      colors.glass.default
-    )}>
-      <p className={cn(typography.overline.size, "text-fg/50 mb-2")}>{label}</p>
-      <div className="space-y-1.5">
-        {payload.map((p: any, i: number) => (
-          <div key={i} className="flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2">
-              <span className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color }} />
-              <span className={cn(typography.caption.size, "text-fg/60")}>{p.name}</span>
+function makeChartTooltip(formatter: (value: number) => string) {
+  return function ChartTooltip({ active, payload, label }: any) {
+    if (!active || !payload?.length) return null;
+    return (
+      <div className="rounded-lg border border-fg/15 bg-surface/95 px-3 py-2 shadow-xl backdrop-blur-md">
+        <p className="text-[10px] font-medium uppercase tracking-[0.1em] text-fg/45">{label}</p>
+        <div className="mt-1.5 space-y-1">
+          {payload.map((p: any, i: number) => (
+            <div key={i} className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="h-1.5 w-1.5 rounded-full"
+                  style={{ backgroundColor: p.color }}
+                />
+                <span className="text-[11px] text-fg/55">{p.name}</span>
+              </div>
+              <span className="text-[12px] font-medium tabular-nums text-fg">
+                {formatter(p.value)}
+              </span>
             </div>
-            <span className={cn(typography.caption.size, typography.h3.weight, "text-fg")}>
-              {formatNumber(p.value)}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-const AppTimeTooltip = ({ active, payload, label }: any) => {
-  if (!active || !payload?.length) return null;
-
-  return (
-    <div className={cn(
-      "max-w-[70vw] px-3 py-2.5 shadow-xl",
-      components.card.base,
-      colors.glass.default
-    )}>
-      <p className={cn(typography.overline.size, "text-fg/50 mb-2")}>{label}</p>
-      {payload.map((p: any, i: number) => (
-        <div key={i} className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full" style={{ backgroundColor: p.color }} />
-            <span className={cn(typography.caption.size, "text-fg/60")}>{p.name}</span>
-          </div>
-          <span className={cn(typography.caption.size, typography.h3.weight, "text-fg")}>
-            {formatDurationMs(p.value)}
-          </span>
+          ))}
         </div>
-      ))}
-    </div>
-  );
-};
+      </div>
+    );
+  };
+}
 
-// ============================================================================
-// Stat Card
-// ============================================================================
+const TokenTooltip = makeChartTooltip(formatCompactNumber);
+const TimeTooltip = makeChartTooltip(formatDurationMs);
 
-function StatCard({
-  icon: Icon,
+// =============================================================================
+// Atoms
+// =============================================================================
+
+function StatTile({
   label,
   value,
-  subValue,
+  sub,
   trend,
   highlight,
 }: {
-  icon: any;
   label: string;
   value: string;
-  subValue?: string;
+  sub?: string;
   trend?: { value: number; isUp: boolean } | null;
   highlight?: boolean;
 }) {
   return (
     <div
       className={cn(
-        "relative overflow-hidden p-4",
-        components.card.base,
-        highlight 
-          ? "bg-accent/10 border-accent/25" 
-          : "bg-fg/5 border-fg/10"
+        "rounded-xl border px-3.5 py-3",
+        highlight
+          ? "border-accent/25 bg-accent/[0.06]"
+          : "border-fg/8 bg-fg/[0.025]",
       )}
     >
-      {highlight && (
-        <div className="absolute top-0 right-0 -mr-8 -mt-8 h-24 w-24 rounded-full bg-accent/5 blur-2xl" />
-      )}
-      
-      <div className="relative z-10">
-        <div className="flex items-center gap-2 mb-3">
-          <div className={cn(
-            "p-1.5 rounded-lg",
-            highlight ? "bg-accent/20 text-accent" : "bg-fg/5 text-fg/40"
-          )}>
-            <Icon className="h-3.5 w-3.5" />
-          </div>
-          <span className={cn(
-            typography.overline.size,
-            typography.overline.weight,
-            typography.overline.tracking,
-            typography.overline.transform,
-            "text-fg/40"
-          )}>
-            {label}
-          </span>
-        </div>
-        
-        <div className="flex items-end justify-between gap-2">
-          <div className="min-w-0">
-            <p className={cn(
-              typography.display.size,
-              typography.display.weight,
-              typography.display.tracking,
-              highlight ? "text-accent" : "text-fg"
-            )}>
-              {value}
-            </p>
-            {subValue && (
-              <p className={cn(typography.caption.size, "text-fg/30 mt-0.5 truncate")}>
-                {subValue}
-              </p>
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/40">
+          {label}
+        </span>
+        {trend && trend.value > 0 && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+              trend.isUp
+                ? "bg-accent/12 text-accent"
+                : "bg-danger/12 text-danger",
             )}
-          </div>
-          
-          {trend && trend.value > 0 && (
-            <div
-              className={cn(
-                "flex items-center gap-0.5 rounded-full px-2 py-0.5 mb-1 text-[10px] font-bold",
-                trend.isUp ? "bg-accent/15 text-accent" : "bg-danger/15 text-danger"
-              )}
-            >
-              {trend.isUp ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
-              {trend.value.toFixed(0)}%
-            </div>
-          )}
-        </div>
+          >
+            {trend.isUp ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+            {trend.value.toFixed(0)}%
+          </span>
+        )}
       </div>
+      <div
+        className={cn(
+          "mt-1.5 truncate text-[20px] font-semibold tracking-tight tabular-nums",
+          highlight ? "text-accent" : "text-fg",
+        )}
+      >
+        {value}
+      </div>
+      {sub && (
+        <div className="mt-0.5 truncate text-[11.5px] text-fg/45">{sub}</div>
+      )}
     </div>
   );
 }
 
-// ============================================================================
-// Main Component
-// ============================================================================
+function SectionCard({
+  title,
+  subtitle,
+  right,
+  children,
+  bodyClassName,
+}: {
+  title: string;
+  subtitle?: string;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  bodyClassName?: string;
+}) {
+  return (
+    <section className="rounded-xl border border-fg/8 bg-fg/[0.02]">
+      <header className="flex items-center justify-between gap-3 border-b border-fg/8 px-4 py-3">
+        <div className="min-w-0">
+          <h3 className="truncate text-[13px] font-semibold tracking-tight text-fg">
+            {title}
+          </h3>
+          {subtitle && (
+            <p className="mt-0.5 truncate text-[11.5px] text-fg/45">{subtitle}</p>
+          )}
+        </div>
+        {right && <div className="shrink-0">{right}</div>}
+      </header>
+      <div className={cn("p-4", bodyClassName)}>{children}</div>
+    </section>
+  );
+}
+
+function RankedBarList({
+  items,
+  emptyLabel,
+  unit,
+}: {
+  items: Array<{ id: string; name: string; tokens: number; cost: number }>;
+  emptyLabel: string;
+  unit: string;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="py-8 text-center text-[12px] text-fg/40">{emptyLabel}</div>
+    );
+  }
+  const max = Math.max(...items.map((i) => i.tokens), 1);
+  return (
+    <ul className="space-y-2.5">
+      {items.map((item, idx) => {
+        const pct = (item.tokens / max) * 100;
+        return (
+          <li key={item.id} className="space-y-1">
+            <div className="flex items-baseline justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="w-4 shrink-0 text-[10.5px] font-semibold tabular-nums text-fg/35">
+                  {idx + 1}
+                </span>
+                <span className="truncate text-[12.5px] font-medium text-fg/85">
+                  {item.name}
+                </span>
+              </div>
+              <div className="shrink-0 text-right">
+                <span className="text-[12px] font-medium tabular-nums text-fg">
+                  {formatCompactNumber(item.tokens)}
+                </span>
+                <span className="ml-1 text-[10.5px] text-fg/40">{unit}</span>
+                {item.cost > 0 && (
+                  <span className="ml-2 text-[11px] tabular-nums text-accent/85">
+                    {formatCurrency(item.cost)}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="h-1 overflow-hidden rounded-full bg-fg/[0.06]">
+              <div
+                className="h-full rounded-full bg-accent/55"
+                style={{ width: `${pct}%` }}
+              />
+            </div>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function PresetPills<T extends string>({
+  value,
+  onChange,
+  onCustom,
+  options,
+  customLabel,
+  customActive,
+}: {
+  value: T;
+  onChange: (v: T) => void;
+  onCustom: () => void;
+  options: Array<{ key: T; label: string }>;
+  customLabel: string;
+  customActive: boolean;
+}) {
+  return (
+    <div className="inline-flex items-center gap-0.5 rounded-lg border border-fg/8 bg-fg/[0.025] p-0.5">
+      {options.map(({ key, label }) => {
+        const active = value === key;
+        return (
+          <button
+            key={key}
+            onClick={() => onChange(key)}
+            className={cn(
+              "rounded-md px-2.5 py-1 text-[11.5px] font-medium transition-colors",
+              active
+                ? "bg-fg/10 text-fg"
+                : "text-fg/45 hover:bg-fg/5 hover:text-fg/80",
+            )}
+          >
+            {label}
+          </button>
+        );
+      })}
+      <button
+        onClick={onCustom}
+        className={cn(
+          "rounded-md px-2.5 py-1 text-[11.5px] font-medium transition-colors",
+          customActive
+            ? "bg-fg/10 text-fg"
+            : "text-fg/45 hover:bg-fg/5 hover:text-fg/80",
+        )}
+      >
+        {customLabel}
+      </button>
+    </div>
+  );
+}
+
+function IconButton({
+  icon,
+  label,
+  onClick,
+  disabled,
+  active,
+  spinning,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  active?: boolean;
+  spinning?: boolean;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className={cn(
+        "inline-flex h-8 w-8 items-center justify-center rounded-md border transition",
+        active
+          ? "border-accent/30 bg-accent/10 text-accent"
+          : "border-fg/8 bg-fg/[0.02] text-fg/55 hover:border-fg/15 hover:bg-fg/5 hover:text-fg",
+        disabled && "cursor-not-allowed opacity-30",
+        spinning && "[&>svg]:animate-spin",
+      )}
+    >
+      {icon}
+    </button>
+  );
+}
+
+// =============================================================================
+// Activity row (dense desktop grid + mobile two-line)
+// =============================================================================
+
+function ActivityRow({
+  request,
+  onClick,
+  t,
+}: {
+  request: RequestUsage;
+  onClick: (r: RequestUsage) => void;
+  t: (k: any, v?: any) => string;
+}) {
+  const opColor = getOperationColor(request.operationType);
+  const opBg = opColor.includes("var")
+    ? `color-mix(in srgb, ${opColor}, transparent 88%)`
+    : `${opColor}1f`;
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(request)}
+      className="group block w-full border-b border-fg/[0.05] px-3 py-2.5 text-left transition hover:bg-fg/[0.025]"
+    >
+      <div className="grid items-center gap-3 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_88px_88px_92px_16px]">
+        {/* Name + op */}
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span
+              className="inline-flex h-1.5 w-1.5 shrink-0 rounded-full"
+              style={{ backgroundColor: opColor }}
+            />
+            <span className="truncate text-[13px] font-medium text-fg">
+              {request.characterName || t("usageAnalytics.shared.unknown")}
+            </span>
+            <span
+              className="hidden shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-semibold uppercase tracking-wider sm:inline-flex"
+              style={{ color: opColor, backgroundColor: opBg }}
+            >
+              {getOperationLabel(request.operationType, t)}
+            </span>
+          </div>
+          <div className="mt-0.5 flex items-center gap-2 text-[11px] text-fg/45 lg:hidden">
+            <span className="truncate">{request.modelName ?? "—"}</span>
+            <span className="opacity-30">·</span>
+            <span className="shrink-0">
+              {formatCompactNumber(request.totalTokens || 0)} tok
+            </span>
+            <span className="opacity-30">·</span>
+            <span className="shrink-0 font-medium text-accent/90">
+              {formatCurrency(getEffectiveTotalCost(request))}
+            </span>
+            <span className="opacity-30">·</span>
+            <span className="shrink-0">{getRelativeTime(request.timestamp, t)}</span>
+          </div>
+        </div>
+
+        {/* Model */}
+        <div className="hidden min-w-0 truncate text-[12px] text-fg/65 lg:block">
+          {request.modelName ?? "—"}
+        </div>
+
+        {/* Tokens */}
+        <div className="hidden text-right text-[12px] tabular-nums text-fg/75 lg:block">
+          {formatCompactNumber(request.totalTokens || 0)}
+        </div>
+
+        {/* Cost */}
+        <div className="hidden text-right text-[12px] font-medium tabular-nums text-accent lg:block">
+          {formatCurrency(getEffectiveTotalCost(request))}
+        </div>
+
+        {/* Time */}
+        <div className="hidden text-right text-[11.5px] text-fg/45 lg:block">
+          {getRelativeTime(request.timestamp, t)}
+        </div>
+
+        {/* Chevron */}
+        <ChevronRight
+          size={14}
+          className="hidden shrink-0 text-fg/25 transition group-hover:text-fg/55 lg:block"
+        />
+      </div>
+    </button>
+  );
+}
+
+// =============================================================================
+// Main page
+// =============================================================================
 
 export function UsagePage() {
   const { t } = useI18n();
   const navigate = useNavigate();
   const { queryRecords, exportCSV, saveCSV, getAppActiveUsage } = useUsageTracking();
+
+  const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
+
+  // Dashboard
+  const [datePreset, setDatePreset] = useState<DatePreset>("month");
+  const [records, setRecords] = useState<RequestUsage[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  // App time
   const [appActiveUsage, setAppActiveUsage] = useState<AppActiveUsageSummary>({
     totalMs: 0,
     byDayMs: {},
   });
+  const [appTimePreset, setAppTimePreset] =
+    useState<DatePreset>("week");
 
-  // View mode
-  const [viewMode, setViewMode] = useState<"dashboard" | "appTime">("dashboard");
-
-  // Dashboard state
-  const [datePreset, setDatePreset] = useState<DatePreset>("month");
-  const [records, setRecords] = useState<RequestUsage[]>([]);
-  const [, setLoading] = useState(true);
+  // Sheets
   const [showFilters, setShowFilters] = useState(false);
-  const [showAllActivity, setShowAllActivity] = useState(false);
-  const [exporting, setExporting] = useState(false);
+  const [showCustomDatePicker, setShowCustomDatePicker] = useState(false);
+  const [selectedRequest, setSelectedRequest] = useState<RequestUsage | null>(null);
 
-  // Custom date range
+  // Custom date range (shared)
   const [customStartDate, setCustomStartDate] = useState<Date>(() => {
     const d = new Date();
     d.setDate(d.getDate() - 30);
@@ -279,112 +486,104 @@ export function UsagePage() {
     d.setHours(23, 59, 59, 999);
     return d;
   });
-  const [showCustomDatePicker, setShowCustomDatePicker] = useState(false);
-  const [appTimePreset, setAppTimePreset] = useState<"today" | "week" | "month" | "all" | "custom">(
-    "week",
-  );
 
   // Filters
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [selectedCharacter, setSelectedCharacter] = useState<string | null>(null);
 
-  // Load dashboard data
-  const loadDashboardData = async () => {
-    setLoading(true);
-    let start: Date, end: Date;
+  const resolveDashboardRange = useCallback(() => {
+    if (datePreset === "custom") return { start: customStartDate, end: customEndDate };
+    return getDateRange(datePreset);
+  }, [datePreset, customStartDate, customEndDate]);
 
-    if (datePreset === "custom") {
-      start = customStartDate;
-      end = customEndDate;
-    } else {
-      const range = getDateRange(datePreset);
-      start = range.start;
-      end = range.end;
-    }
+  const loadDashboard = useCallback(
+    async (mode: "initial" | "refresh" = "initial") => {
+      if (mode === "initial") setLoading(true);
+      else setRefreshing(true);
+      const { start, end } = resolveDashboardRange();
+      const filter: UsageFilter = {
+        startTimestamp: start.getTime(),
+        endTimestamp: end.getTime(),
+      };
+      try {
+        const next = await queryRecords(filter);
+        if (next) setRecords(next);
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [resolveDashboardRange, queryRecords],
+  );
 
-    const filter: UsageFilter = {
-      startTimestamp: start.getTime(),
-      endTimestamp: end.getTime(),
-    };
-    const newRecords = await queryRecords(filter);
-    if (newRecords) setRecords(newRecords);
-    setLoading(false);
-  };
-
-  const loadAppUsageInfo = async () => {
+  const loadAppUsage = useCallback(async () => {
     const summary = await getAppActiveUsage();
-    if (!summary) return;
-    setAppActiveUsage(summary);
-  };
+    if (summary) setAppActiveUsage(summary);
+  }, [getAppActiveUsage]);
 
   useEffect(() => {
-    if (viewMode === "dashboard") {
-      loadDashboardData();
-    }
-  }, [datePreset, viewMode, customStartDate, customEndDate]);
+    if (viewMode === "dashboard") void loadDashboard("initial");
+  }, [viewMode, datePreset, customStartDate, customEndDate, loadDashboard]);
 
   useEffect(() => {
-    loadAppUsageInfo();
-  }, []);
+    void loadAppUsage();
+  }, [loadAppUsage]);
 
   useEffect(() => {
     if (viewMode !== "appTime") return;
-    loadAppUsageInfo();
-    const interval = window.setInterval(() => {
-      loadAppUsageInfo();
-    }, 15000);
+    void loadAppUsage();
+    const interval = window.setInterval(() => void loadAppUsage(), 15000);
     return () => window.clearInterval(interval);
-  }, [viewMode]);
+  }, [viewMode, loadAppUsage]);
 
-  // Filtered records for dashboard
+  // ---- Derived ----
+
   const filteredRecords = useMemo(() => {
     let list = records;
     if (selectedModel) list = list.filter((r) => r.modelId === selectedModel);
-    if (selectedCharacter) list = list.filter((r) => r.characterId === selectedCharacter);
-    return list.sort((a, b) => b.timestamp - a.timestamp);
+    if (selectedCharacter)
+      list = list.filter((r) => r.characterId === selectedCharacter);
+    return [...list].sort((a, b) => b.timestamp - a.timestamp);
   }, [records, selectedModel, selectedCharacter]);
 
-  // Dashboard derived data
-  const { modelOptions, characterOptions, chartData, topModels } = useMemo(() => {
+  const { modelOptions, characterOptions, chartData } = useMemo(() => {
     const modelMap = new Map<string, { name: string; tokens: number; cost: number }>();
     const charMap = new Map<string, { name: string; tokens: number; cost: number }>();
-    const dailyMap = new Map<string, { input: number; output: number; cost: number; date: Date }>();
+    const dailyMap = new Map<
+      string,
+      { input: number; output: number; cost: number; date: Date }
+    >();
 
     for (const r of filteredRecords) {
       if (r.modelId && r.modelName) {
-        const existing = modelMap.get(r.modelId) || { name: r.modelName, tokens: 0, cost: 0 };
-        existing.tokens += r.totalTokens || 0;
-        existing.cost += r.cost?.totalCost || 0;
-        modelMap.set(r.modelId, existing);
+        const e = modelMap.get(r.modelId) || { name: r.modelName, tokens: 0, cost: 0 };
+        e.tokens += r.totalTokens || 0;
+        e.cost += getEffectiveTotalCost(r);
+        modelMap.set(r.modelId, e);
       }
       if (r.characterId && r.characterName) {
-        const existing = charMap.get(r.characterId) || {
-          name: r.characterName,
-          tokens: 0,
-          cost: 0,
-        };
-        existing.tokens += r.totalTokens || 0;
-        existing.cost += r.cost?.totalCost || 0;
-        charMap.set(r.characterId, existing);
+        const e = charMap.get(r.characterId) || { name: r.characterName, tokens: 0, cost: 0 };
+        e.tokens += r.totalTokens || 0;
+        e.cost += getEffectiveTotalCost(r);
+        charMap.set(r.characterId, e);
       }
-      const recordDate = new Date(r.timestamp);
-      const dateKey = recordDate.toISOString().split("T")[0];
-      const dayData = dailyMap.get(dateKey) || { input: 0, output: 0, cost: 0, date: recordDate };
-      dayData.input += r.promptTokens || 0;
-      dayData.output += r.completionTokens || 0;
-      dayData.cost += r.cost?.totalCost || 0;
-      dailyMap.set(dateKey, dayData);
+      const d = new Date(r.timestamp);
+      const k = dayKeyFromDate(d);
+      const day = dailyMap.get(k) || { input: 0, output: 0, cost: 0, date: d };
+      day.input += r.promptTokens || 0;
+      day.output += r.completionTokens || 0;
+      day.cost += getEffectiveTotalCost(r);
+      dailyMap.set(k, day);
     }
 
     const modelOptions = Array.from(modelMap.entries())
-      .map(([id, data]) => ({ id, ...data }))
+      .map(([id, d]) => ({ id, ...d }))
       .sort((a, b) => b.tokens - a.tokens);
-
     const characterOptions = Array.from(charMap.entries())
-      .map(([id, data]) => ({ id, ...data }))
+      .map(([id, d]) => ({ id, ...d }))
       .sort((a, b) => b.tokens - a.tokens);
 
-    const daysToShow =
+    const days =
       datePreset === "today"
         ? 1
         : datePreset === "week"
@@ -392,31 +591,26 @@ export function UsagePage() {
           : datePreset === "month"
             ? 30
             : undefined;
-
-    const sortedEntries = Array.from(dailyMap.entries()).sort(
+    const sorted = Array.from(dailyMap.entries()).sort(
       (a, b) => a[1].date.getTime() - b[1].date.getTime(),
     );
+    const chartData = (days !== undefined ? sorted.slice(-days) : sorted).map(
+      ([, d]) => ({
+        label: d.date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        input: d.input,
+        output: d.output,
+        cost: d.cost,
+      }),
+    );
 
-    const chartData = (
-      daysToShow !== undefined ? sortedEntries.slice(-daysToShow) : sortedEntries
-    ).map(([, data]) => ({
-      label: data.date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
-      input: data.input,
-      output: data.output,
-      cost: data.cost,
-    }));
-
-    const topModels = modelOptions.slice(0, 5);
-
-    return { modelOptions, characterOptions, chartData, topModels };
+    return { modelOptions, characterOptions, chartData };
   }, [filteredRecords, datePreset]);
 
-  // Dashboard stats
-  const displayStats = useMemo(() => {
+  const stats = useMemo(() => {
     const totals = filteredRecords.reduce(
       (acc, r) => {
         acc.tokens += r.totalTokens || 0;
-        acc.cost += r.cost?.totalCost || 0;
+        acc.cost += getEffectiveTotalCost(r);
         acc.requests += 1;
         return acc;
       },
@@ -428,36 +622,35 @@ export function UsagePage() {
     };
   }, [filteredRecords]);
 
-  const appTimeStats = useMemo(() => {
+  const appTime = useMemo(() => {
     const byDay = appActiveUsage.byDayMs ?? {};
     const today = new Date();
-    const sumPreviousDays = (startOffsetDays: number, days: number) => {
+
+    const sumPrev = (offsetDays: number, n: number) => {
       let sum = 0;
-      for (let i = startOffsetDays; i < startOffsetDays + days; i += 1) {
+      for (let i = offsetDays; i < offsetDays + n; i += 1) {
         const d = new Date(today);
         d.setDate(today.getDate() - i);
-        const key = dayKeyFromDate(d);
-        sum += byDay[key] ?? 0;
+        sum += byDay[dayKeyFromDate(d)] ?? 0;
       }
       return sum;
     };
-    const todayMs = sumPreviousDays(0, 1);
-    const yesterdayMs = sumPreviousDays(1, 1);
-    const avg30Ms = sumPreviousDays(1, 30) / 30;
-
-    const sumRangeFromDate = (start: Date, days: number) => {
+    const sumFrom = (start: Date, n: number) => {
       let sum = 0;
       const d = new Date(start);
       d.setHours(0, 0, 0, 0);
-      for (let i = 0; i < days; i += 1) {
-        const key = dayKeyFromDate(d);
-        sum += byDay[key] ?? 0;
+      for (let i = 0; i < n; i += 1) {
+        sum += byDay[dayKeyFromDate(d)] ?? 0;
         d.setDate(d.getDate() + 1);
       }
       return sum;
     };
 
-    const customRangeKeys = (() => {
+    const todayMs = sumPrev(0, 1);
+    const yesterdayMs = sumPrev(1, 1);
+    const avg30Ms = sumPrev(1, 30) / 30;
+
+    const customKeys = (() => {
       const keys: string[] = [];
       const d = new Date(customStartDate);
       d.setHours(0, 0, 0, 0);
@@ -470,7 +663,7 @@ export function UsagePage() {
       return keys;
     })();
 
-    const daysToShow =
+    const days =
       appTimePreset === "today"
         ? 1
         : appTimePreset === "week"
@@ -478,18 +671,18 @@ export function UsagePage() {
           : appTimePreset === "month"
             ? 30
             : appTimePreset === "custom"
-              ? customRangeKeys.length
+              ? customKeys.length
               : undefined;
-    
-    const allDayKeysSorted = Object.keys(byDay).sort();
+
+    const allKeys = Object.keys(byDay).sort();
     const chartKeys =
-      daysToShow === undefined
-        ? allDayKeysSorted
+      days === undefined
+        ? allKeys
         : appTimePreset === "custom"
-          ? customRangeKeys
-          : Array.from({ length: daysToShow }, (_, idx) => {
+          ? customKeys
+          : Array.from({ length: days }, (_, i) => {
               const d = new Date(today);
-              d.setDate(today.getDate() - (daysToShow - 1 - idx));
+              d.setDate(today.getDate() - (days - 1 - i));
               return dayKeyFromDate(d);
             });
 
@@ -500,23 +693,28 @@ export function UsagePage() {
         ms: byDay[key] ?? 0,
       };
     });
-    const rangeTotalMs = byDayChart.reduce((sum, item) => sum + item.ms, 0);
+
+    const rangeTotalMs = byDayChart.reduce((s, x) => s + x.ms, 0);
     const selectedDays = Math.max(byDayChart.length, 1);
-    const dailyAvgInRangeMs = rangeTotalMs / selectedDays;
-    const prevRangeTotalMs =
-      daysToShow === undefined
+    const dailyAvgMs = rangeTotalMs / selectedDays;
+
+    const prevTotalMs =
+      days === undefined
         ? 0
         : appTimePreset === "custom"
           ? (() => {
-              const prevStart = new Date(customStartDate);
-              prevStart.setHours(0, 0, 0, 0);
-              prevStart.setDate(prevStart.getDate() - selectedDays);
-              return sumRangeFromDate(prevStart, selectedDays);
+              const prev = new Date(customStartDate);
+              prev.setHours(0, 0, 0, 0);
+              prev.setDate(prev.getDate() - selectedDays);
+              return sumFrom(prev, selectedDays);
             })()
-          : sumPreviousDays(daysToShow, daysToShow);
-    const rangeDeltaMs = rangeTotalMs - prevRangeTotalMs;
-    const rangeDeltaPct =
-      prevRangeTotalMs > 0 ? (rangeDeltaMs / prevRangeTotalMs) * 100 : rangeTotalMs > 0 ? 100 : 0;
+          : sumPrev(days, days);
+    const deltaPct =
+      prevTotalMs > 0
+        ? ((rangeTotalMs - prevTotalMs) / prevTotalMs) * 100
+        : rangeTotalMs > 0
+          ? 100
+          : 0;
 
     return {
       todayMs,
@@ -524,10 +722,8 @@ export function UsagePage() {
       avg30Ms,
       rangeTotalMs,
       selectedDays,
-      dailyAvgInRangeMs,
-      prevRangeTotalMs,
-      rangeDeltaMs,
-      rangeDeltaPct,
+      dailyAvgMs,
+      deltaPct,
       byDayChart,
     };
   }, [appActiveUsage, appTimePreset, customStartDate, customEndDate]);
@@ -535,7 +731,7 @@ export function UsagePage() {
   const handleExport = async () => {
     setExporting(true);
     try {
-      const { start, end } = getDateRange(datePreset);
+      const { start, end } = resolveDashboardRange();
       const csv = await exportCSV({
         startTimestamp: start.getTime(),
         endTimestamp: end.getTime(),
@@ -543,7 +739,7 @@ export function UsagePage() {
       if (csv) {
         const fileName = `usage-${datePreset}-${new Date().toISOString().split("T")[0]}.csv`;
         const path = await saveCSV(csv, fileName);
-        if (path) alert(`Exported to: ${path}`);
+        if (path) alert(t("usageAnalytics.page.exportedTo", { path }));
       }
     } catch (e) {
       console.error("Export failed:", e);
@@ -552,700 +748,659 @@ export function UsagePage() {
     }
   };
 
-  const COLORS = [
-    "var(--color-accent)",
-    "var(--color-info)",
-    "var(--color-secondary)",
-    "#f472b6",
-    "var(--color-warning)",
-  ];
   const activeFilterCount = [selectedModel, selectedCharacter].filter(Boolean).length;
 
+  const presetOptions = useMemo(
+    () => [
+      { key: "today" as const, label: t("usageAnalytics.page.today") },
+      { key: "week" as const, label: t("usageAnalytics.page.last7Days") },
+      { key: "month" as const, label: t("usageAnalytics.page.last30Days") },
+      { key: "all" as const, label: t("usageAnalytics.page.all") },
+    ],
+    [t],
+  );
+
+  const periodLabel =
+    datePreset === "today"
+      ? t("usageAnalytics.page.today")
+      : datePreset === "week"
+        ? t("usageAnalytics.page.last7d")
+        : datePreset === "month"
+          ? t("usageAnalytics.page.last30d")
+          : datePreset === "custom"
+            ? t("usageAnalytics.page.custom")
+            : t("usageAnalytics.page.allTime");
+
+  const tabs: Array<{ key: ViewMode; label: string; icon: React.ReactNode }> = [
+    {
+      key: "dashboard",
+      label: t("usageAnalytics.page.dashboard"),
+      icon: <Activity size={12} />,
+    },
+    {
+      key: "appTime",
+      label: t("usageAnalytics.page.appTime"),
+      icon: <Clock size={12} />,
+    },
+  ];
+
   return (
-    <div className="min-h-screen bg-surface pb-32">
+    <div className="mx-auto flex w-full max-w-[1280px] flex-col gap-5 px-5 pb-24 pt-5 sm:px-8">
+      <UsageRequestDetailSheet
+        request={selectedRequest}
+        isOpen={selectedRequest !== null}
+        onClose={() => setSelectedRequest(null)}
+      />
+
+      {/* ---- Header ---- */}
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-[16px] font-semibold tracking-tight text-fg">
+            {t("common.nav.usageAnalytics")}
+          </h1>
+          <p className="mt-1 text-[12.5px] text-fg/50">
+            {viewMode === "dashboard"
+              ? t("usageAnalytics.page.tokenConsumptionOverTime")
+              : t("usageAnalytics.page.usageDurationPerDay")}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-1 rounded-full border border-fg/8 bg-fg/[0.025] p-0.5">
+          {tabs.map(({ key, label, icon }) => {
+            const active = viewMode === key;
+            return (
+              <button
+                key={key}
+                onClick={() => setViewMode(key)}
+                className={cn(
+                  "relative flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[12px] font-medium transition-colors",
+                  active ? "text-fg" : "text-fg/55 hover:text-fg/85",
+                )}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="usageTabIndicator"
+                    className="absolute inset-0 rounded-full bg-fg/[0.09] ring-1 ring-inset ring-fg/15"
+                    transition={{ type: "spring", stiffness: 420, damping: 34, mass: 0.6 }}
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-1.5">
+                  {icon}
+                  {label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </header>
+
+      {/* ---- Toolbar ---- */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <PresetPills
+          value={viewMode === "dashboard" ? datePreset : appTimePreset}
+          onChange={(v) =>
+            viewMode === "dashboard" ? setDatePreset(v) : setAppTimePreset(v)
+          }
+          onCustom={() => setShowCustomDatePicker(true)}
+          options={presetOptions}
+          customLabel={t("usageAnalytics.page.custom")}
+          customActive={
+            viewMode === "dashboard"
+              ? datePreset === "custom"
+              : appTimePreset === "custom"
+          }
+        />
+
+        <div className="flex items-center gap-2">
+          {viewMode === "dashboard" && (
+            <button
+              onClick={() => setShowFilters(true)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[11.5px] font-medium transition",
+                activeFilterCount > 0
+                  ? "border-accent/30 bg-accent/10 text-accent"
+                  : "border-fg/8 bg-fg/[0.02] text-fg/60 hover:border-fg/15 hover:bg-fg/5 hover:text-fg",
+              )}
+            >
+              <Filter size={12} />
+              {activeFilterCount > 0
+                ? t("usageAnalytics.page.filtersCount", { count: activeFilterCount })
+                : t("usageAnalytics.page.filters")}
+            </button>
+          )}
+
+          {viewMode === "dashboard" && (
+            <IconButton
+              icon={<Download size={14} />}
+              label={t("common.buttons.export")}
+              onClick={() => void handleExport()}
+              disabled={exporting || filteredRecords.length === 0}
+              spinning={exporting}
+            />
+          )}
+
+          <IconButton
+            icon={<RefreshCw size={14} />}
+            label={t("common.buttons.refresh")}
+            onClick={() => {
+              if (viewMode === "dashboard") void loadDashboard("refresh");
+              else void loadAppUsage();
+            }}
+            disabled={refreshing}
+            spinning={refreshing}
+          />
+        </div>
+      </div>
+
+      {/* ---- Body ---- */}
+      <AnimatePresence mode="wait">
+        {viewMode === "dashboard" ? (
+          <motion.div
+            key="dashboard"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="flex flex-col gap-5"
+          >
+            {/* KPI strip */}
+            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+              <StatTile
+                label={t("usageAnalytics.page.totalCost")}
+                value={formatCurrency(stats.cost)}
+                sub={periodLabel}
+                highlight
+              />
+              <StatTile
+                label={t("usageAnalytics.page.tokens")}
+                value={formatCompactNumber(stats.tokens)}
+                sub={t("usageAnalytics.page.avgShort", {
+                  value: formatCompactNumber(Math.round(stats.avgPerRequest)),
+                })}
+              />
+              <StatTile
+                label={t("usageAnalytics.page.requests")}
+                value={stats.requests.toLocaleString()}
+                sub={t("usageAnalytics.page.recordsCount", {
+                  count: filteredRecords.length,
+                })}
+              />
+              <StatTile
+                label={t("usageAnalytics.page.period")}
+                value={periodLabel}
+                sub={
+                  datePreset === "custom"
+                    ? `${customStartDate.toLocaleDateString()} → ${customEndDate.toLocaleDateString()}`
+                    : ""
+                }
+              />
+            </div>
+
+            {/* Loading or empty */}
+            {loading ? (
+              <div className="flex items-center justify-center py-20">
+                <Loader2 className="h-5 w-5 animate-spin text-fg/30" />
+              </div>
+            ) : filteredRecords.length === 0 ? (
+              <EmptyState
+                icon={<Calendar size={18} className="text-fg/45" />}
+                title={t("common.labels.none")}
+                description={t("usageAnalytics.page.startChatting")}
+              />
+            ) : (
+              <>
+                {/* Chart */}
+                {chartData.length > 1 && (
+                  <SectionCard
+                    title={t("usageAnalytics.page.usageTrend")}
+                    subtitle={t("usageAnalytics.page.tokenConsumptionOverTime")}
+                    right={
+                      <div className="flex items-center gap-3 text-[10.5px] uppercase tracking-[0.1em] text-fg/45">
+                        <span className="flex items-center gap-1.5">
+                          <span className="h-1.5 w-1.5 rounded-full bg-info" />
+                          {t("usageAnalytics.page.input")}
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+                          {t("usageAnalytics.page.output")}
+                        </span>
+                      </div>
+                    }
+                  >
+                    <div className="h-56">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <AreaChart data={chartData} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+                          <defs>
+                            <linearGradient id="usageInputGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="var(--color-info)" stopOpacity={0.28} />
+                              <stop offset="100%" stopColor="var(--color-info)" stopOpacity={0} />
+                            </linearGradient>
+                            <linearGradient id="usageOutputGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="var(--color-accent)" stopOpacity={0.3} />
+                              <stop offset="100%" stopColor="var(--color-accent)" stopOpacity={0} />
+                            </linearGradient>
+                          </defs>
+                          <CartesianGrid
+                            stroke="rgba(255,255,255,0.04)"
+                            vertical={false}
+                          />
+                          <XAxis
+                            dataKey="label"
+                            tick={{ fill: "rgba(255,255,255,0.32)", fontSize: 10 }}
+                            axisLine={false}
+                            tickLine={false}
+                            dy={6}
+                          />
+                          <YAxis
+                            tick={{ fill: "rgba(255,255,255,0.32)", fontSize: 10 }}
+                            axisLine={false}
+                            tickLine={false}
+                            tickFormatter={formatCompactNumber}
+                            width={48}
+                          />
+                          <Tooltip
+                            content={<TokenTooltip />}
+                            cursor={{ stroke: "rgba(255,255,255,0.08)", strokeWidth: 1 }}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="input"
+                            name={t("usageAnalytics.page.input")}
+                            stroke="var(--color-info)"
+                            fill="url(#usageInputGrad)"
+                            strokeWidth={1.75}
+                          />
+                          <Area
+                            type="monotone"
+                            dataKey="output"
+                            name={t("usageAnalytics.page.output")}
+                            stroke="var(--color-accent)"
+                            fill="url(#usageOutputGrad)"
+                            strokeWidth={1.75}
+                          />
+                        </AreaChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </SectionCard>
+                )}
+
+                {/* Breakdowns */}
+                <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                  <SectionCard
+                    title={t("usageAnalytics.page.byModel")}
+                    subtitle={`${modelOptions.length} ${t("usageAnalytics.page.tokens").toLowerCase()}`}
+                  >
+                    <RankedBarList
+                      items={modelOptions.slice(0, 5)}
+                      emptyLabel={t("common.labels.none")}
+                      unit={t("usageAnalytics.page.tokens").toLowerCase()}
+                    />
+                  </SectionCard>
+                  <SectionCard
+                    title={t("usageAnalytics.page.byCharacter")}
+                    subtitle={`${characterOptions.length} ${t("usageAnalytics.page.active").toLowerCase()}`}
+                  >
+                    <RankedBarList
+                      items={characterOptions.slice(0, 5)}
+                      emptyLabel={t("common.labels.none")}
+                      unit={t("usageAnalytics.page.tokens").toLowerCase()}
+                    />
+                  </SectionCard>
+                </div>
+
+                {/* Recent Activity */}
+                <SectionCard
+                  title={t("usageAnalytics.page.recentActivity")}
+                  subtitle={t("usageAnalytics.page.recordsCount", {
+                    count: filteredRecords.length,
+                  })}
+                  right={
+                    filteredRecords.length > 8 && (
+                      <button
+                        onClick={() => navigate("/settings/usage/activity")}
+                        className="inline-flex items-center gap-1 text-[11.5px] font-medium text-accent transition hover:opacity-80"
+                      >
+                        {t("usageAnalytics.page.viewAll")}
+                        <ChevronRight size={12} />
+                      </button>
+                    )
+                  }
+                  bodyClassName="!p-0"
+                >
+                  {/* Desktop column header */}
+                  <div className="hidden grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_88px_88px_92px_16px] items-center gap-3 border-b border-fg/[0.05] px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/35 lg:grid">
+                    <div>{t("common.labels.name")}</div>
+                    <div>{t("usageAnalytics.page.modelColumn")}</div>
+                    <div className="text-right">{t("usageAnalytics.page.tokens")}</div>
+                    <div className="text-right">{t("usageAnalytics.page.totalCost")}</div>
+                    <div className="text-right">{t("usageAnalytics.page.timeColumn")}</div>
+                    <div />
+                  </div>
+                  {filteredRecords.slice(0, 8).map((r) => (
+                    <ActivityRow
+                      key={r.id}
+                      request={r}
+                      onClick={setSelectedRequest}
+                      t={t}
+                    />
+                  ))}
+                </SectionCard>
+              </>
+            )}
+          </motion.div>
+        ) : (
+          <motion.div
+            key="appTime"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.15 }}
+            className="flex flex-col gap-5"
+          >
+            <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+              <StatTile
+                label={t("usageAnalytics.page.periodTotal")}
+                value={formatDurationMs(appTime.rangeTotalMs)}
+                sub={t("usageAnalytics.page.daysActive", {
+                  count: appTime.selectedDays,
+                })}
+                trend={{ value: appTime.deltaPct, isUp: appTime.deltaPct >= 0 }}
+                highlight
+              />
+              <StatTile
+                label={t("usageAnalytics.page.dailyAvg")}
+                value={formatDurationMs(appTime.dailyAvgMs)}
+                sub={t("usageAnalytics.page.selectedPeriod")}
+              />
+              <StatTile
+                label={t("usageAnalytics.page.today")}
+                value={formatDurationMs(appTime.todayMs)}
+                sub={t("usageAnalytics.page.yesterdayValue", {
+                  value: formatDurationMs(appTime.yesterdayMs),
+                })}
+              />
+              <StatTile
+                label={t("usageAnalytics.page.thirtyDayAvg")}
+                value={formatDurationMs(appTime.avg30Ms)}
+              />
+            </div>
+
+            <SectionCard
+              title={t("usageAnalytics.page.appTimeTrend")}
+              subtitle={t("usageAnalytics.page.usageDurationPerDay")}
+              right={
+                <span className="rounded-md border border-fg/8 bg-fg/[0.04] px-2 py-0.5 text-[10.5px] font-medium tabular-nums text-fg/55">
+                  {t("usageAnalytics.page.totalValue", {
+                    value: formatDurationMs(appTime.rangeTotalMs),
+                  })}
+                </span>
+              }
+            >
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart
+                    data={appTime.byDayChart}
+                    margin={{ top: 4, right: 4, left: -16, bottom: 0 }}
+                  >
+                    <defs>
+                      <linearGradient id="appTimeGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="0%" stopColor="var(--color-accent)" stopOpacity={0.3} />
+                        <stop offset="100%" stopColor="var(--color-accent)" stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid stroke="rgba(255,255,255,0.04)" vertical={false} />
+                    <XAxis
+                      dataKey="label"
+                      tick={{ fill: "rgba(255,255,255,0.32)", fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      dy={6}
+                    />
+                    <YAxis
+                      tick={{ fill: "rgba(255,255,255,0.32)", fontSize: 10 }}
+                      axisLine={false}
+                      tickLine={false}
+                      tickFormatter={(v) => formatDurationMs(v)}
+                      width={56}
+                    />
+                    <Tooltip
+                      content={<TimeTooltip />}
+                      cursor={{ stroke: "rgba(255,255,255,0.08)", strokeWidth: 1 }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="ms"
+                      name={t("usageAnalytics.page.activeTime")}
+                      stroke="var(--color-accent)"
+                      fill="url(#appTimeGrad)"
+                      strokeWidth={1.75}
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </SectionCard>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ---- Filter sheet ---- */}
       <BottomMenu
         isOpen={showFilters}
         onClose={() => setShowFilters(false)}
-        title="Filters"
+        title={t("usageAnalytics.page.filters")}
         includeExitIcon={false}
       >
-        <div className="space-y-6 pb-8">
-          <div>
-            <label className={cn(
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              "text-fg/40 ml-1 mb-3 block"
-            )}>
-              Model
-            </label>
-            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-              {modelOptions.slice(0, 12).map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setSelectedModel(selectedModel === m.id ? null : m.id)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-3.5 py-3 transition-all",
-                    components.listItem.base,
-                    selectedModel === m.id
-                      ? "bg-accent/15 border-accent/30 text-accent"
-                      : "bg-fg/5 text-fg/70 hover:bg-fg/10"
-                  )}
-                >
-                  <span className={cn(typography.body.size, "truncate")}>{m.name}</span>
-                  <span className={cn(typography.caption.size, "text-fg/40")}>{formatCompactNumber(m.tokens)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <label className={cn(
-              typography.overline.size,
-              typography.overline.weight,
-              typography.overline.tracking,
-              "text-fg/40 ml-1 mb-3 block"
-            )}>
-              Character
-            </label>
-            <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
-              {characterOptions.slice(0, 12).map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => setSelectedCharacter(selectedCharacter === c.id ? null : c.id)}
-                  className={cn(
-                    "w-full flex items-center justify-between px-3.5 py-3 transition-all",
-                    components.listItem.base,
-                    selectedCharacter === c.id
-                      ? "bg-accent/15 border-accent/30 text-accent"
-                      : "bg-fg/5 text-fg/70 hover:bg-fg/10"
-                  )}
-                >
-                  <span className={cn(typography.body.size, "truncate")}>{c.name}</span>
-                  <span className={cn(typography.caption.size, "text-fg/40")}>{formatCompactNumber(c.tokens)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex gap-3 pt-2">
+        <div className="space-y-5 pb-6">
+          <FilterGroup
+            label={t("usageAnalytics.page.model")}
+            options={modelOptions.slice(0, 12)}
+            selected={selectedModel}
+            onToggle={(id) => setSelectedModel((p) => (p === id ? null : id))}
+          />
+          <FilterGroup
+            label={t("usageAnalytics.page.character")}
+            options={characterOptions.slice(0, 12)}
+            selected={selectedCharacter}
+            onToggle={(id) => setSelectedCharacter((p) => (p === id ? null : id))}
+          />
+          <div className="flex gap-2 pt-1">
             <button
               onClick={() => {
                 setSelectedModel(null);
                 setSelectedCharacter(null);
               }}
-              className={cn(
-                "flex-1 py-3 border border-fg/10 text-fg/60 font-semibold transition-all",
-                components.button.primary,
-                "hover:bg-fg/5"
-              )}
+              className="flex-1 rounded-lg border border-fg/10 bg-fg/[0.02] py-2.5 text-[12.5px] font-medium text-fg/60 transition hover:bg-fg/5 hover:text-fg"
             >
-              Clear All
+              {t("usageAnalytics.page.clearAll")}
             </button>
             <button
               onClick={() => setShowFilters(false)}
-              className={cn(
-                "flex-1 py-3 bg-accent text-black font-bold transition-all",
-                components.button.primary,
-                "hover:brightness-110 shadow-lg shadow-accent/20"
-              )}
+              className="flex-1 rounded-lg bg-accent py-2.5 text-[12.5px] font-semibold text-black transition hover:brightness-110"
             >
-              Apply Filters
+              {t("usageAnalytics.page.applyFilters")}
             </button>
           </div>
         </div>
       </BottomMenu>
 
-      <BottomMenu
-        isOpen={showAllActivity}
-        onClose={() => setShowAllActivity(false)}
-        title="Recent Activity"
-        includeExitIcon={false}
-      >
-        <div className="space-y-0.5 pb-8 max-h-[65vh] overflow-y-auto pr-1">
-          {filteredRecords.slice(0, 50).map((r) => (
-            <ActivityItem key={r.id} request={r} />
-          ))}
-          {filteredRecords.length === 0 && (
-            <div className="py-20 text-center">
-               <Calendar className="h-10 w-10 text-fg/10 mx-auto mb-4" />
-               <p className={cn(typography.body.size, "text-fg/40")}>{t("common.labels.none")}</p>
-            </div>
-          )}
-        </div>
-      </BottomMenu>
-
+      {/* ---- Custom date sheet ---- */}
       <BottomMenu
         isOpen={showCustomDatePicker}
         onClose={() => setShowCustomDatePicker(false)}
-        title="Custom Range"
+        title={t("usageAnalytics.page.customRange")}
         includeExitIcon={false}
       >
-        <div className="space-y-6 pb-8">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className={cn(typography.overline.size, "text-fg/40 mb-2 block")}>Start Date</label>
-              <input
-                type="date"
-                value={customStartDate.toISOString().split("T")[0]}
-                onChange={(e) => {
-                  const newDate = new Date(e.target.value);
-                  newDate.setHours(0, 0, 0, 0);
-                  setCustomStartDate(newDate);
-                }}
-                max={customEndDate.toISOString().split("T")[0]}
-                className={cn(
-                  "w-full bg-fg/5 border border-fg/10 text-fg focus:border-accent/40 focus:bg-fg/10 transition-all",
-                  components.input.base,
-                  components.input.sizes.md
-                )}
-              />
-            </div>
-            <div>
-              <label className={cn(typography.overline.size, "text-fg/40 mb-2 block")}>End Date</label>
-              <input
-                type="date"
-                value={customEndDate.toISOString().split("T")[0]}
-                onChange={(e) => {
-                  const newDate = new Date(e.target.value);
-                  newDate.setHours(23, 59, 59, 999);
-                  setCustomEndDate(newDate);
-                }}
-                min={customStartDate.toISOString().split("T")[0]}
-                max={new Date().toISOString().split("T")[0]}
-                className={cn(
-                  "w-full bg-fg/5 border border-fg/10 text-fg focus:border-accent/40 focus:bg-fg/10 transition-all",
-                  components.input.base,
-                  components.input.sizes.md
-                )}
-              />
-            </div>
+        <div className="space-y-5 pb-6">
+          <div className="grid grid-cols-2 gap-3">
+            <DateField
+              label={t("usageAnalytics.page.startDate")}
+              value={customStartDate}
+              onChange={(d) => {
+                d.setHours(0, 0, 0, 0);
+                setCustomStartDate(d);
+              }}
+              max={customEndDate}
+            />
+            <DateField
+              label={t("usageAnalytics.page.endDate")}
+              value={customEndDate}
+              onChange={(d) => {
+                d.setHours(23, 59, 59, 999);
+                setCustomEndDate(d);
+              }}
+              min={customStartDate}
+              maxToday
+            />
           </div>
-
-          <div className="flex gap-3 pt-2">
+          <div className="flex gap-2">
             <button
               onClick={() => setShowCustomDatePicker(false)}
-              className={cn(
-                "flex-1 py-3 border border-fg/10 text-fg/60 font-semibold transition-all",
-                components.button.primary,
-                "hover:bg-fg/5"
-              )}
+              className="flex-1 rounded-lg border border-fg/10 bg-fg/[0.02] py-2.5 text-[12.5px] font-medium text-fg/60 transition hover:bg-fg/5 hover:text-fg"
             >
-              Cancel
+              {t("common.buttons.cancel")}
             </button>
             <button
               onClick={() => {
-                if (viewMode === "appTime") {
-                  setAppTimePreset("custom");
-                } else {
-                  setDatePreset("custom");
-                }
+                if (viewMode === "appTime") setAppTimePreset("custom");
+                else setDatePreset("custom");
                 setShowCustomDatePicker(false);
               }}
-              className={cn(
-                "flex-1 py-3 bg-accent text-black font-bold transition-all",
-                components.button.primary,
-                "hover:brightness-110"
-              )}
+              className="flex-1 rounded-lg bg-accent py-2.5 text-[12.5px] font-semibold text-black transition hover:brightness-110"
             >
-              Apply Range
+              {t("usageAnalytics.page.applyRange")}
             </button>
           </div>
         </div>
       </BottomMenu>
 
-      <div className="max-w-4xl mx-auto px-4 py-6">
-        <div className="flex flex-col gap-6">
-          <div className="flex items-center justify-center">
-            <div className={cn(
-              "p-1 flex items-center gap-1 bg-fg/5 border border-fg/10",
-              radius.lg
-            )}>
-              <button
-                onClick={() => setViewMode("dashboard")}
-                className={cn(
-                  "flex items-center gap-2 px-6 py-2 rounded-lg transition-all duration-300",
-                  typography.label.size,
-                  typography.label.weight,
-                  viewMode === "dashboard" 
-                    ? "bg-fg text-surface shadow-lg" 
-                    : "text-fg/40 hover:text-fg/70 hover:bg-fg/5"
-                )}
-              >
-                <Activity className="h-3.5 w-3.5" />
-                DASHBOARD
-              </button>
-              <button
-                onClick={() => setViewMode("appTime")}
-                className={cn(
-                  "flex items-center gap-2 px-6 py-2 rounded-lg transition-all duration-300",
-                  typography.label.size,
-                  typography.label.weight,
-                  viewMode === "appTime" 
-                    ? "bg-fg text-surface shadow-lg" 
-                    : "text-fg/40 hover:text-fg/70 hover:bg-fg/5"
-                )}
-              >
-                <Clock className="h-3.5 w-3.5" />
-                APP TIME
-              </button>
-            </div>
-          </div>
+    </div>
+  );
+}
 
-          <AnimatePresence mode="wait">
-            {viewMode === "dashboard" ? (
-              <motion.div
-                key="dashboard"
-                {...animations.fadeIn}
-                className="space-y-6"
-              >
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                  <div className={cn(
-                    "flex flex-wrap items-center gap-1.5 p-1.5 bg-fg/5 border border-fg/10",
-                    radius.lg
-                  )}>
-                    {[
-                      { key: "today", label: "Today" },
-                      { key: "week", label: "7 Days" },
-                      { key: "month", label: "30 Days" },
-                      { key: "all", label: "All" },
-                      { key: "custom", label: "Custom" },
-                    ].map(({ key, label }) => (
-                      <button
-                        key={key}
-                        onClick={() => {
-                          if (key === "custom") {
-                            setShowCustomDatePicker(true);
-                            return;
-                          }
-                          setDatePreset(key as DatePreset);
-                        }}
-                        className={cn(
-                          "px-4 py-1.5 rounded-lg transition-all duration-200",
-                          typography.caption.size,
-                          typography.caption.weight,
-                          datePreset === key 
-                            ? "bg-fg/10 text-fg shadow-sm" 
-                            : "text-fg/40 hover:text-fg/70 hover:bg-fg/5"
-                        )}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
+// =============================================================================
+// Sub-components used by the sheets
+// =============================================================================
 
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setShowFilters(true)}
-                      className={cn(
-                        "flex items-center gap-2 px-4 py-2 border transition-all",
-                        components.button.primary,
-                        activeFilterCount > 0
-                          ? "bg-accent/15 border-accent/40 text-accent shadow-sm"
-                          : "bg-fg/5 border-fg/10 text-fg/50 hover:bg-fg/10"
-                      )}
-                    >
-                      <Filter className="h-3.5 w-3.5" />
-                      <span className={typography.caption.size}>{activeFilterCount > 0 ? `${activeFilterCount} Filters` : "Filters"}</span>
-                    </button>
-                    <button
-                      onClick={handleExport}
-                      disabled={exporting || records.length === 0}
-                      className={cn(
-                        "flex items-center justify-center p-2 border transition-all",
-                        components.button.primary,
-                        "bg-fg/5 border-fg/10 text-fg/50 hover:bg-fg/10 disabled:opacity-20"
-                      )}
-                    >
-                      <Download className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                  <StatCard
-                    icon={DollarSign}
-                    label="Total Cost"
-                    value={formatCurrency(displayStats.cost)}
-                    highlight
-                  />
-                  <StatCard
-                    icon={Zap}
-                    label="Tokens"
-                    value={formatNumber(displayStats.tokens)}
-                    subValue={`${formatNumber(Math.round(displayStats.avgPerRequest))} avg`}
-                  />
-                  <StatCard
-                    icon={Activity}
-                    label="Requests"
-                    value={displayStats.requests.toLocaleString()}
-                  />
-                  <StatCard
-                    icon={Clock}
-                    label="Period"
-                    value={
-                      datePreset === "today" ? "Today" : 
-                      datePreset === "week" ? "Last 7d" : 
-                      datePreset === "month" ? "Last 30d" : 
-                      datePreset === "custom" ? "Custom" : "All Time"
-                    }
-                    subValue={`${filteredRecords.length} records`}
-                  />
-                </div>
-
-                {chartData.length > 1 && (
-                  <div className={cn(
-                    "p-6",
-                    components.card.base,
-                    "bg-fg/5 border-fg/10"
-                  )}>
-                    <div className="flex items-center justify-between mb-8">
-                      <div>
-                        <h3 className={cn(typography.h3.size, typography.h3.weight, "text-fg")}>Usage Trend</h3>
-                        <p className={cn(typography.caption.size, "text-fg/40 mt-0.5")}>Token consumption over time</p>
-                      </div>
-                      <div className="flex items-center gap-4">
-                        <div className="flex items-center gap-2">
-                          <span className="h-2 w-2 rounded-full bg-info" />
-                          <span className={cn(typography.overline.size, "text-fg/40")}>Input</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className="h-2 w-2 rounded-full bg-accent" />
-                          <span className={cn(typography.overline.size, "text-fg/40")}>Output</span>
-                        </div>
-                      </div>
-                    </div>
-                    <div className="h-64">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <AreaChart
-                          data={chartData}
-                          margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
-                        >
-                          <defs>
-                            <linearGradient id="inputGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="var(--color-info)" stopOpacity={0.25} />
-                              <stop offset="95%" stopColor="var(--color-info)" stopOpacity={0} />
-                            </linearGradient>
-                            <linearGradient id="outputGrad" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor="var(--color-accent)" stopOpacity={0.25} />
-                              <stop offset="95%" stopColor="var(--color-accent)" stopOpacity={0} />
-                            </linearGradient>
-                          </defs>
-                          <XAxis
-                            dataKey="label"
-                            tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontWeight: 500 }}
-                            axisLine={false}
-                            tickLine={false}
-                            dy={10}
-                          />
-                          <YAxis
-                            tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontWeight: 500 }}
-                            axisLine={false}
-                            tickLine={false}
-                            tickFormatter={formatCompactNumber}
-                          />
-                          <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
-                          <Area
-                            type="monotone"
-                            dataKey="input"
-                            name="Input"
-                            stroke="var(--color-info)"
-                            fill="url(#inputGrad)"
-                            strokeWidth={2.5}
-                            animationDuration={1500}
-                          />
-                          <Area
-                            type="monotone"
-                            dataKey="output"
-                            name="Output"
-                            stroke="var(--color-accent)"
-                            fill="url(#outputGrad)"
-                            strokeWidth={2.5}
-                            animationDuration={1500}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {topModels.length > 0 && (
-                    <div className={cn(
-                      "p-5",
-                      components.card.base,
-                      "bg-fg/5 border-fg/10"
-                    )}>
-                      <h3 className={cn(typography.h3.size, typography.h3.weight, "text-fg mb-6")}>By Model</h3>
-                      <div className="flex items-center gap-6">
-                        <div className="w-32 h-32 shrink-0 relative">
-                           <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                              <span className={cn(typography.caption.size, "text-fg/30 uppercase tracking-widest")}>Top</span>
-                              <span className={cn(typography.h2.size, typography.h2.weight, "text-fg")}>{topModels.length}</span>
-                           </div>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                              <Pie
-                                data={topModels}
-                                dataKey="tokens"
-                                nameKey="name"
-                                cx="50%"
-                                cy="50%"
-                                innerRadius={45}
-                                outerRadius={60}
-                                paddingAngle={4}
-                                stroke="none"
-                              >
-                                {topModels.map((_, i) => (
-                                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                                ))}
-                              </Pie>
-                            </PieChart>
-                          </ResponsiveContainer>
-                        </div>
-                        <div className="flex-1 space-y-3">
-                          {topModels.slice(0, 4).map((m, i) => (
-                            <div key={m.id} className="flex items-center gap-3">
-                              <div
-                                className="h-2 w-2 rounded-full shrink-0"
-                                style={{ backgroundColor: COLORS[i % COLORS.length] }}
-                              />
-                              <span className={cn(typography.bodySmall.size, "text-fg/70 truncate flex-1")}>{m.name}</span>
-                              <span className={cn(typography.caption.size, "text-fg/40 font-bold")}>
-                                {formatCompactNumber(m.tokens)}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {characterOptions.length > 0 && (
-                    <div className={cn(
-                      "p-5",
-                      components.card.base,
-                      "bg-fg/5 border-fg/10"
-                    )}>
-                      <h3 className={cn(typography.h3.size, typography.h3.weight, "text-fg mb-6")}>By Character</h3>
-                      <div className="flex items-center gap-6">
-                        <div className="w-32 h-32 shrink-0 relative">
-                          <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                              <span className={cn(typography.caption.size, "text-fg/30 uppercase tracking-widest")}>Active</span>
-                              <span className={cn(typography.h2.size, typography.h2.weight, "text-fg")}>{characterOptions.length}</span>
-                           </div>
-                          <ResponsiveContainer width="100%" height="100%">
-                            <PieChart>
-                              <Pie
-                                data={characterOptions.slice(0, 5)}
-                                dataKey="tokens"
-                                nameKey="name"
-                                cx="50%"
-                                cy="50%"
-                                innerRadius={45}
-                                outerRadius={60}
-                                paddingAngle={4}
-                                stroke="none"
-                              >
-                                {characterOptions.slice(0, 5).map((_, i) => (
-                                  <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                                ))}
-                              </Pie>
-                            </PieChart>
-                          </ResponsiveContainer>
-                        </div>
-                        <div className="flex-1 space-y-3">
-                          {characterOptions.slice(0, 4).map((c, i) => (
-                            <div key={c.id} className="flex items-center gap-3">
-                              <div
-                                className="h-2 w-2 rounded-full shrink-0"
-                                style={{ backgroundColor: COLORS[i % COLORS.length] }}
-                              />
-                              <span className={cn(typography.bodySmall.size, "text-fg/70 truncate flex-1")}>{c.name}</span>
-                              <span className={cn(typography.caption.size, "text-fg/40 font-bold")}>
-                                {formatCompactNumber(c.tokens)}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className={cn(
-                  "overflow-hidden",
-                  components.card.base,
-                  "bg-fg/5 border-fg/10"
-                )}>
-                  <div className="flex items-center justify-between px-5 py-4 border-b border-fg/10 bg-fg/5">
-                    <h3 className={cn(typography.h3.size, typography.h3.weight, "text-fg")}>Recent Activity</h3>
-                    {filteredRecords.length > 5 && (
-                      <div className="flex items-center gap-4">
-                        <button
-                          onClick={() => setShowAllActivity(true)}
-                          className={cn(typography.caption.size, typography.caption.weight, "text-fg/40 hover:text-fg/60 transition-colors")}
-                        >
-                          Quick View
-                        </button>
-                        <button
-                          onClick={() => navigate("/settings/usage/activity")}
-                          className={cn(
-                            "flex items-center gap-1 transition-all",
-                            typography.caption.size, 
-                            typography.caption.weight,
-                            "text-accent hover:opacity-80"
-                          )}
-                        >
-                          View All
-                          <ChevronRight className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                  <div className="divide-y divide-fg/10">
-                    {filteredRecords.slice(0, 5).map((r) => (
-                      <ActivityItem key={r.id} request={r} />
-                    ))}
-                    {filteredRecords.length === 0 && (
-                      <div className="py-20 text-center">
-                        <Calendar className="h-10 w-10 text-fg/10 mx-auto mb-4" />
-                        <p className={cn(typography.body.size, "text-fg/40")}>{t("common.labels.none")}</p>
-                        <p className={cn(typography.caption.size, "text-fg/30 mt-1.5")}>Start chatting to see usage data</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="appTime"
-                {...animations.fadeIn}
-                className="space-y-6"
-              >
-                <div className={cn(
-                  "flex flex-wrap items-center gap-1.5 p-1.5 bg-fg/5 border border-fg/10",
-                  radius.lg
-                )}>
-                  {[
-                    { key: "today", label: "Today" },
-                    { key: "week", label: "7 Days" },
-                    { key: "month", label: "30 Days" },
-                    { key: "all", label: "All" },
-                    { key: "custom", label: "Custom" },
-                  ].map(({ key, label }) => (
-                    <button
-                      key={key}
-                      onClick={() => {
-                        if (key === "custom") {
-                          setShowCustomDatePicker(true);
-                          return;
-                        }
-                        setAppTimePreset(key as typeof appTimePreset);
-                      }}
-                      className={cn(
-                        "px-4 py-1.5 rounded-lg transition-all duration-200",
-                        typography.caption.size,
-                        typography.caption.weight,
-                        appTimePreset === key 
-                          ? "bg-fg/10 text-fg shadow-sm" 
-                          : "text-fg/40 hover:text-fg/70 hover:bg-fg/5"
-                      )}
-                    >
-                      {label}
-                    </button>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  <StatCard
-                    icon={Clock}
-                    label="Period Total"
-                    value={formatDurationMs(appTimeStats.rangeTotalMs)}
-                    subValue={`${appTimeStats.selectedDays} days active`}
-                    trend={{
-                      value: appTimeStats.rangeDeltaPct,
-                      isUp: appTimeStats.rangeDeltaPct >= 0,
-                    }}
-                    highlight
-                  />
-                  <StatCard
-                    icon={Activity}
-                    label="Daily Avg"
-                    value={formatDurationMs(appTimeStats.dailyAvgInRangeMs)}
-                    subValue="selected period"
-                  />
-                  <StatCard
-                    icon={Activity}
-                    label="Today"
-                    value={formatDurationMs(appTimeStats.todayMs)}
-                    subValue={`Yesterday ${formatDurationMs(appTimeStats.yesterdayMs)}`}
-                  />
-                  <StatCard
-                    icon={Activity}
-                    label="30-Day Avg"
-                    value={formatDurationMs(appTimeStats.avg30Ms)}
-                  />
-                </div>
-
-                <div className={cn(
-                  "p-6",
-                  components.card.base,
-                  "bg-fg/5 border-fg/10"
-                )}>
-                  <div className="flex items-center justify-between mb-8">
-                    <div>
-                      <h3 className={cn(typography.h3.size, typography.h3.weight, "text-fg")}>App Time Trend</h3>
-                      <p className={cn(typography.caption.size, "text-fg/40 mt-0.5")}>Usage duration per day</p>
-                    </div>
-                    <div className={cn(typography.caption.size, "font-bold text-fg/50 px-3 py-1 bg-fg/5 rounded-full border border-fg/5")}>
-                      Total {formatDurationMs(appTimeStats.rangeTotalMs)}
-                    </div>
-                  </div>
-                  <div className="h-64">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart
-                        data={appTimeStats.byDayChart}
-                        margin={{ top: 0, right: 0, left: -20, bottom: 0 }}
-                      >
-                        <defs>
-                          <linearGradient id="appTimeGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="var(--color-accent)" stopOpacity={0.25} />
-                            <stop offset="95%" stopColor="var(--color-accent)" stopOpacity={0} />
-                          </linearGradient>
-                        </defs>
-                        <XAxis
-                          dataKey="label"
-                          tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontWeight: 500 }}
-                          axisLine={false}
-                          tickLine={false}
-                          dy={10}
-                        />
-                        <YAxis
-                          tick={{ fill: "rgba(255,255,255,0.3)", fontSize: 10, fontWeight: 500 }}
-                          axisLine={false}
-                          tickLine={false}
-                          tickFormatter={(v) => formatDurationMs(v)}
-                        />
-                        <Tooltip content={<AppTimeTooltip />} cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }} />
-                        <Area
-                          type="monotone"
-                          dataKey="ms"
-                          name="Active Time"
-                          stroke="var(--color-accent)"
-                          fill="url(#appTimeGrad)"
-                          strokeWidth={2.5}
-                          animationDuration={1500}
-                        />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
+function FilterGroup({
+  label,
+  options,
+  selected,
+  onToggle,
+}: {
+  label: string;
+  options: Array<{ id: string; name: string; tokens: number }>;
+  selected: string | null;
+  onToggle: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div>
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/40">
+          {label}
+        </span>
+        {selected && (
+          <button
+            onClick={() => onToggle(selected)}
+            className="inline-flex items-center gap-1 text-[11px] text-fg/45 transition hover:text-fg/75"
+          >
+            <X size={11} />
+            {t("usageAnalytics.page.clear")}
+          </button>
+        )}
       </div>
+      {options.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-fg/10 bg-fg/[0.02] py-4 text-center text-[12px] text-fg/40">
+          —
+        </div>
+      ) : (
+        <div className="max-h-56 space-y-1 overflow-y-auto pr-1">
+          {options.map((o) => {
+            const active = selected === o.id;
+            return (
+              <button
+                key={o.id}
+                onClick={() => onToggle(o.id)}
+                className={cn(
+                  "flex w-full items-center justify-between gap-3 rounded-md border px-3 py-2 text-left transition",
+                  active
+                    ? "border-accent/30 bg-accent/10 text-accent"
+                    : "border-fg/8 bg-fg/[0.02] text-fg/70 hover:border-fg/15 hover:bg-fg/5",
+                )}
+              >
+                <span className="truncate text-[12.5px] font-medium">{o.name}</span>
+                <span className="shrink-0 text-[11px] tabular-nums text-fg/45">
+                  {formatCompactNumber(o.tokens)}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DateField({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  maxToday,
+}: {
+  label: string;
+  value: Date;
+  onChange: (d: Date) => void;
+  min?: Date;
+  max?: Date;
+  maxToday?: boolean;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-1.5 block text-[10px] font-semibold uppercase tracking-[0.12em] text-fg/40">
+        {label}
+      </span>
+      <div className="relative">
+        <input
+          type="date"
+          value={value.toISOString().split("T")[0]}
+          onChange={(e) => onChange(new Date(e.target.value))}
+          min={min ? min.toISOString().split("T")[0] : undefined}
+          max={
+            maxToday
+              ? new Date().toISOString().split("T")[0]
+              : max
+                ? max.toISOString().split("T")[0]
+                : undefined
+          }
+          className="h-10 w-full rounded-lg border border-fg/10 bg-fg/[0.02] px-3 text-[13px] text-fg outline-none transition focus:border-accent/40 focus:bg-fg/[0.05] focus:ring-1 focus:ring-accent/20"
+        />
+        <ChevronDown
+          size={12}
+          className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-fg/30"
+        />
+      </div>
+    </label>
+  );
+}
+
+function EmptyState({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-xl border border-dashed border-fg/10 bg-fg/[0.02] px-4 py-12 text-center">
+      <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-lg border border-fg/10 bg-fg/[0.04]">
+        {icon}
+      </div>
+      <div className="text-[13px] font-medium text-fg">{title}</div>
+      <p className="mx-auto mt-1 max-w-md text-[12.5px] text-fg/55">{description}</p>
     </div>
   );
 }

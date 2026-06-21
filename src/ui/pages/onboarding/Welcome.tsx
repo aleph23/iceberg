@@ -3,32 +3,40 @@ import { useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
   ArrowRight,
-  ShieldCheck,
-  Sparkles,
   Upload,
+  Smartphone,
   FileArchive,
   Lock,
   Loader2,
   Eye,
   EyeOff,
   CheckCircle,
-  HardDrive,
-  Download,
+  HelpCircle,
+  ChevronDown,
 } from "lucide-react";
 import { motion } from "framer-motion";
 
 import { setOnboardingCompleted, setOnboardingSkipped } from "../../../core/storage/appState";
+import { hasConfiguredModel } from "../../../core/storage/repo";
 import { storageBridge } from "../../../core/storage/files";
 import logoSvg from "../../../assets/logo.svg";
-import { typography, radius, spacing, interactive, shadows, colors, cn } from "../../design-tokens";
+import { typography, radius, spacing, interactive, shadows, cn } from "../../design-tokens";
 import { useI18n } from "../../../core/i18n/context";
 import { LocaleSelector } from "../../components/LocaleSelector";
+import { BottomMenu, MenuButton, MenuDivider, MenuSection } from "../../components/BottomMenu";
+import { DynamicMemoryEmbeddingPrompt } from "./components/DynamicMemoryEmbeddingPrompt";
 
-export function WelcomePage() {
+interface WelcomePageProps {
+  onContinue?: () => void;
+  onGoToSync?: () => void;
+}
+
+export function WelcomePage({ onContinue, onGoToSync }: WelcomePageProps = {}) {
   const { locale, setLocale, t } = useI18n();
   const navigate = useNavigate();
   const [showSkipWarning, setShowSkipWarning] = useState(false);
   const [showRestoreBackup, setShowRestoreBackup] = useState(false);
+  const [showMoreOptions, setShowMoreOptions] = useState(false);
 
   // Ctrl+Shift+L to open logs page during onboarding
   useEffect(() => {
@@ -42,8 +50,26 @@ export function WelcomePage() {
     return () => window.removeEventListener("keydown", handler);
   }, [navigate]);
 
+  // Load brand fonts (Fraunces for display, Noto Sans for body — same as lettuceai.app)
+  useEffect(() => {
+    const id = "lai-brand-fonts";
+    if (document.getElementById(id)) return;
+    const preconnect = document.createElement("link");
+    preconnect.rel = "preconnect";
+    preconnect.href = "https://fonts.gstatic.com";
+    preconnect.crossOrigin = "anonymous";
+    document.head.appendChild(preconnect);
+    const link = document.createElement("link");
+    link.id = id;
+    link.rel = "stylesheet";
+    link.href =
+      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300..900&family=Noto+Sans:wght@400;500;600;700&display=swap";
+    document.head.appendChild(link);
+  }, []);
+
   const handleAddProvider = () => {
-    navigate("/onboarding/provider");
+    if (onContinue) onContinue();
+    else navigate("/onboarding/provider");
   };
 
   const handleConfirmSkip = async () => {
@@ -54,218 +80,208 @@ export function WelcomePage() {
     navigate("/");
   };
 
+  const handleSkipRequest = async () => {
+    if (await hasConfiguredModel()) {
+      await handleConfirmSkip();
+      return;
+    }
+    setShowSkipWarning(true);
+  };
+
   const handleRestoreComplete = async () => {
     await setOnboardingCompleted(true);
     navigate("/chat");
   };
 
   return (
-    <div
-      className={cn("flex min-h-screen flex-col text-gray-200", colors.effects.gradient.surface)}
-    >
-      {/* Desktop: Split layout | Mobile: Stacked layout */}
-      <div className="flex flex-1 flex-col lg:flex-row items-center justify-center px-4 py-12 lg:px-16 lg:gap-16 xl:gap-24">
-        {/* Left Side - Branding (desktop) / Top (mobile) */}
-        <motion.div
-          className="flex flex-col items-center lg:items-start lg:flex-1 lg:max-w-lg"
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5, ease: "easeOut" }}
-        >
-          {/* Logo Section */}
-          <div className="relative mb-8 overflow-visible">
-            {/* Glow effect - larger spread for smoother edges */}
-            <div
-              className={cn(
-                "absolute -inset-8 rounded-full blur-3xl opacity-60 animate-pulse",
-                colors.effects.gradient.brand,
-              )}
-            />
+    <div className="relative flex h-[calc(100dvh-var(--titlebar-h,0px))] flex-col overflow-hidden text-white antialiased pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] font-['Noto_Sans',ui-sans-serif,system-ui,sans-serif]">
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-0 h-3/4 bg-[linear-gradient(180deg,transparent_0%,rgba(5,5,5,0.12)_40%,rgba(5,5,5,0.68)_100%)] lg:hidden"
+      />
 
-            {/* Logo container */}
-            <div
-              className={cn(
-                "relative flex h-24 w-24 lg:h-32 lg:w-32 items-center justify-center",
-                colors.glass.default,
-                radius.full,
-                shadows.xl,
-              )}
-            >
-              <img
-                src={logoSvg}
-                alt={t("onboarding.welcome.appName")}
-                className="h-14 w-14 lg:h-20 lg:w-20"
-              />
-            </div>
-          </div>
+      {/* Top bar */}
+      <motion.div
+        className="relative z-10 flex items-center justify-between px-6 pt-6 lg:px-12 lg:pt-8"
+        initial={{ opacity: 0, y: -6 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4 }}
+      >
+        <div className="flex items-center gap-2.5">
+          <img src={logoSvg} alt="" className="h-7 w-7" />
+          <span className="text-[18px] font-bold tracking-[-0.02em] text-[#f4f4f5]">LettuceAI</span>
+        </div>
 
-          {/* Brand name */}
-          <h1
-            className={cn(
-              typography.display.size,
-              typography.display.weight,
-              "mb-3 lg:text-5xl",
-              "text-center lg:text-left",
-              colors.effects.gradient.text,
-            )}
-          >
-            {t("onboarding.welcome.appName")}
-          </h1>
+        <div className="[&_.tabular-nums]:hidden lg:hidden">
+          <LocaleSelector
+            value={locale}
+            onChange={setLocale}
+            label=""
+            description=""
+            title={t("components.localeSelector.title")}
+            labelClassName="hidden"
+            descriptionClassName="hidden"
+            triggerClassName="bg-transparent! border-0! p-0! py-1! text-[14px]! text-white/[0.62]! shadow-none! [backdrop-filter:none]! hover:bg-transparent! hover:text-[#f4f4f5]!"
+            menuClassName=""
+          />
+        </div>
+      </motion.div>
 
-          {/* Tagline */}
-          <p
-            className={cn(
-              typography.body.size,
-              typography.body.lineHeight,
-              "max-w-70lg:max-w-md lg:text-lg",
-              "text-center lg:text-left text-white/60",
-            )}
-          >
-            {t("onboarding.welcome.tagline")}
-          </p>
-
-          {/* Feature Pills */}
-          <div
-            className={cn(
-              "mt-6 flex items-center flex-wrap gap-2 lg:gap-3",
-              "justify-center lg:justify-start",
-            )}
-          >
-            {quickFacts.map(({ icon: Icon, label }) => (
-              <div
-                key={label}
-                className={cn(
-                  "flex items-center gap-1.5 border border-white/10 bg-white/5 px-3 py-1.5 lg:px-4 lg:py-2 backdrop-blur-sm",
-                  radius.full,
-                )}
-              >
-                <Icon size={14} className="text-emerald-400 lg:w-4 lg:h-4" strokeWidth={2.5} />
-                <span
-                  className={cn(
-                    typography.bodySmall.size,
-                    typography.label.weight,
-                    "text-white/70 lg:text-sm",
-                  )}
-                >
-                  {label}
-                </span>
-              </div>
-            ))}
-          </div>
-
-          {/* Language Selector */}
+      <div className="relative z-10 flex flex-1 flex-col items-center justify-end px-6 pb-10 pt-6 lg:justify-center lg:px-16 lg:py-12">
+        <div className="w-full max-w-2xl flex flex-col items-center text-center">
           <motion.div
-            className="mt-6 w-full max-w-xs lg:max-w-sm"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.4, delay: 0.3 }}
+            className="relative hidden overflow-visible lg:block"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
           >
-            <LocaleSelector
-              value={locale}
-              onChange={setLocale}
-              label={t("onboarding.welcome.languageSelector.title")}
-              description={t("onboarding.welcome.languageSelector.description")}
-              title={t("components.localeSelector.title")}
-              labelClassName={cn(typography.caption.size, "font-medium text-white/70")}
-              descriptionClassName={cn(
-                "text-center lg:text-left",
-                typography.caption.size,
-                "text-white/35",
-              )}
-              triggerClassName={cn(
-                "border-white/10 bg-white/5 text-white backdrop-blur-sm",
-                "hover:border-white/20 hover:bg-white/8",
-                "focus:border-emerald-400/50 focus:ring-1 focus:ring-emerald-400/30",
-              )}
-              menuClassName="bg-[#0f1014]"
+            <div className="absolute inset-[-30px] rounded-full blur-[22px] bg-[radial-gradient(closest-side,rgba(0,210,148,0.20),transparent_70%)]" aria-hidden="true" />
+            <img
+              src={logoSvg}
+              alt={t("onboarding.welcome.appName")}
+              className="relative h-14 w-14 lg:h-20 lg:w-20"
             />
           </motion.div>
 
-          {/* Desktop-only: Bottom hint on left side */}
+          {/* Headline */}
+          <motion.h1
+            className="mt-5 lg:mt-9 font-bold tracking-[-0.03em] text-[#f4f4f5] text-[clamp(29px,8vw,37px)] leading-[1.05] max-w-[14ch] [text-shadow:0_2px_18px_rgba(0,0,0,0.45)] lg:text-[clamp(37px,5vw,57px)] lg:leading-[1.08] lg:max-w-[18ch]"
+            initial={{ opacity: 0, y: 12 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.05 }}
+          >
+            {t("onboarding.welcome.headline.lead")}{" "}
+            <span className="font-['Fraunces','Iowan_Old_Style',Georgia,serif] italic font-medium text-[#00d294] tracking-[-0.02em] [font-variation-settings:'opsz'_96]">
+              {t("onboarding.welcome.headline.accent")}
+            </span>
+          </motion.h1>
+
+          {/* Tagline */}
           <motion.p
-            className={cn("mt-8 hidden lg:block", typography.caption.size, "text-white/40")}
+            className="mt-3 lg:mt-5 max-w-sm lg:max-w-lg font-normal text-white/[0.72] text-[14px] leading-[1.45] [text-shadow:0_1px_10px_rgba(0,0,0,0.6)] lg:text-[16.5px] lg:leading-[1.55] lg:[text-shadow:none]"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ duration: 0.4, delay: 0.5 }}
+            transition={{ duration: 0.5, delay: 0.15 }}
           >
-            {t("onboarding.welcome.setupTime")}
+            {t("onboarding.welcome.tagline")}
           </motion.p>
-        </motion.div>
 
-        {/* Right Side - Actions (desktop) / Bottom (mobile) */}
-        <motion.div
-          className="flex flex-col items-center lg:items-stretch w-full max-w-xs lg:max-w-sm lg:flex-1 mt-8 lg:mt-0"
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.4, delay: 0.2 }}
-        >
-          {/* CTA Buttons */}
-          <div className={cn("w-full", spacing.field)}>
-            <button
-              className={cn(
-                "group w-full flex items-center justify-center gap-2 px-6 py-4",
-                radius.md,
-                "border border-emerald-400/40 bg-emerald-400/20 text-emerald-100",
-                typography.body.size,
-                typography.h3.weight,
-                shadows.glow,
-                interactive.transition.default,
-                interactive.active.scale,
-                "hover:border-emerald-400/60 hover:bg-emerald-400/30",
-              )}
-              onClick={handleAddProvider}
-            >
-              <span>{t("onboarding.welcome.getStarted")}</span>
-              <ArrowRight
-                size={18}
-                className="transition-transform group-hover:translate-x-0.5"
-                strokeWidth={2.5}
-              />
-            </button>
+          {/* Primary CTA */}
+          <motion.button
+            className="group mt-6 lg:mt-10 inline-flex items-center gap-2.5 w-full justify-between cursor-pointer rounded-xl border border-[rgba(0,210,148,0.45)] bg-[linear-gradient(180deg,rgba(0,210,148,0.28),rgba(0,210,148,0.16))] backdrop-blur-[10px] transition-all py-3 px-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.10),0_10px_28px_-8px_rgba(0,210,148,0.40),0_18px_44px_-12px_rgba(0,0,0,0.6)] hover:border-[rgba(0,210,148,0.65)] hover:bg-[linear-gradient(180deg,rgba(0,210,148,0.36),rgba(0,210,148,0.22))] active:scale-[0.985] lg:w-auto lg:justify-start lg:py-3 lg:pr-[18px] lg:pl-[22px]"
+            onClick={handleAddProvider}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.22 }}
+          >
+            <span className="text-[16px] font-semibold tracking-[-0.005em] text-white">{t("onboarding.welcome.getStarted")}</span>
+            <span className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full bg-white/10 text-white transition group-hover:translate-x-0.5 group-hover:bg-white/[0.18]">
+              <ArrowRight size={16} strokeWidth={2.25} />
+            </span>
+          </motion.button>
 
-            <button
-              className={cn(
-                "w-full px-6 py-3",
-                radius.md,
-                "border border-white/10 bg-white/5 text-white/60",
-                typography.body.size,
-                interactive.transition.default,
-                interactive.active.scale,
-                "hover:border-white/20 hover:bg-white/8 hover:text-white/80",
-              )}
-              onClick={() => setShowSkipWarning(true)}
-            >
-              {t("onboarding.welcome.skipForNow")}
-            </button>
-
-            <button
-              className={cn(
-                "w-full flex items-center justify-center gap-2 px-6 py-3",
-                radius.md,
-                "border border-white/10 bg-white/5 text-white/60",
-                typography.body.size,
-                interactive.transition.default,
-                interactive.active.scale,
-                "hover:border-white/20 hover:bg-white/8 hover:text-white/80",
-              )}
-              onClick={() => setShowRestoreBackup(true)}
-            >
-              <Upload size={16} />
-              {t("onboarding.welcome.restoreFromBackup")}
-            </button>
-          </div>
-
-          {/* Mobile-only: Bottom hint */}
-          <motion.p
-            className={cn("mt-8 text-center lg:hidden", typography.caption.size, "text-white/40")}
+          <motion.div
+            className="mt-3 w-full lg:mt-5 lg:w-auto"
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ duration: 0.4, delay: 0.5 }}
+            transition={{ duration: 0.5, delay: 0.28 }}
           >
-            Setup takes less than 2 minutes
-          </motion.p>
-        </motion.div>
+            <button
+              onClick={() => setShowMoreOptions(true)}
+              className="group flex w-full items-center justify-center gap-1.5 lg:hidden cursor-pointer rounded-xl border border-white/[0.18] bg-white/[0.07] backdrop-blur-[10px] py-[13px] px-4 text-[15px] font-semibold text-[#f4f4f5] transition hover:border-white/[0.28] hover:bg-white/[0.11] active:scale-[0.985]"
+            >
+              <span>{t("onboarding.welcome.moreOptions")}</span>
+              <ChevronDown size={15} strokeWidth={2} />
+            </button>
+            <button
+              onClick={() => setShowMoreOptions(true)}
+              className="group hidden items-center gap-1.5 py-1 lg:inline-flex cursor-pointer bg-transparent text-[13.5px] text-white/[0.62] transition-colors hover:text-[#f4f4f5]"
+            >
+              <span className="underline decoration-white/[0.18] underline-offset-4 transition group-hover:decoration-[rgba(0,210,148,0.55)]">{t("onboarding.welcome.moreOptions")}</span>
+              <ChevronDown size={14} strokeWidth={2} />
+            </button>
+          </motion.div>
+        </div>
       </div>
+
+      {/* Bottom footer strip — desktop only */}
+      <motion.div
+        className="relative z-10 hidden lg:block px-6 py-4 lg:px-12 lg:py-5 border-t border-white/[0.08]"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.4, delay: 0.3 }}
+      >
+        <div className="flex flex-col-reverse gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="[&_.tabular-nums]:hidden flex items-center w-full lg:w-auto">
+            <LocaleSelector
+              value={locale}
+              onChange={setLocale}
+              label=""
+              description=""
+              title={t("components.localeSelector.title")}
+              labelClassName="hidden"
+              descriptionClassName="hidden"
+              triggerClassName="bg-transparent! border-0! p-0! py-1! text-[14px]! text-white/[0.62]! shadow-none! [backdrop-filter:none]! hover:bg-transparent! hover:text-[#f4f4f5]!"
+              menuClassName=""
+            />
+          </div>
+          <p className="text-[12px] font-normal text-white/40 text-center lg:text-right">
+            {t("onboarding.welcome.languageSelector.description")}
+          </p>
+        </div>
+      </motion.div>
+
+      <BottomMenu
+        isOpen={showMoreOptions}
+        onClose={() => setShowMoreOptions(false)}
+        title={t("onboarding.welcome.moreOptions")}
+        location="bottom"
+      >
+        <MenuSection>
+          <MenuButton
+            icon={Upload}
+            title={t("onboarding.welcome.restoreFromBackup")}
+            description={t("onboarding.welcome.moreMenu.restoreDesc")}
+            color="from-blue-500 to-blue-600"
+            onClick={() => {
+              setShowMoreOptions(false);
+              setShowRestoreBackup(true);
+            }}
+          />
+          <MenuButton
+            icon={Smartphone}
+            title={t("onboarding.welcome.syncFromDevice")}
+            description={t("onboarding.welcome.moreMenu.syncDesc")}
+            color="from-purple-500 to-purple-600"
+            onClick={() => {
+              setShowMoreOptions(false);
+              if (onGoToSync) onGoToSync();
+              else navigate("/onboarding/sync");
+            }}
+          />
+          <MenuButton
+            icon={HelpCircle}
+            title={t("onboarding.welcome.readFaq")}
+            description={t("onboarding.welcome.moreMenu.faqDesc")}
+            color="from-emerald-500 to-emerald-600"
+            onClick={() => {
+              setShowMoreOptions(false);
+              navigate("/settings/help", { state: { fromWelcome: true } });
+            }}
+          />
+          <MenuDivider />
+          <MenuButton
+            icon={ArrowRight}
+            title={t("onboarding.welcome.skipForNow")}
+            description={t("onboarding.welcome.moreMenu.skipDesc")}
+            color="from-white/20 to-white/10"
+            onClick={() => {
+              setShowMoreOptions(false);
+              void handleSkipRequest();
+            }}
+          />
+        </MenuSection>
+      </BottomMenu>
 
       {showSkipWarning && (
         <SkipWarning
@@ -285,11 +301,6 @@ export function WelcomePage() {
   );
 }
 
-const quickFacts = [
-  { icon: ShieldCheck, label: "On-device only" },
-  { icon: Sparkles, label: "Character ready" },
-];
-
 function SkipWarning({
   onClose,
   onConfirm,
@@ -299,6 +310,7 @@ function SkipWarning({
   onConfirm: () => void | Promise<void>;
   onAddProvider: () => void;
 }) {
+  const { t } = useI18n();
   const [isExiting, setIsExiting] = useState(false);
 
   const handleClose = () => {
@@ -346,38 +358,37 @@ function SkipWarning({
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <h3 className={cn(typography.h2.size, typography.h2.weight, "text-white")}>
-            Skip setup?
+            {t("onboarding.welcome.skipWarning.title")}
           </h3>
         </div>
 
         {/* Warning content */}
         <div
           className={cn(
-            "flex items-start gap-3 border border-amber-400/20 bg-amber-400/5 p-4 mb-6",
+            "flex items-start gap-3 border border-red-500/40 bg-red-500/10 p-4 mb-6",
             radius.md,
           )}
         >
           <div
             className={cn(
-              "flex h-10 w-10 shrink-0 items-center justify-center bg-amber-400/20 text-amber-300",
+              "flex h-10 w-10 shrink-0 items-center justify-center bg-red-500/25 text-red-300",
               radius.md,
             )}
           >
             <AlertTriangle size={20} strokeWidth={2.5} />
           </div>
           <div className={spacing.tight}>
-            <h4 className={cn(typography.body.size, typography.h3.weight, "text-white")}>
-              Provider needed to chat
+            <h4 className={cn(typography.body.size, typography.h3.weight, "text-red-200")}>
+              {t("onboarding.welcome.skipWarning.warningTitle")}
             </h4>
             <p
               className={cn(
                 typography.bodySmall.size,
                 typography.bodySmall.lineHeight,
-                "text-white/60",
+                "text-red-100/80",
               )}
             >
-              Without a provider, you won't be able to send messages. You can add one later from
-              settings.
+              {t("onboarding.welcome.skipWarning.warningMessage")}
             </p>
           </div>
         </div>
@@ -397,7 +408,7 @@ function SkipWarning({
             )}
             onClick={handleAddProvider}
           >
-            <span>Add Provider</span>
+            <span>{t("onboarding.welcome.skipWarning.addProvider")}</span>
             <ArrowRight size={16} strokeWidth={2.5} />
           </button>
           <button
@@ -412,7 +423,7 @@ function SkipWarning({
             )}
             onClick={handleConfirm}
           >
-            Skip anyway
+            {t("onboarding.welcome.skipWarning.skipAnyway")}
           </button>
         </div>
       </motion.div>
@@ -437,6 +448,7 @@ function RestoreBackupModal({
   onClose: () => void;
   onComplete: () => void | Promise<void>;
 }) {
+  const { t } = useI18n();
   const [isExiting, setIsExiting] = useState(false);
   const [backups, setBackups] = useState<BackupInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -448,7 +460,6 @@ function RestoreBackupModal({
   const [showEmbeddingPrompt, setShowEmbeddingPrompt] = useState(false);
   const navigate = useNavigate();
 
-  // Load backups on mount
   useEffect(() => {
     loadBackups();
   }, []);
@@ -486,7 +497,7 @@ function RestoreBackupModal({
       setPassword("");
     } catch (e) {
       console.error("Failed to browse for backup:", e);
-      setError(e instanceof Error ? e.message : "Failed to open file");
+      setError(e instanceof Error ? e.message : t("onboarding.welcome.restoreBackup.errors.failedToOpenFile"));
     } finally {
       setLoading(false);
     }
@@ -502,7 +513,7 @@ function RestoreBackupModal({
     if (!selectedBackup) return;
 
     if (selectedBackup.encrypted && password.length < 1) {
-      setError("Password is required");
+      setError(t("onboarding.welcome.restoreBackup.errors.passwordRequired"));
       return;
     }
 
@@ -512,7 +523,7 @@ function RestoreBackupModal({
       if (selectedBackup.encrypted) {
         const valid = await storageBridge.backupVerifyPassword(selectedBackup.path, password);
         if (!valid) {
-          setError("Incorrect password");
+          setError(t("onboarding.welcome.restoreBackup.errors.incorrectPassword"));
           return;
         }
       }
@@ -546,7 +557,7 @@ function RestoreBackupModal({
       }, 200);
     } catch (e) {
       console.log(e);
-      setError(e instanceof Error ? e.message : "Failed to restore backup");
+      setError(e instanceof Error ? e.message : t("onboarding.welcome.restoreBackup.errors.failedToRestore"));
       setRestoring(false);
     }
   };
@@ -567,7 +578,7 @@ function RestoreBackupModal({
       navigate("/");
     } catch (error) {
       console.error("Failed to disable dynamic memory:", error);
-      setError(error instanceof Error ? error.message : "Failed to update settings");
+      setError(error instanceof Error ? error.message : t("onboarding.welcome.restoreBackup.errors.failedToUpdateSettings"));
     } finally {
       setRestoring(false);
     }
@@ -609,7 +620,7 @@ function RestoreBackupModal({
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <h3 className={cn(typography.h2.size, typography.h2.weight, "text-white")}>
-            Restore Backup
+            {t("onboarding.welcome.restoreBackup.title")}
           </h3>
         </div>
 
@@ -619,13 +630,13 @@ function RestoreBackupModal({
             <>
               <div className="flex items-center justify-between">
                 <p className={cn(typography.bodySmall.size, "text-white/50")}>
-                  Select a backup to restore.
+                  {t("onboarding.welcome.restoreBackup.selectMessage")}
                 </p>
                 <button
                   onClick={handleBrowseForBackup}
-                  className="text-xs font-medium text-blue-400 hover:text-blue-300"
+                  className="text-[13px] font-medium text-blue-400 hover:text-blue-300"
                 >
-                  Browse Files
+                  {t("onboarding.welcome.restoreBackup.browse")}
                 </button>
               </div>
 
@@ -633,7 +644,7 @@ function RestoreBackupModal({
               {error && (
                 <div
                   className={cn(
-                    "flex items-start gap-2 border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm text-red-200 mb-4",
+                    "flex items-start gap-2 border border-red-400/30 bg-red-400/10 px-3 py-2 text-[15px] text-red-200 mb-4",
                     radius.md,
                   )}
                 >
@@ -645,32 +656,32 @@ function RestoreBackupModal({
               {loading ? (
                 <div className="flex flex-col items-center justify-center py-8">
                   <Loader2 className="h-6 w-6 animate-spin text-white/30" />
-                  <p className="mt-2 text-sm text-white/40">Processing file...</p>
-                  <p className="text-xs text-white/20 mt-1">Large backups may take a minute</p>
+                  <p className="mt-2 text-[15px] text-white/40">{t("onboarding.welcome.restoreBackup.processing")}</p>
+                  <p className="text-[13px] text-white/20 mt-1">{t("onboarding.welcome.restoreBackup.processingNote")}</p>
                   <button
                     onClick={() => setLoading(false)}
-                    className="mt-6 text-xs text-red-400/60 hover:text-red-300 transition-colors"
+                    className="mt-6 text-[13px] text-red-400/60 hover:text-red-300 transition-colors"
                   >
-                    Cancel
+                    {t("onboarding.welcome.restoreBackup.cancel")}
                   </button>
                 </div>
               ) : backups.length === 0 ? (
                 <div className={cn("border border-white/10 bg-white/5 p-6 text-center", radius.md)}>
                   <FileArchive className="mx-auto h-8 w-8 text-white/20" />
-                  <p className="mt-3 text-sm text-white/40">No backups found</p>
-                  <p className="mt-1 text-xs text-white/30">Tap browse to select a .lettuce file</p>
+                  <p className="mt-3 text-[15px] text-white/40">{t("onboarding.welcome.restoreBackup.noBackups")}</p>
+                  <p className="mt-1 text-[13px] text-white/30">{t("onboarding.welcome.restoreBackup.noBackupsHint")}</p>
                   <button
                     onClick={handleBrowseForBackup}
                     className={cn(
                       "mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-lg",
                       "border border-blue-400/30 bg-blue-400/10",
-                      "text-sm text-blue-300 font-medium",
+                      "text-[15px] text-blue-300 font-medium",
                       "hover:bg-blue-400/20 active:scale-[0.98]",
                       interactive.transition.default,
                     )}
                   >
                     <Upload className="h-4 w-4" />
-                    Browse for .lettuce file
+                    {t("onboarding.welcome.restoreBackup.browseLettuce")}
                   </button>
                 </div>
               ) : (
@@ -696,14 +707,14 @@ function RestoreBackupModal({
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <p className="truncate text-sm font-medium text-white">
+                            <p className="truncate text-[15px] font-medium text-white">
                               {backup.filename}
                             </p>
                             {backup.encrypted && (
                               <Lock className="h-3 w-3 shrink-0 text-amber-400/70" />
                             )}
                           </div>
-                          <p className="mt-0.5 text-[11px] text-white/40">
+                          <p className="mt-0.5 text-[12px] text-white/40">
                             {formatDate(backup.createdAt)} · v{backup.appVersion}
                           </p>
                         </div>
@@ -720,10 +731,10 @@ function RestoreBackupModal({
                 <div className="flex items-center gap-3">
                   <FileArchive className="h-6 w-6 text-white/40" />
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-sm font-medium text-white">
+                    <p className="truncate text-[15px] font-medium text-white">
                       {selectedBackup.filename}
                     </p>
-                    <p className="text-xs text-white/40">
+                    <p className="text-[13px] text-white/40">
                       {formatDate(selectedBackup.createdAt)} · v{selectedBackup.appVersion}
                     </p>
                   </div>
@@ -733,21 +744,18 @@ function RestoreBackupModal({
               {/* Info notice */}
               <div
                 className={cn(
-                  "flex items-start gap-2 border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-xs text-blue-200",
+                  "flex items-start gap-2 border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-[13px] text-blue-200",
                   radius.md,
                 )}
               >
                 <CheckCircle className="h-4 w-4 shrink-0 mt-0.5" />
-                <span>
-                  This will set up the app with your backed up data, including characters, chats,
-                  and settings.
-                </span>
+                <span>{t("onboarding.welcome.restoreBackup.infoMessage")}</span>
               </div>
 
               {error && (
                 <div
                   className={cn(
-                    "flex items-center gap-2 border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm text-red-200",
+                    "flex items-center gap-2 border border-red-400/30 bg-red-400/10 px-3 py-2 text-[15px] text-red-200",
                     radius.md,
                   )}
                 >
@@ -758,15 +766,15 @@ function RestoreBackupModal({
 
               {selectedBackup.encrypted && (
                 <div>
-                  <label className="mb-1.5 block text-xs font-medium text-white/50">
-                    Backup Password
+                  <label className="mb-1.5 block text-[13px] font-medium text-white/50">
+                    {t("onboarding.welcome.restoreBackup.passwordLabel")}
                   </label>
                   <div className="relative">
                     <input
                       type={showPassword ? "text" : "password"}
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      placeholder="Enter password"
+                      placeholder={t("onboarding.welcome.restoreBackup.passwordPlaceholder")}
                       className={cn(
                         "w-full border border-white/10 bg-white/5 px-4 py-3 pr-12 text-white placeholder-white/30",
                         radius.lg,
@@ -809,12 +817,12 @@ function RestoreBackupModal({
                 {restoring ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin" />
-                    Restoring...
+                    {t("onboarding.welcome.restoreBackup.restoring")}
                   </>
                 ) : (
                   <>
                     <Upload size={16} />
-                    Restore Backup
+                    {t("onboarding.welcome.restoreBackup.restoreButton")}
                   </>
                 )}
               </button>
@@ -832,7 +840,7 @@ function RestoreBackupModal({
                   "disabled:opacity-50",
                 )}
               >
-                Back
+                {t("onboarding.welcome.restoreBackup.back")}
               </button>
             </>
           ) : (
@@ -848,90 +856,17 @@ function RestoreBackupModal({
                 "hover:border-white/20 hover:bg-white/10 hover:text-white",
               )}
             >
-              Cancel
+              {t("onboarding.welcome.restoreBackup.cancel")}
             </button>
           )}
         </div>
       </motion.div>
 
-      {/* Dynamic Memory Model Required Modal */}
       {showEmbeddingPrompt && (
-        <motion.div
-          className="absolute inset-0 z-10 flex items-end justify-center bg-black/60"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <motion.div
-            className={cn(
-              "w-full max-w-lg border border-white/10 bg-[#0b0b0d] p-6",
-              "rounded-t-3xl",
-              shadows.xl,
-            )}
-            initial={{ y: "100%" }}
-            animate={{ y: 0 }}
-            transition={{ type: "spring", damping: 30, stiffness: 350 }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 className={cn(typography.h2.size, typography.h2.weight, "text-white mb-4")}>
-              Embedding Model Required
-            </h3>
-
-            <div className="space-y-4">
-              <div className="flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/10 p-3">
-                <HardDrive className="h-5 w-5 shrink-0 text-amber-400 mt-0.5" />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-amber-200">Dynamic Memory Detected</p>
-                  <p className="mt-1 text-xs text-amber-200/70">
-                    This backup contains characters with dynamic memory enabled, which requires the
-                    embedding model (~120MB).
-                  </p>
-                </div>
-              </div>
-
-              <p className="text-sm text-white/60">
-                You can download the model now to enable dynamic memory, or continue without it
-                (dynamic memory will be disabled for affected characters).
-              </p>
-
-              <div className="flex flex-col gap-2 pt-2">
-                <button
-                  onClick={handleDownloadModel}
-                  className={cn(
-                    "flex items-center justify-center gap-2 px-6 py-3",
-                    radius.md,
-                    "border border-blue-400/40 bg-blue-400/20 text-blue-100",
-                    typography.body.size,
-                    typography.h3.weight,
-                    interactive.transition.fast,
-                    "hover:border-blue-400/60 hover:bg-blue-400/30",
-                  )}
-                >
-                  <Download className="h-4 w-4" />
-                  Download Model
-                </button>
-                <button
-                  onClick={handleDisableAndContinue}
-                  className={cn(
-                    "px-6 py-3",
-                    radius.md,
-                    "border border-white/10 bg-white/5 text-white/60",
-                    typography.body.size,
-                    interactive.transition.fast,
-                    "hover:border-white/20 hover:bg-white/10 hover:text-white",
-                  )}
-                >
-                  Continue Without Dynamic Memory
-                </button>
-              </div>
-
-              <p className="text-xs text-white/40 text-center">
-                You can re-enable dynamic memory later in character settings after downloading the
-                model.
-              </p>
-            </div>
-          </motion.div>
-        </motion.div>
+        <DynamicMemoryEmbeddingPrompt
+          onDownload={handleDownloadModel}
+          onContinueWithout={handleDisableAndContinue}
+        />
       )}
     </motion.div>
   );

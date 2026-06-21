@@ -80,16 +80,40 @@ pub trait ProviderAdapter {
         if let Some(data) = response.get("data").and_then(|d| d.as_array()) {
             for item in data {
                 if let Some(id) = item.get("id").and_then(|id| id.as_str()) {
+                    let input_price = item
+                        .get("pricing")
+                        .and_then(|pricing| pricing.get("prompt"))
+                        .and_then(value_to_f64);
+                    let output_price = item
+                        .get("pricing")
+                        .and_then(|pricing| pricing.get("completion"))
+                        .and_then(value_to_f64);
                     models.push(ModelInfo {
                         id: id.to_string(),
                         display_name: item
                             .get("name") // Some providers use name as display name
                             .and_then(|n| n.as_str())
                             .map(|s| s.to_string()),
-                        description: None,
+                        description: item
+                            .get("description")
+                            .and_then(|d| d.as_str())
+                            .map(|s| s.to_string()),
                         context_length: item.get("context_length").and_then(|c| c.as_u64()),
-                        input_price: None,
-                        output_price: None,
+                        input_modalities: item
+                            .get("architecture")
+                            .and_then(|a| a.get("input_modalities"))
+                            .or_else(|| item.get("input_modalities"))
+                            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                        output_modalities: item
+                            .get("architecture")
+                            .and_then(|a| a.get("output_modalities"))
+                            .or_else(|| item.get("output_modalities"))
+                            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                        supported_endpoints: item
+                            .get("supported_endpoints")
+                            .and_then(|v| serde_json::from_value(v.clone()).ok()),
+                        input_price,
+                        output_price,
                     });
                 }
             }
@@ -105,9 +129,23 @@ pub struct ModelInfo {
     pub display_name: Option<String>,
     pub description: Option<String>,
     pub context_length: Option<u64>,
+    #[serde(default)]
+    pub input_modalities: Option<Vec<String>>,
+    #[serde(default)]
+    pub output_modalities: Option<Vec<String>>,
+    #[serde(default)]
+    pub supported_endpoints: Option<Vec<String>>,
     // Pricing per 1M tokens or similar, strictly for display/estimation if available
     pub input_price: Option<f64>,
     pub output_price: Option<f64>,
+}
+
+fn value_to_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(n) => n.as_f64(),
+        Value::String(s) => s.parse::<f64>().ok(),
+        _ => None,
+    }
 }
 
 // Shared OpenAI-style request used by multiple providers.
@@ -209,13 +247,39 @@ pub(crate) fn parse_data_url(data_url: &str) -> Option<(String, String)> {
     Some((mime_type.to_string(), data.to_string()))
 }
 
+pub(crate) fn is_visible_chat_system_message(message: &Value) -> bool {
+    message.get("role").and_then(|v| v.as_str()) == Some("system")
+        && message
+            .get("visible_in_chat")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+}
+
+pub(crate) fn visible_chat_system_instruction_text(message: &Value) -> Option<String> {
+    if !is_visible_chat_system_message(message) {
+        return None;
+    }
+
+    let content = extract_text_content(message.get("content"))?;
+    let trimmed = content.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "Visible system message from the chat UI. Treat this as a high-priority instruction that remains in effect unless later context overrides it.\n\n<system-message>\n{}\n</system-message>",
+        trimmed
+    ))
+}
+
 mod anannas;
-mod anthropic;
+pub mod anthropic;
 mod automatic1111;
+mod cerebras;
 mod chutes;
 mod deepseek;
 mod featherless;
-mod google_gemini;
+pub mod google_gemini;
 mod groq;
 mod intenserp;
 mod llamacpp;
@@ -245,6 +309,7 @@ pub fn adapter_for(credential: &ProviderCredential) -> Box<dyn ProviderAdapter +
         "llamacpp" => Box::new(llamacpp::LlamaCppAdapter),
         "lmstudio" => Box::new(lmstudio::LMStudioAdapter),
         "automatic1111" => Box::new(automatic1111::Automatic1111Adapter),
+        "cerebras" | "cerebras.ai" => Box::new(cerebras::CerebrasAdapter),
         "chutes" | "chutes.ai" => Box::new(chutes::ChutesAdapter),
         "anthropic" => Box::new(anthropic::AnthropicAdapter),
         "mistral" => Box::new(mistral::MistralAdapter),
@@ -261,6 +326,7 @@ pub fn adapter_for(credential: &ProviderCredential) -> Box<dyn ProviderAdapter +
         "qwen" => Box::new(qwen::QwenAdapter),
         "stability" => Box::new(stability::StabilityAdapter),
         "openrouter" => Box::new(openai::OpenRouterAdapter),
+        "pollinations" => Box::new(pollinations::PollinationsAdapter),
         "lettuce-host" => Box::new(openai::OpenAIAdapter),
         "lettuce-engine" => Box::new(lettuce_engine::LettuceEngineAdapter),
         "pollinations" => Box::new(pollinations::PollinationsTextAdapter),

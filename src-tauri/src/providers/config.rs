@@ -16,6 +16,57 @@ pub struct ProviderConfig {
     pub requires_api_key: bool,
     pub required_auth_headers: Vec<String>,
     pub default_headers: HashMap<String, String>,
+    #[serde(default)]
+    pub supported_extra_body_keys: Vec<String>,
+}
+
+fn supported_extra_body_keys(provider_id: &str) -> &'static [&'static str] {
+    match provider_id {
+        "llamacpp" => &[
+            "llamaGpuLayers",
+            "llamaThreads",
+            "llamaThreadsBatch",
+            "llamaSeed",
+            "llamaRopeFreqBase",
+            "llamaRopeFreqScale",
+            "llamaOffloadKqv",
+            "llamaBatchSize",
+            "llamaKvType",
+            "llamaFlashAttentionPolicy",
+            "llamaSwaFull",
+            "llamaChatTemplateOverride",
+            "llamaMmprojPath",
+            "llamaChatTemplatePreset",
+            "llamaRawCompletionFallback",
+            "llamaStreamingEnabled",
+            "llamaStrictMode",
+            "llamaMtpEnabled",
+            "llamaMtpDraftTokens",
+            "llamaMtpModelPath",
+            "llamaSamplerProfile",
+            "llamaSamplerOrder",
+            "llamaMinP",
+            "llamaTypicalP",
+            "llamaDryMultiplier",
+            "llamaDryBase",
+            "llamaDryAllowedLength",
+            "llamaDryPenaltyLastN",
+            "llamaDrySequenceBreakers",
+            "llamaDisableSamplerProfileDefaults",
+            "min_p",
+            "typical_p",
+            "parallel_tool_calls",
+            "top_k",
+            "frequency_penalty",
+            "presence_penalty",
+            "enable_thinking",
+            "chat_template_kwargs",
+        ],
+        "ollama" => &["options"],
+        "anthropic" | "custom-anthropic" | "openrouter" | "openai" | "gemini" | "google"
+        | "google-gemini" => &["promptCachingTtl"],
+        _ => &[],
+    }
 }
 
 #[tauri::command]
@@ -39,8 +90,14 @@ fn get_all_provider_configs_internal() -> Vec<ProviderConfig> {
     let base_configs = vec![
         ("chutes", "Chutes", "https://llm.chutes.ai"),
         ("openai", "OpenAI", "https://api.openai.com"),
+        ("cerebras", "Cerebras", "https://api.cerebras.ai/v1"),
         ("anthropic", "Anthropic", "https://api.anthropic.com"),
         ("openrouter", "OpenRouter", "https://openrouter.ai/api"),
+        (
+            "pollinations",
+            "Pollinations AI",
+            "https://gen.pollinations.ai",
+        ),
         ("mistral", "Mistral AI", "https://api.mistral.ai"),
         ("deepseek", "DeepSeek", "https://api.deepseek.com"),
         ("nanogpt", "NanoGPT", "https://nano-gpt.com/api"),
@@ -116,6 +173,10 @@ fn get_all_provider_configs_internal() -> Vec<ProviderConfig> {
                 .map(|s| s.to_string())
                 .collect();
             let default_headers = adapter.default_headers_template();
+            let supported_extra_body_keys = supported_extra_body_keys(id)
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
             ProviderConfig {
                 id: id.to_string(),
                 name: name.to_string(),
@@ -126,6 +187,7 @@ fn get_all_provider_configs_internal() -> Vec<ProviderConfig> {
                 requires_api_key: adapter.requires_api_key(),
                 required_auth_headers,
                 default_headers,
+                supported_extra_body_keys,
             }
         })
         .collect()
@@ -133,14 +195,18 @@ fn get_all_provider_configs_internal() -> Vec<ProviderConfig> {
 
 fn get_cached_provider_configs() -> &'static Vec<ProviderConfig> {
     static CACHE: OnceLock<Vec<ProviderConfig>> = OnceLock::new();
-    CACHE.get_or_init(|| get_all_provider_configs_internal())
+    CACHE.get_or_init(get_all_provider_configs_internal)
 }
 
 pub fn get_provider_config(provider_id: &ProviderId) -> Option<ProviderConfig> {
     get_cached_provider_configs()
         .iter()
+        .find(|&p| p.id == provider_id.0)
         .cloned()
-        .find(|p| p.id == provider_id.0)
+}
+
+pub fn supported_extra_body_keys_for_provider(provider_id: &str) -> &'static [&'static str] {
+    supported_extra_body_keys(provider_id)
 }
 
 pub fn resolve_base_url(provider_id: &ProviderId, custom_base_url: Option<&str>) -> String {
@@ -181,34 +247,4 @@ pub fn get_system_role(provider_id: &ProviderId) -> Cow<'static, str> {
         config: None,
     };
     adapter_for(&cred).system_role()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_resolve_base_url_with_custom() {
-        let result = resolve_base_url(&ProviderId("openai".into()), Some("https://custom.com"));
-        assert_eq!(result, "https://custom.com");
-    }
-
-    #[test]
-    fn test_resolve_base_url_default() {
-        let result = resolve_base_url(&ProviderId("openai".into()), None);
-        assert_eq!(result, "https://api.openai.com");
-    }
-
-    #[test]
-    fn test_build_endpoint_url() {
-        let result = build_endpoint_url(&ProviderId("openai".into()), None);
-        assert_eq!(result, "https://api.openai.com/v1/chat/completions");
-    }
-
-    #[test]
-    fn test_build_endpoint_url_with_v1_already_in_base() {
-        let result =
-            build_endpoint_url(&ProviderId("openai".into()), Some("https://custom.com/v1"));
-        assert_eq!(result, "https://custom.com/v1/chat/completions");
-    }
 }

@@ -18,7 +18,7 @@
         "minWidth": 1068,
         "minHeight": 600,
         "transparent": true,
-        "decorations": true
+        "decorations": false
       }
     ],
     "security": {
@@ -72,6 +72,7 @@
     ],
     "macOS": {
       "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
       "dmg": {
         "windowSize": {
           "width": 660,

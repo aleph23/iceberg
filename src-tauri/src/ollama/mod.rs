@@ -36,9 +36,11 @@ pub async fn list_models(
     )?;
     let url = format!("{}api/tags", base_url);
     let client = build_http_client(
+        app,
         Some(&credential_runtime_headers(credential)),
         Some(DEFAULT_REQUEST_TIMEOUT_MS),
         false,
+        credential_allows_invalid_tls(credential),
     )?;
 
     let request = client.get(&url);
@@ -71,7 +73,13 @@ pub async fn execute_chat_request(
         .as_ref()
         .ok_or_else(|| "Ollama request body is required".to_string())?;
     let chat_body = normalize_request_body(body).await?;
-    let client = build_http_client(req.headers.as_ref(), req.timeout_ms, stream)?;
+    let client = build_http_client(
+        app,
+        req.headers.as_ref(),
+        req.timeout_ms,
+        stream,
+        request_allows_invalid_tls(app, req),
+    )?;
 
     if stream {
         let request_id = req.request_id.clone().unwrap_or_default();
@@ -95,9 +103,11 @@ fn credential_runtime_headers(credential: &ProviderCredential) -> HashMap<String
 }
 
 fn build_http_client(
+    app: &tauri::AppHandle,
     headers: Option<&HashMap<String, String>>,
     timeout_ms: Option<u64>,
     stream: bool,
+    allow_invalid_tls: bool,
 ) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder();
     if !stream {
@@ -111,13 +121,30 @@ fn build_http_client(
     if !header_map.is_empty() {
         builder = builder.default_headers(header_map);
     }
+    builder = crate::tls::apply_trusted_certificates(app, builder);
+    if allow_invalid_tls {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
 
     builder
         .build()
         .map_err(|err| crate::utils::err_to_string(module_path!(), line!(), err))
 }
 
-fn normalize_base_url(raw: &str) -> Result<String, String> {
+fn credential_allows_invalid_tls(credential: &ProviderCredential) -> bool {
+    credential
+        .config
+        .as_ref()
+        .and_then(|config| config.get("allowInvalidTls"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn request_allows_invalid_tls(app: &tauri::AppHandle, req: &ApiRequest) -> bool {
+    crate::tls::allow_invalid_tls_for_request(app, Some("ollama"), &req.url)
+}
+
+pub fn normalize_base_url(raw: &str) -> Result<String, String> {
     let initial = if raw.trim().is_empty() {
         DEFAULT_OLLAMA_BASE_URL
     } else {
@@ -170,7 +197,7 @@ fn build_header_map(headers: Option<&HashMap<String, String>>) -> Result<HeaderM
     Ok(header_map)
 }
 
-async fn normalize_request_body(body: &Value) -> Result<Value, String> {
+pub async fn normalize_request_body(body: &Value) -> Result<Value, String> {
     let mut object = body
         .as_object()
         .ok_or_else(|| "Ollama request body must be a JSON object".to_string())?
@@ -271,7 +298,7 @@ async fn convert_message(
     Ok(Value::Object(message))
 }
 
-fn normalize_assistant_tool_calls(
+pub fn normalize_assistant_tool_calls(
     tool_calls: &[Value],
     tool_call_name_by_id: &mut HashMap<String, String>,
 ) -> Vec<Value> {
@@ -656,6 +683,401 @@ fn inject_missing_tool_call_ids(value: &mut Value) {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OllamaInstalledModel {
+    pub name: String,
+    pub size: Option<u64>,
+    pub modified_at: Option<String>,
+    pub digest: Option<String>,
+    pub parameter_size: Option<String>,
+    pub quantization_level: Option<String>,
+    pub family: Option<String>,
+}
+
+#[tauri::command]
+pub async fn ollama_inventory_list(
+    app: tauri::AppHandle,
+    credential_id: String,
+) -> Result<Vec<OllamaInstalledModel>, String> {
+    let credential =
+        crate::storage_manager::providers::get_provider_credential(&app, &credential_id)?;
+    if !is_ollama_provider(Some(credential.provider_id.as_str())) {
+        return Err("Selected provider is not an Ollama provider".to_string());
+    }
+
+    let base_url = normalize_base_url(
+        credential
+            .base_url
+            .as_deref()
+            .unwrap_or(DEFAULT_OLLAMA_BASE_URL),
+    )?;
+    let url = format!("{}api/tags", base_url);
+    let client = build_http_client(
+        &app,
+        Some(&credential_runtime_headers(&credential)),
+        Some(DEFAULT_REQUEST_TIMEOUT_MS),
+        false,
+        credential_allows_invalid_tls(&credential),
+    )?;
+
+    let request = client.get(&url);
+    let response = transport::send_with_retries(&app, "ollama_inventory_list", request, 2, None)
+        .await
+        .map_err(|err| err.to_string())?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .map_err(|err| crate::utils::err_to_string(module_path!(), line!(), err))?;
+    if !status.is_success() {
+        return Err(format!("Ollama returned {}: {}", status, text));
+    }
+
+    let payload = serde_json::from_str::<Value>(&text)
+        .map_err(|err| crate::utils::err_to_string(module_path!(), line!(), err))?;
+
+    let mut out = Vec::new();
+    let Some(list) = payload.get("models").and_then(Value::as_array) else {
+        return Ok(out);
+    };
+    for item in list {
+        let Some(name) = item.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let details = item.get("details");
+        out.push(OllamaInstalledModel {
+            name: name.to_string(),
+            size: item.get("size").and_then(Value::as_u64),
+            modified_at: item
+                .get("modified_at")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            digest: item
+                .get("digest")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            parameter_size: details
+                .and_then(|d| d.get("parameter_size"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            quantization_level: details
+                .and_then(|d| d.get("quantization_level"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            family: details
+                .and_then(|d| d.get("family"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn ollama_inventory_delete(
+    app: tauri::AppHandle,
+    credential_id: String,
+    model_name: String,
+) -> Result<(), String> {
+    let credential =
+        crate::storage_manager::providers::get_provider_credential(&app, &credential_id)?;
+    if !is_ollama_provider(Some(credential.provider_id.as_str())) {
+        return Err("Selected provider is not an Ollama provider".to_string());
+    }
+
+    let base_url = normalize_base_url(
+        credential
+            .base_url
+            .as_deref()
+            .unwrap_or(DEFAULT_OLLAMA_BASE_URL),
+    )?;
+    let url = format!("{}api/delete", base_url);
+    let client = build_http_client(
+        &app,
+        Some(&credential_runtime_headers(&credential)),
+        Some(DEFAULT_REQUEST_TIMEOUT_MS),
+        false,
+        credential_allows_invalid_tls(&credential),
+    )?;
+
+    let body = json!({ "name": model_name });
+    let response = client
+        .delete(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("Ollama delete request failed: {err}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Ollama returned {}: {}", status, text));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn ollama_pull_model(
+    app: tauri::AppHandle,
+    credential_id: String,
+    model_ref: String,
+    metadata: Option<crate::hf_browser::QueueDownloadMetadata>,
+) -> Result<String, String> {
+    let credential =
+        crate::storage_manager::providers::get_provider_credential(&app, &credential_id)?;
+    if !is_ollama_provider(Some(credential.provider_id.as_str())) {
+        return Err("Selected provider is not an Ollama provider".to_string());
+    }
+    let trimmed_ref = model_ref.trim();
+    if trimmed_ref.is_empty() {
+        return Err("Model reference is empty".to_string());
+    }
+
+    let queue_id = uuid::Uuid::new_v4().to_string();
+    let metadata = metadata.unwrap_or_default();
+    let display_name = metadata
+        .display_name
+        .clone()
+        .unwrap_or_else(|| trimmed_ref.to_string());
+
+    let item = crate::hf_browser::QueuedDownload {
+        id: queue_id.clone(),
+        model_id: trimmed_ref.to_string(),
+        filename: display_name.clone(),
+        status: "queued".to_string(),
+        downloaded: 0,
+        total: 0,
+        speed_bytes_per_sec: 0,
+        error: None,
+        result_path: None,
+        create_model_when_finished: metadata.create_model_when_finished,
+        mmproj_file: metadata.mmproj_file.clone(),
+        mtp_file: metadata.mtp_file,
+        mtp_bundled: metadata.mtp_bundled,
+        install_id: metadata.install_id.clone(),
+        display_name: Some(display_name.clone()),
+        context_length: metadata.context_length,
+        kv_type: metadata.kv_type.clone(),
+        llama_offload_kqv: metadata.llama_offload_kqv,
+        llama_gpu_layers: metadata.llama_gpu_layers,
+        llama_model_offload_mode: metadata.llama_model_offload_mode.clone(),
+        download_role: metadata.download_role.clone(),
+        queue_kind: Some("ollama".to_string()),
+        asset_root: metadata.asset_root.clone(),
+        install_kind: metadata.install_kind.clone(),
+        variant: metadata.variant.clone(),
+        voice_id: metadata.voice_id.clone(),
+        download_url: Some(format!("ollama://{}/{}", credential.id, trimmed_ref)),
+        destination_path: metadata.destination_path.clone(),
+        force_redownload: metadata.force_redownload,
+    };
+
+    crate::hf_browser::enqueue_external_item(&app, item).await;
+
+    let model_ref_owned = trimmed_ref.to_string();
+    let queue_id_clone = queue_id.clone();
+    let app_clone = app.clone();
+    tokio::spawn(async move {
+        let result =
+            run_ollama_pull(&app_clone, &credential, &queue_id_clone, &model_ref_owned).await;
+        match result {
+            Ok(()) => {
+                crate::hf_browser::finish_external_item(&app_clone, &queue_id_clone, true, None)
+                    .await;
+            }
+            Err(err) => {
+                if err == "__cancelled__" {
+                    crate::hf_browser::cancel_external_item(&app_clone, &queue_id_clone).await;
+                } else {
+                    crate::hf_browser::finish_external_item(
+                        &app_clone,
+                        &queue_id_clone,
+                        false,
+                        Some(err),
+                    )
+                    .await;
+                }
+            }
+        }
+    });
+
+    Ok(queue_id)
+}
+
+async fn run_ollama_pull(
+    app: &tauri::AppHandle,
+    credential: &ProviderCredential,
+    queue_id: &str,
+    model_ref: &str,
+) -> Result<(), String> {
+    let base_url = normalize_base_url(
+        credential
+            .base_url
+            .as_deref()
+            .unwrap_or(DEFAULT_OLLAMA_BASE_URL),
+    )?;
+    let url = format!("{}api/pull", base_url);
+    let client = build_http_client(
+        app,
+        Some(&credential_runtime_headers(credential)),
+        None,
+        true,
+        credential_allows_invalid_tls(credential),
+    )?;
+
+    let body = json!({ "model": model_ref, "stream": true });
+    let response = client
+        .post(&url)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|err| format!("Ollama pull request failed: {err}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("Ollama returned {}: {}", status, text));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let mut last_emit = std::time::Instant::now();
+    let mut last_completed = 0u64;
+    let mut last_total = 0u64;
+    let mut last_status_label = String::from("downloading");
+    let mut speed_anchor = std::time::Instant::now();
+    let mut speed_anchor_bytes = 0u64;
+    let mut speed_bytes_per_sec = 0u64;
+
+    loop {
+        if crate::hf_browser::external_item_cancel_requested(queue_id).await {
+            return Err("__cancelled__".to_string());
+        }
+
+        let next = match stream.next().await {
+            Some(item) => item,
+            None => break,
+        };
+        let chunk = next.map_err(|err| format!("Ollama pull stream error: {err}"))?;
+        let chunk_str = String::from_utf8_lossy(&chunk);
+        buffer.push_str(&chunk_str);
+
+        while let Some(idx) = buffer.find('\n') {
+            let line = buffer[..idx].trim().to_string();
+            buffer = buffer[idx + 1..].to_string();
+            if line.is_empty() {
+                continue;
+            }
+            let value: Value = match serde_json::from_str(&line) {
+                Ok(value) => value,
+                Err(_) => continue,
+            };
+
+            if let Some(error_text) = value.get("error").and_then(Value::as_str) {
+                return Err(error_text.to_string());
+            }
+
+            let status_label = value
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or(last_status_label.as_str())
+                .to_string();
+            let completed = value
+                .get("completed")
+                .and_then(Value::as_u64)
+                .unwrap_or(last_completed);
+            let total = value
+                .get("total")
+                .and_then(Value::as_u64)
+                .unwrap_or(last_total);
+
+            if completed >= speed_anchor_bytes {
+                let elapsed = speed_anchor.elapsed().as_millis() as u64;
+                if elapsed >= 1_000 {
+                    let delta = completed.saturating_sub(speed_anchor_bytes);
+                    speed_bytes_per_sec = delta * 1_000 / elapsed.max(1);
+                    speed_anchor = std::time::Instant::now();
+                    speed_anchor_bytes = completed;
+                }
+            } else {
+                speed_anchor = std::time::Instant::now();
+                speed_anchor_bytes = completed;
+                speed_bytes_per_sec = 0;
+            }
+
+            last_completed = completed;
+            last_total = total;
+            last_status_label = status_label.clone();
+
+            if status_label.eq_ignore_ascii_case("success") {
+                update_pull_progress(app, queue_id, "complete", last_completed, last_total, 0)
+                    .await;
+                return Ok(());
+            }
+
+            let mapped_status = map_ollama_status(&status_label);
+            let should_emit =
+                last_emit.elapsed().as_millis() > 150 || mapped_status != "downloading";
+            if should_emit {
+                update_pull_progress(
+                    app,
+                    queue_id,
+                    mapped_status,
+                    last_completed,
+                    last_total,
+                    speed_bytes_per_sec,
+                )
+                .await;
+                last_emit = std::time::Instant::now();
+            }
+        }
+    }
+
+    let trailing = buffer.trim();
+    if !trailing.is_empty() {
+        if let Ok(value) = serde_json::from_str::<Value>(trailing) {
+            if let Some(error_text) = value.get("error").and_then(Value::as_str) {
+                return Err(error_text.to_string());
+            }
+            if value
+                .get("status")
+                .and_then(Value::as_str)
+                .map(|s| s.eq_ignore_ascii_case("success"))
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn update_pull_progress(
+    app: &tauri::AppHandle,
+    queue_id: &str,
+    status_label: &str,
+    downloaded: u64,
+    total: u64,
+    speed: u64,
+) {
+    crate::hf_browser::update_external_progress(app, queue_id, status_label, downloaded, total)
+        .await;
+    crate::hf_browser::update_external_speed(app, queue_id, speed).await;
+}
+
+fn map_ollama_status(raw: &str) -> &'static str {
+    let lower = raw.to_ascii_lowercase();
+    if lower.starts_with("pulling") || lower.starts_with("downloading") {
+        "downloading"
+    } else if lower.contains("verify") || lower.contains("writing") {
+        "downloading"
+    } else if lower == "success" {
+        "complete"
+    } else {
+        "downloading"
+    }
+}
+
 fn parse_models_list(payload: &Value) -> Vec<ModelInfo> {
     let mut models = Vec::new();
     if let Some(list) = payload.get("models").and_then(Value::as_array) {
@@ -680,139 +1102,13 @@ fn parse_models_list(payload: &Value) -> Vec<ModelInfo> {
                 display_name: Some(name.to_string()),
                 description,
                 context_length: None,
+                input_modalities: None,
+                output_modalities: None,
+                supported_endpoints: None,
                 input_price: None,
                 output_price: None,
             });
         }
     }
     models
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{normalize_assistant_tool_calls, normalize_base_url, normalize_request_body};
-    use crate::chat_manager::{sse::SseDecoder, types::NormalizedEvent};
-    use serde_json::json;
-    use std::collections::HashMap;
-
-    #[test]
-    fn strips_api_chat_suffix() {
-        let url = normalize_base_url("http://127.0.0.1:11434/api/chat").expect("url");
-        assert_eq!(url, "http://127.0.0.1:11434/");
-    }
-
-    #[test]
-    fn strips_v1_suffix() {
-        let url = normalize_base_url("http://127.0.0.1:11434/v1").expect("url");
-        assert_eq!(url, "http://127.0.0.1:11434/");
-    }
-
-    #[test]
-    fn normalizes_openai_style_tool_calls_for_ollama() {
-        let input = vec![json!({
-            "id": "call_weather",
-            "type": "function",
-            "function": {
-                "name": "get_weather",
-                "arguments": "{\"city\":\"Istanbul\"}"
-            }
-        })];
-        let mut map = HashMap::new();
-
-        let normalized = normalize_assistant_tool_calls(&input, &mut map);
-
-        assert_eq!(
-            map.get("call_weather").map(String::as_str),
-            Some("get_weather")
-        );
-        assert_eq!(
-            normalized,
-            vec![json!({
-                "type": "function",
-                "function": {
-                    "index": 0,
-                    "name": "get_weather",
-                    "arguments": { "city": "Istanbul" }
-                }
-            })]
-        );
-    }
-
-    #[tokio::test]
-    async fn infers_tool_name_from_tool_call_id_for_tool_messages() {
-        let body = json!({
-            "model": "qwen3",
-            "messages": [
-                {
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "id": "call_1",
-                        "function": {
-                            "name": "get_weather",
-                            "arguments": { "city": "Istanbul" }
-                        }
-                    }]
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_1",
-                    "content": "{\"temperature\":\"20C\"}"
-                }
-            ]
-        });
-
-        let normalized = normalize_request_body(&body)
-            .await
-            .expect("normalized body");
-        let messages = normalized
-            .get("messages")
-            .and_then(|value| value.as_array())
-            .expect("messages array");
-
-        assert_eq!(
-            messages[1]
-                .get("tool_name")
-                .and_then(|value| value.as_str()),
-            Some("get_weather")
-        );
-    }
-
-    #[test]
-    fn ollama_stream_decoder_preserves_leading_spaces_in_deltas() {
-        let mut decoder = SseDecoder::new();
-
-        let first = decoder.feed(
-            "{\"message\":{\"role\":\"assistant\",\"content\":\"Mirelle\"},\"done\":false}\n",
-            Some("ollama"),
-        );
-        let second = decoder.feed(
-            "{\"message\":{\"role\":\"assistant\",\"content\":\"'s eyes return to yours\"},\"done\":false}\n",
-            Some("ollama"),
-        );
-        let third = decoder.feed(
-            "{\"message\":{\"role\":\"assistant\",\"content\":\" as she presses her seal into each corner.\"},\"done\":true}\n",
-            Some("ollama"),
-        );
-
-        assert_eq!(first.len(), 1);
-        match &first[0] {
-            NormalizedEvent::Delta { text } => assert_eq!(text, "Mirelle"),
-            other => panic!("unexpected first event: {other:?}"),
-        }
-
-        assert_eq!(second.len(), 1);
-        match &second[0] {
-            NormalizedEvent::Delta { text } => assert_eq!(text, "'s eyes return to yours"),
-            other => panic!("unexpected second event: {other:?}"),
-        }
-
-        assert_eq!(third.len(), 2);
-        match &third[0] {
-            NormalizedEvent::Delta { text } => {
-                assert_eq!(text, " as she presses her seal into each corner.")
-            }
-            other => panic!("unexpected third delta: {other:?}"),
-        }
-        assert!(matches!(third[1], NormalizedEvent::Done));
-    }
 }

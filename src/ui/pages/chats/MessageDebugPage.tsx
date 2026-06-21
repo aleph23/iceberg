@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore, useCallback } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, Copy } from "lucide-react";
+import { ArrowLeft, Copy, ChevronRight, ChevronDown } from "lucide-react";
 
 import { getMessageDebugSnapshot, type ChatMessageDebugSnapshot } from "../../../core/chat/manager";
 import { getSession, readSettings } from "../../../core/storage/repo";
+import { useI18n } from "../../../core/i18n/context";
 import type { Session, Settings, StoredMessage } from "../../../core/storage/schemas";
 import {
   getMessageDebugTrace,
@@ -69,12 +70,57 @@ function extractAttempts(trace: ChatRequestDebugTrace | null): DebugAttempt[] {
   return attempts;
 }
 
+function Collapsible({
+  title,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const toggle = useCallback(() => setOpen((prev) => !prev), []);
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-fg/10 bg-fg/5">
+      <button
+        type="button"
+        onClick={toggle}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm font-medium text-fg hover:bg-fg/5 transition-colors"
+      >
+        {open ? (
+          <ChevronDown className="h-4 w-4 shrink-0 text-fg/40" />
+        ) : (
+          <ChevronRight className="h-4 w-4 shrink-0 text-fg/40" />
+        )}
+        {title}
+      </button>
+      {open && <div className="border-t border-fg/10 px-4 py-3">{children}</div>}
+    </section>
+  );
+}
+
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-start justify-between gap-6 border-b border-white/10 py-2 last:border-b-0">
-      <div className="text-white/45">{label}</div>
-      <div className="text-right text-white">{value}</div>
+    <div className="flex items-start justify-between gap-6 border-b border-fg/10 py-2 last:border-b-0">
+      <div className="text-fg/45">{label}</div>
+      <div className="text-right text-fg">{value}</div>
     </div>
+  );
+}
+
+function CopyButton({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n();
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center gap-2 rounded border border-fg/10 bg-fg/5 px-2.5 py-1.5 text-[11px] text-fg/60 hover:bg-fg/10 hover:text-fg transition-colors"
+    >
+      <Copy className="h-3.5 w-3.5" />
+      {t("chats.debugPage.copy")}
+    </button>
   );
 }
 
@@ -88,32 +134,24 @@ function JsonBlock({ title, value }: { title: string; value: unknown }) {
   };
 
   return (
-    <section className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold text-white">{title}</h2>
-        <button
-          type="button"
-          onClick={() => void handleCopy()}
-          className="inline-flex items-center gap-2 rounded border border-white/10 bg-[#111111] px-2.5 py-1.5 text-[11px] text-white/70 hover:bg-[#181818] hover:text-white"
-        >
-          <Copy className="h-3.5 w-3.5" />
-          Copy
-        </button>
+    <Collapsible title={title}>
+      <div className="mb-2 flex justify-end">
+        <CopyButton onClick={() => void handleCopy()} />
       </div>
-      <pre className="overflow-x-auto rounded border border-white/10 bg-black px-3 py-3 text-xs leading-6 text-white/85">
+      <pre className="overflow-x-auto rounded-lg border border-fg/10 bg-surface px-3 py-3 text-xs leading-6 text-fg/85">
         {stringify(value)}
       </pre>
-    </section>
+    </Collapsible>
   );
 }
 
 function MessageRoleBadge({ role }: { role: string }) {
   const tone =
     role === "system" || role === "developer"
-      ? "border-cyan-500/20 bg-cyan-500/10 text-cyan-200"
+      ? "border-info/30 bg-info/10 text-info/80"
       : role === "assistant" || role === "model"
-        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-200"
-        : "border-white/10 bg-white/5 text-white/70";
+        ? "border-accent/30 bg-accent/10 text-accent/80"
+        : "border-fg/10 bg-fg/5 text-fg/60";
 
   return (
     <span className={`rounded border px-2 py-1 text-[10px] uppercase tracking-[0.18em] ${tone}`}>
@@ -132,8 +170,7 @@ function MessageListBlock({ title, messages }: { title: string; messages: unknow
   };
 
   return (
-    <section className="space-y-2">
-      <h2 className="text-sm font-semibold text-white">{title}</h2>
+    <Collapsible title={`${title} (${messages.length})`}>
       <div className="space-y-3">
         {messages.map((value, index) => {
           const message = getPayloadObject(value);
@@ -141,35 +178,29 @@ function MessageListBlock({ title, messages }: { title: string; messages: unknow
           return (
             <div
               key={`${title}-${index}`}
-              className="rounded border border-white/10 bg-black px-3 py-3"
+              className="rounded-lg border border-fg/10 bg-surface px-3 py-3"
             >
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <MessageRoleBadge role={role} />
-                  <span className="font-mono text-[11px] text-white/45">#{index + 1}</span>
+                  <span className="font-mono text-[11px] text-fg/40">#{index + 1}</span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => void handleCopy(value)}
-                  className="inline-flex items-center gap-2 rounded border border-white/10 bg-[#111111] px-2.5 py-1.5 text-[11px] text-white/70 hover:bg-[#181818] hover:text-white"
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                  Copy
-                </button>
+                <CopyButton onClick={() => void handleCopy(value)} />
               </div>
-              <pre className="overflow-x-auto text-xs leading-6 text-white/85">
+              <pre className="overflow-x-auto text-xs leading-6 text-fg/85">
                 {stringify(value)}
               </pre>
             </div>
           );
         })}
       </div>
-    </section>
+    </Collapsible>
   );
 }
 
 export function MessageDebugPage() {
   const navigate = useNavigate();
+  const { t } = useI18n();
   const { sessionId, messageId } = useParams<{
     characterId: string;
     sessionId: string;
@@ -253,13 +284,13 @@ export function MessageDebugPage() {
     latestRequestPayload?.providerId ??
       snapshot?.providerId ??
       resolvedModel?.providerId ??
-      "unknown",
+      t("chats.debugPage.unknown"),
   );
   const modelLabel = String(
     latestRequestPayload?.model ??
       snapshot?.modelDisplayName ??
       resolvedModel?.displayName ??
-      "unknown",
+      t("chats.debugPage.unknown"),
   );
   const inferredOperation =
     trace?.operation ??
@@ -278,132 +309,142 @@ export function MessageDebugPage() {
   const providerSystem = requestBodyObject?.system;
 
   return (
-    <div className="h-full overflow-y-auto bg-[#050505] px-4 py-4 text-sm text-white">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <div className="h-full overflow-y-auto scrollbar-thin bg-surface px-4 py-4 text-sm text-fg">
+      <div className="mx-auto max-w-5xl space-y-4">
         <button
           type="button"
           onClick={() => navigate(-1)}
-          className="inline-flex items-center gap-2 rounded border border-white/10 bg-[#0d0d0d] px-3 py-2 font-mono text-xs text-white/80 hover:bg-[#141414]"
+          className="inline-flex items-center gap-2 rounded-lg border border-fg/10 bg-fg/5 px-3 py-2 font-mono text-xs text-fg/70 hover:bg-fg/10 hover:text-fg transition-colors"
         >
           <ArrowLeft className="h-4 w-4" />
-          Return
+          {t("chats.debugPage.return")}
         </button>
 
-        <section className="rounded border border-white/10 bg-[#0d0d0d] p-4 font-mono text-xs">
-          <div className="mb-3 text-sm font-semibold text-white">Message Debug</div>
-          <SummaryRow label="Session ID" value={sessionId ?? "unknown"} />
-          <SummaryRow label="Message ID" value={messageId ?? "unknown"} />
-          <SummaryRow label="Role" value={message?.role ?? "unknown"} />
-          <SummaryRow label="Request ID" value={trace?.requestId ?? "missing"} />
-          <SummaryRow label="Operation" value={inferredOperation} />
-          <SummaryRow label="Provider" value={providerLabel} />
-          <SummaryRow label="Model" value={modelLabel} />
-          <SummaryRow label="Prompt Template" value={snapshot?.promptTemplateName ?? "unknown"} />
-          <SummaryRow label="Prompt Template ID" value={snapshot?.promptTemplateId ?? "missing"} />
-          <SummaryRow
-            label="Prompt Template Source"
-            value={snapshot?.promptTemplateSource ?? "unknown"}
-          />
-          <SummaryRow label="Attempt count" value={String(attempts.length)} />
-          <SummaryRow label="Transport retries" value={String(totalTransportRetries)} />
-          <SummaryRow
-            label="Request time"
-            value={
-              latestResponsePayload?.elapsedMs != null
-                ? `${String(latestResponsePayload.elapsedMs)} ms`
-                : "unknown"
-            }
-          />
-          <SummaryRow
-            label="Tokens"
-            value={String(message?.usage?.totalTokens ?? message?.usage?.completionTokens ?? 0)}
-          />
-          <SummaryRow
-            label="Prompt / completion"
-            value={`${message?.usage?.promptTokens ?? 0} / ${message?.usage?.completionTokens ?? 0}`}
-          />
-          <SummaryRow
-            label="Created"
-            value={message ? formatTimestamp(message.createdAt) : "unknown"}
-          />
-        </section>
+        <Collapsible title={t("chats.debugPage.title")} defaultOpen>
+          <div className="font-mono text-xs">
+            <SummaryRow label={t("chats.debugPage.sessionId")} value={sessionId ?? t("chats.debugPage.unknown")} />
+            <SummaryRow label={t("chats.debugPage.messageId")} value={messageId ?? t("chats.debugPage.unknown")} />
+            <SummaryRow label={t("chats.debugPage.role")} value={message?.role ?? t("chats.debugPage.unknown")} />
+            <SummaryRow label={t("chats.debugPage.requestId")} value={trace?.requestId ?? t("chats.debugPage.missing")} />
+            <SummaryRow label={t("chats.debugPage.operation")} value={inferredOperation} />
+            <SummaryRow label={t("chats.debugPage.provider")} value={providerLabel} />
+            <SummaryRow label={t("chats.debugPage.model")} value={modelLabel} />
+            <SummaryRow label={t("chats.debugPage.promptTemplate")} value={snapshot?.promptTemplateName ?? t("chats.debugPage.unknown")} />
+            <SummaryRow label={t("chats.debugPage.promptTemplateId")} value={snapshot?.promptTemplateId ?? t("chats.debugPage.missing")} />
+            <SummaryRow
+              label={t("chats.debugPage.promptTemplateSource")}
+              value={snapshot?.promptTemplateSource ?? t("chats.debugPage.unknown")}
+            />
+            <SummaryRow label={t("chats.debugPage.attemptCount")} value={String(attempts.length)} />
+            <SummaryRow label={t("chats.debugPage.transportRetries")} value={String(totalTransportRetries)} />
+            <SummaryRow
+              label={t("chats.debugPage.requestTime")}
+              value={
+                latestResponsePayload?.elapsedMs != null
+                  ? t("chats.debugPage.milliseconds", { value: String(latestResponsePayload.elapsedMs) })
+                  : t("chats.debugPage.unknown")
+              }
+            />
+            <SummaryRow
+              label={t("chats.debugPage.tokens")}
+              value={String(message?.usage?.totalTokens ?? message?.usage?.completionTokens ?? 0)}
+            />
+            <SummaryRow
+              label={t("chats.debugPage.promptCompletion")}
+              value={`${message?.usage?.promptTokens ?? 0} / ${message?.usage?.completionTokens ?? 0}`}
+            />
+            <SummaryRow
+              label={t("chats.debugPage.created")}
+              value={message ? formatTimestamp(message.createdAt) : t("chats.debugPage.unknown")}
+            />
+          </div>
+        </Collapsible>
 
         {!trace ? (
-          <section className="rounded border border-white/10 bg-[#0d0d0d] p-4 font-mono text-xs text-white/70">
-            No in-memory debug trace found for this message. Showing a reconstructed request
-            snapshot from the current session state where possible.
+          <section className="rounded-xl border border-fg/10 bg-fg/5 p-4 font-mono text-xs text-fg/60">
+            {t("chats.debugPage.noTraceFound")}
           </section>
         ) : null}
 
         {snapshot?.notes?.length ? (
-          <section className="space-y-2 rounded border border-white/10 bg-[#0d0d0d] p-4 font-mono text-xs text-white/80">
-            <div className="text-sm font-semibold text-white">Reconstruction Notes</div>
-            {snapshot.notes.map((note, index) => (
-              <div key={`${index}-${note}`} className="text-white/70">
-                {note}
-              </div>
-            ))}
-          </section>
+          <Collapsible title={t("chats.debugPage.reconstructionNotes", { count: snapshot.notes.length })}>
+            <div className="space-y-2 font-mono text-xs">
+              {snapshot.notes.map((note, index) => (
+                <div key={`${index}-${note}`} className="text-fg/60">
+                  {note}
+                </div>
+              ))}
+            </div>
+          </Collapsible>
         ) : null}
 
         {snapshotError ? (
-          <section className="rounded border border-red-500/20 bg-red-500/5 p-4 font-mono text-xs text-red-200">
-            Failed to reconstruct request snapshot: {snapshotError}
+          <section className="rounded-xl border border-danger/20 bg-danger/5 p-4 font-mono text-xs text-danger/80">
+            {t("chats.debugPage.reconstructFailed", { error: snapshotError })}
           </section>
         ) : null}
 
         {attempts.map((attempt, index) => (
-          <section
+          <Collapsible
             key={`${trace?.requestId ?? "trace"}-${index}`}
-            className="space-y-3 rounded border border-white/10 bg-[#0d0d0d] p-4 font-mono text-xs"
+            title={`${t("chats.debugPage.attempt", { number: index + 1 })}${attempt.providerError ? ` ${t("chats.debugPage.attemptError")}` : ""}${attempt.transportRetries.length > 0 ? `. ${t("chats.debugPage.attemptRetryCount", { count: attempt.transportRetries.length })}` : ""}`}
           >
-            <div className="text-sm font-semibold text-white">Attempt {index + 1}</div>
-            {attempt.transportRetries.length > 0 ? (
-              <div className="rounded border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 text-yellow-200">
-                {attempt.transportRetries.length} transport retr
-                {attempt.transportRetries.length === 1 ? "y" : "ies"} before final provider
-                response.
-              </div>
-            ) : null}
-            {attempt.request ? <JsonBlock title="Request" value={attempt.request.payload} /> : null}
-            {attempt.response ? (
-              <JsonBlock title="Response" value={attempt.response.payload} />
-            ) : null}
-            {attempt.providerError ? (
-              <JsonBlock title="Provider Error" value={attempt.providerError.payload} />
-            ) : null}
-            {attempt.transportRetries.length > 0 ? (
-              <JsonBlock
-                title="Transport Retries"
-                value={attempt.transportRetries.map((event) => event.payload)}
-              />
-            ) : null}
-          </section>
+            <div className="space-y-3 font-mono text-xs">
+              {attempt.transportRetries.length > 0 ? (
+                <div className="rounded-lg border border-warning/20 bg-warning/5 px-3 py-2 text-warning/80">
+                  {attempt.transportRetries.length === 1
+                    ? t("chats.debugPage.transportRetryNoticeOne")
+                    : t("chats.debugPage.transportRetryNoticeMany", {
+                        count: attempt.transportRetries.length,
+                      })}
+                </div>
+              ) : null}
+              {attempt.request ? <JsonBlock title={t("chats.debugPage.request")} value={attempt.request.payload} /> : null}
+              {attempt.request && getPayloadObject(attempt.request.payload)?.requestBody !== undefined ? (
+                <JsonBlock
+                  title={t("chats.debugPage.requestBody")}
+                  value={getPayloadObject(attempt.request.payload)?.requestBody}
+                />
+              ) : null}
+              {attempt.response ? (
+                <JsonBlock title={t("chats.debugPage.response")} value={attempt.response.payload} />
+              ) : null}
+              {attempt.providerError ? (
+                <JsonBlock title={t("chats.debugPage.providerError")} value={attempt.providerError.payload} />
+              ) : null}
+              {attempt.transportRetries.length > 0 ? (
+                <JsonBlock
+                  title={t("chats.debugPage.transportRetriesTitle")}
+                  value={attempt.transportRetries.map((event) => event.payload)}
+                />
+              ) : null}
+            </div>
+          </Collapsible>
         ))}
 
-        {requestSettings ? <JsonBlock title="Request Settings" value={requestSettings} /> : null}
-        {promptEntries ? <JsonBlock title="System Prompt Entries" value={promptEntries} /> : null}
+        {requestSettings ? <JsonBlock title={t("chats.debugPage.requestSettings")} value={requestSettings} /> : null}
+        {promptEntries ? <JsonBlock title={t("chats.debugPage.systemPromptEntries")} value={promptEntries} /> : null}
         {relativePromptEntries ? (
-          <JsonBlock title="Relative Prompt Entries" value={relativePromptEntries} />
+          <JsonBlock title={t("chats.debugPage.relativePromptEntries")} value={relativePromptEntries} />
         ) : null}
         {inChatPromptEntries ? (
-          <JsonBlock title="In-Chat Prompt Entries" value={inChatPromptEntries} />
+          <JsonBlock title={t("chats.debugPage.inChatPromptEntries")} value={inChatPromptEntries} />
         ) : null}
         {Array.isArray(requestMessages) ? (
-          <MessageListBlock title="Pre-Adapter Request Messages" messages={requestMessages} />
+          <MessageListBlock title={t("chats.debugPage.preAdapterMessages")} messages={requestMessages} />
         ) : null}
         {providerSystem !== undefined ? (
-          <JsonBlock title="Final Provider System Field" value={providerSystem} />
+          <JsonBlock title={t("chats.debugPage.finalProviderSystem")} value={providerSystem} />
         ) : null}
         {providerMessages ? (
-          <MessageListBlock title="Final Provider Messages" messages={providerMessages} />
+          <MessageListBlock title={t("chats.debugPage.finalProviderMessages")} messages={providerMessages} />
         ) : null}
         {requestBody !== undefined ? (
-          <JsonBlock title="Full Request Body" value={requestBody} />
+          <JsonBlock title={t("chats.debugPage.fullRequestBody")} value={requestBody} />
         ) : null}
-        <JsonBlock title="Full Session JSON" value={session} />
-        <JsonBlock title="Stored Message JSON" value={message} />
-        <JsonBlock title="Full Trace Events" value={trace?.events ?? []} />
+        <JsonBlock title={t("chats.debugPage.fullSessionJson")} value={session} />
+        <JsonBlock title={t("chats.debugPage.storedMessageJson")} value={message} />
+        <JsonBlock title={t("chats.debugPage.fullTraceEvents")} value={trace?.events ?? []} />
       </div>
     </div>
   );
