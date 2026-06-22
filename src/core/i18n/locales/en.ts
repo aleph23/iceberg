@@ -884,6 +884,8 @@ export const enMessages = {
     swapPlaces: "Swap Places",
     swapPlacesOn: "Swap Places (On)",
     uploadImage: "Upload Image",
+    uploadAudio: "Upload Audio",
+    uploadAudioDesc: "Send an audio clip to the model",
     helpMeReply: "Help Me Reply",
     sceneImage: {
       modeTitle: "Scene Image",
@@ -1095,6 +1097,8 @@ export const enMessages = {
       moreOptions: "More options",
       addImage: "Add image",
       addImageAttachment: "Add image attachment",
+      addAudio: "Add audio",
+      audioAttachmentLabel: "Audio attachment",
       removeAttachment: "Remove attachment",
       recordVoice: "Record voice",
       cancelRecording: "Cancel recording",
@@ -1137,6 +1141,7 @@ export const enMessages = {
       regenerating: "Regenerating",
       assistantIsTyping: "Assistant is typing",
       attachedImage: "Attached image",
+      attachedAudio: "Attached audio",
       generatingImagePrompt: "Generating image prompt...",
       yesterdayAt: "Yesterday at {{time}}",
       userAvatarAlt: "User",
@@ -6469,6 +6474,27 @@ export const enMessages = {
       personas: "Personas",
       lorebooks: "Lorebooks",
       images: "Images",
+      audio: "Audio",
+    },
+    audio: {
+      filters: {
+        all: "All",
+        generated: "Generated",
+        uploaded: "Uploaded",
+      },
+      play: "Play",
+      pause: "Pause",
+      generatedTitle: "Generated speech",
+      generatedSubtitle: "Text to speech",
+      uploadedSubtitle: "Uploaded in chat",
+      badges: {
+        tts: "TTS",
+        chat: "Chat",
+      },
+      empty: {
+        title: "No audio yet",
+        description: "Generated speech and audio you upload in chats will appear here",
+      },
     },
     emptyStates: {
       all: {
@@ -9416,6 +9442,7 @@ export const enMessages = {
         total: "Total",
         reasoning: "Reasoning",
         image: "Image",
+        audio: "Audio",
         memory: "Memory",
         summary: "Summary",
         inputImages: "Input Images",

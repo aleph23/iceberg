@@ -124,6 +124,7 @@ macro_rules! invoke_handler {
             crate::storage_manager::usage::storage_usage_summary,
             crate::storage_manager::media::storage_write_image,
             crate::storage_manager::media::storage_list_image_library,
+            crate::storage_manager::media::storage_list_audio_library,
             crate::storage_manager::media::storage_download_image_to_downloads,
             crate::storage_manager::media::storage_get_image_path,
             crate::storage_manager::media::storage_read_image,

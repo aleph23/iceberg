@@ -282,6 +282,9 @@ export const storageBridge = {
       asOfMs,
     }).then((s) => JSON.parse(s)),
   imageLibraryList: () => invoke<unknown[]>("storage_list_image_library"),
+  audioLibraryList: () => invoke<unknown[]>("storage_list_audio_library"),
+  audioLibraryLoadData: (storagePath: string) =>
+    invoke<string>("storage_load_session_attachment", { storagePath }),
   imageLibraryDownloadToDownloads: (filePath: string, filename?: string | null) =>
     invoke<string>("storage_download_image_to_downloads", {
       filePath,
