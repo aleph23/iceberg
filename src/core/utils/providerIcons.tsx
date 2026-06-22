@@ -30,6 +30,7 @@ import OllamaIcon from "../../assets/ollama_light.png";
 import LMStudioIcon from "../../assets/lmstudio_light.png";
 import LlamaCppIcon from "../../assets/llama-cpp.svg";
 import IntenserpIcon from "../../assets/intenserp.png";
+import Pollinations from "../../assets/pollinations.png";
 import GroqIcon from "../../assets/groq.svg";
 import PollinationsIcon from "../../assets/pollinations.svg";
 
@@ -59,6 +60,8 @@ const ICON_MAP: Record<string, ReactElement> = {
   automatic1111: <Cpu className="h-6 w-6 text-orange-400" />,
   localdiffusion: <ImageIcon className="h-6 w-6 text-emerald-300" />,
   stability: <Sparkles className="h-6 w-6 text-sky-400" />,
+  pollinations: <img src={Pollinations} alt="Pollinations" className="h-6 w-6" />,
+  "pollinations-image": <img src={Pollinations} alt="Pollinations (Image)" className="h-6 w-6" />,
   "lettuce-engine": <Leaf className="h-6 w-6 text-emerald-400" />,
   custom: <Settings className="h-6 w-6 text-gray-400" />,
   "custom-anthropic": <Settings className="h-6 w-6 text-gray-400" />,

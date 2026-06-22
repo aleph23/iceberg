@@ -53,4 +53,13 @@ docs/sync-current-system.md
 docs/sync-old-architecture.mmd
 docs/sync-old-architecture.svg
 src-tauri/target-check/
-docs/uec-2-character-fields.md
+.vscode/
+.qlty/
+.vs/
+src-tauri/onnxruntime/
+.vs/
+.vscode/**/*
+.qlty/
+/.vscode
+/.vscode/extensions.json
+

@@ -217,6 +217,7 @@ pub async fn generate_image(
             req_builder = req_builder.header(key, value);
         }
         req_builder = match payload {
+            ImageRequestPayload::None => req_builder,
             ImageRequestPayload::Json(body) => req_builder.json(&body),
             ImageRequestPayload::Multipart(form) => req_builder.multipart(form),
         };
@@ -238,22 +239,43 @@ pub async fn generate_image(
             ));
         }
 
-        let response_json: serde_json::Value = response.json().await.map_err(|e| {
-            crate::utils::err_msg(
-                module_path!(),
-                line!(),
-                format!("Failed to parse response: {}", e),
-            )
-        })?;
-        let usage_summary = chat_request::extract_usage(&response_json);
+        let image_data: Vec<ImageResponseData>;
+        if adapter.expects_binary_response() {
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("image/png")
+                .to_string();
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| crate::utils::err_msg(module_path!(), line!(), format!("Failed to read image bytes: {}", e)))?;
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            let b64_url = format!("data:{};base64,{}", content_type, b64);
+            image_data = vec![ImageResponseData {
+                url: None,
+                b64_json: Some(b64_url),
+                text: None,
+            }];
+        } else {
+            let response_json: serde_json::Value = response.json().await.map_err(|e| {
+                crate::utils::err_msg(
+                    module_path!(),
+                    line!(),
+                    format!("Failed to parse response: {}", e),
+                )
+            })?;
 
-        log_info(
-            &app,
-            "image_generator",
-            format!("Received response: {}", response_json),
-        );
+            log_info(
+                &app,
+                "image_generator",
+                format!("Received response: {}", response_json),
+            );
 
-        let image_data: Vec<ImageResponseData> = adapter.parse_response(response_json)?;
+            image_data = adapter.parse_response(response_json)?;
+        }
 
         let mut generated_images = Vec::new();
         for img_data in image_data {

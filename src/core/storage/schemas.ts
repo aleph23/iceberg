@@ -643,14 +643,8 @@ export const PROVIDER_REASONING_CAPABILITIES: Record<string, ReasoningCapability
     ],
   },
   featherless: { type: "none" },
-  pollinations: {
-    type: "effort",
-    options: [
-      { value: "low", label: "Low", description: "Quick responses" },
-      { value: "medium", label: "Medium", description: "Balanced" },
-      { value: "high", label: "High", description: "Deep reasoning" },
-    ],
-  },
+  pollinations: { type: "none" },
+  "pollinations-image": { type: "none" },
 };
 
 /**
