@@ -76,6 +76,24 @@ const ImageLibraryItemSchema = z.object({
 });
 
 export type ImageLibraryItem = z.infer<typeof ImageLibraryItemSchema>;
+
+const AudioLibraryItemSchema = z.object({
+  id: z.string(),
+  storagePath: z.string(),
+  filePath: z.string(),
+  filename: z.string(),
+  mimeType: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+  updatedAt: z.number().int(),
+  source: z.string(),
+  characterId: z.string().nullable().optional(),
+  characterName: z.string().nullable().optional(),
+  sessionId: z.string().nullable().optional(),
+  sessionTitle: z.string().nullable().optional(),
+  role: z.string().nullable().optional(),
+});
+
+export type AudioLibraryItem = z.infer<typeof AudioLibraryItemSchema>;
 const BackgroundImageRefSchema = z.object({
   backgroundImagePath: z.string().nullish().optional(),
 });
@@ -909,6 +927,15 @@ export async function getCharacter(id: string): Promise<Character | null> {
 export async function listImageLibraryItems(): Promise<ImageLibraryItem[]> {
   const data = await storageBridge.imageLibraryList();
   return z.array(ImageLibraryItemSchema).parse(data);
+}
+
+export async function listAudioLibraryItems(): Promise<AudioLibraryItem[]> {
+  const data = await storageBridge.audioLibraryList();
+  return z.array(AudioLibraryItemSchema).parse(data);
+}
+
+export async function loadAudioLibraryItemData(storagePath: string): Promise<string> {
+  return storageBridge.audioLibraryLoadData(storagePath);
 }
 
 export async function downloadImageLibraryItem(
