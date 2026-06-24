@@ -74,6 +74,7 @@ import type { LlamaLastRuntimeReport, ReasoningSupport } from "../../../core/sto
 import {
   getProviderReasoningSupport,
   getProviderCachingSupport,
+  isGeminiFamilyProvider,
 } from "../../../core/storage/schemas";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import {
@@ -4932,8 +4933,9 @@ export function EditModelPage() {
                                         {t("editModel.promptCaching.groqDescription")}
                                       </>
                                     )}
-                                    {(editorModel?.providerId === "gemini" ||
-                                      editorModel?.providerId === "google") && (
+                                    {isGeminiFamilyProvider(
+                                      editorModel?.providerId,
+                                    ) && (
                                         <>
                                           <strong className="text-fg/80">
                                             {t("editModel.promptCaching.geminiLabel")}
@@ -5204,7 +5206,7 @@ export function EditModelPage() {
               onClick={() => setShowLlamaRuntimeReport(false)}
             />
             <motion.aside
-              className="fixed bottom-0 right-0 top-[var(--titlebar-h,0px)] z-50 flex w-[480px] max-w-[90vw] flex-col border-l border-fg/10 bg-surface shadow-2xl"
+              className="fixed bottom-0 right-0 top-[var(--titlebar-h,0px)] z-50 flex w-120 max-w-[90vw] flex-col border-l border-fg/10 bg-surface shadow-2xl"
               initial={{ x: "100%" }}
               animate={{ x: 0 }}
               exit={{ x: "100%" }}

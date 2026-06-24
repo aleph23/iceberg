@@ -55,11 +55,45 @@ fn ensure_default_kokoro_provider(
     Ok(())
 }
 
+fn repair_system_kokoro_asset_root(conn: &rusqlite::Connection, app: &AppHandle) {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT asset_root FROM audio_providers WHERE id = ?",
+            params![SYSTEM_KOKORO_ID],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+
+    let usable = stored
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| std::fs::create_dir_all(s).is_ok())
+        .unwrap_or(false);
+    if usable {
+        return;
+    }
+
+    let Ok(default_root) = kokoro::default_asset_root(app) else {
+        return;
+    };
+    let _ = conn.execute(
+        "UPDATE audio_providers SET asset_root = ?1, updated_at = ?2 WHERE id = ?3",
+        params![
+            default_root.to_string_lossy().to_string(),
+            now_ms(),
+            SYSTEM_KOKORO_ID
+        ],
+    );
+}
+
 /// List all audio providers
 #[tauri::command]
 pub fn audio_provider_list(app: AppHandle) -> Result<Vec<AudioProvider>, String> {
     let conn = open_db(&app)?;
     let _ = ensure_default_kokoro_provider(&conn, &app);
+    repair_system_kokoro_asset_root(&conn, &app);
     let mut stmt = conn
         .prepare(
             "SELECT id, provider_type, label, api_key, project_id, location, base_url, request_path, kokoro_variant, asset_root, created_at, updated_at

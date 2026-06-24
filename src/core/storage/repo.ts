@@ -90,6 +90,7 @@ const AudioLibraryItemSchema = z.object({
   characterName: z.string().nullable().optional(),
   sessionId: z.string().nullable().optional(),
   sessionTitle: z.string().nullable().optional(),
+  messageId: z.string().nullable().optional(),
   role: z.string().nullable().optional(),
 });
 
@@ -938,6 +939,18 @@ export async function loadAudioLibraryItemData(storagePath: string): Promise<str
   return storageBridge.audioLibraryLoadData(storagePath);
 }
 
+export async function downloadAudioLibraryItem(
+  item: Pick<AudioLibraryItem, "filePath" | "filename">,
+): Promise<string> {
+  return storageBridge.imageLibraryDownloadToDownloads(item.filePath, item.filename);
+}
+
+export async function deleteAudioLibraryItem(
+  item: Pick<AudioLibraryItem, "storagePath">,
+): Promise<void> {
+  await storageBridge.audioLibraryDeleteItem(item.storagePath);
+}
+
 export async function downloadImageLibraryItem(
   item: Pick<ImageLibraryItem, "filePath" | "filename">,
 ): Promise<string> {
@@ -1024,7 +1037,6 @@ export async function saveCharacter(c: Partial<Character>): Promise<Character> {
     defaultSceneId,
     rules: defaultRules,
     defaultModelId: c.defaultModelId ?? null,
-    fallbackModelId: c.fallbackModelId ?? null,
     mode: c.mode ?? "roleplay",
     companion: c.companion ?? null,
     memoryType: c.memoryType ?? "manual",

@@ -15,6 +15,7 @@ import OpenAIIcon from "../../assets/openai_light.svg";
 import CerebrasIcon from "../../assets/cerebras.svg";
 import AnthropicIcon from "../../assets/anthropic_light.svg";
 import OpenRouterIcon from "../../assets/openrouter_light.svg";
+import LiteRouterIcon from "../../assets/literouter.png";
 import MistralAIIcon from "../../assets/mistralai_light.svg";
 import DeepseekIcon from "../../assets/deepseek.svg";
 import NanoGPTIcon from "../../assets/nanogpt.png";
@@ -38,6 +39,7 @@ const ICON_MAP: Record<string, ReactElement> = {
   cerebras: <img src={CerebrasIcon} alt="Cerebras" className="h-6 w-6" />,
   anthropic: <img src={AnthropicIcon} alt="Anthropic" className="h-6 w-6" />,
   openrouter: <img src={OpenRouterIcon} alt="OpenRouter" className="h-6 w-6" />,
+  literouter: <img src={LiteRouterIcon} alt="LiteRouter" className="h-6 w-6" />,
   pollinations: <img src={PollinationsIcon} alt="Pollinations AI" className="h-6 w-6" />,
   mistral: <img src={MistralAIIcon} alt="MistralAI" className="h-6 w-6" />,
   deepseek: <img src={DeepseekIcon} alt="Deepseek" className="h-6 w-6" />,
@@ -46,6 +48,9 @@ const ICON_MAP: Record<string, ReactElement> = {
   zai: <img src={ZAIIcon} alt="ZAI" className="h-6 w-6" />,
   moonshot: <img src={MoonShotAIIcon} alt="Moonshot AI" className="h-6 w-6" />,
   gemini: <img src={GeminiIcon} alt="Gemini" className="h-6 w-6" />,
+  "gemini-agent-platform-express": (
+    <img src={GeminiIcon} alt="Gemini Agent Platform (Express)" className="h-6 w-6" />
+  ),
   qwen: <img src={QwenIcon} alt="Qwen" className="h-6 w-6" />,
   groq: <img src={GroqIcon} alt="Groq" className="h-6 w-6" />,
   featherless: <img src={FeatherlessIcon} alt="Featherless" className="h-6 w-6" />,
