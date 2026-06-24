@@ -12,28 +12,33 @@ import { Toaster } from "sonner";
 
 import { OnboardingPage } from "./ui/pages/onboarding";
 import { WhereToFindPage } from "./ui/pages/onboarding/WhereToFind";
-import { SettingsPage } from "./ui/pages/settings/Settings";
+import {
+  SettingsPage,
+  CompanionDownloadQueuePage,
+  LorebooksPage,
+  CompanionsHubPage,
+  SystemPromptsPage,
+  ModelsPage
+} from "./ui/pages/settings";
 import { SettingsLayout } from "./ui/pages/settings/SettingsLayout";
-import { ProvidersPage } from "./ui/pages/settings/ProvidersPage";
-import { ModelsPage } from "./ui/pages/settings/ModelsPage";
+import { ProvidersPage } from "./ui/pages/settings";
 import { EditModelPage } from "./ui/pages/settings/EditModelPage";
 import { HuggingFaceBrowserPage } from "./ui/pages/settings/HuggingFaceBrowserPage";
 import { InstalledModelsPage } from "./ui/pages/settings/InstalledModelsPage";
 import { LocalRuntimeDefaultsPage } from "./ui/pages/settings/LocalRuntimeDefaultsPage";
-import { ImageGenerationPage } from "./ui/pages/settings/ImageGenerationPage";
-import { SystemPromptsPage } from "./ui/pages/settings/SystemPromptsPage";
+import { ImageGenerationPage } from "./ui/pages/settings";
 import { EditPromptTemplate } from "./ui/pages/settings/EditPromptTemplate";
-import { SecurityPage } from "./ui/pages/settings/SecurityPage";
-import { ResetPage } from "./ui/pages/settings/ResetPage";
-import { BackupRestorePage } from "./ui/pages/settings/BackupRestorePage";
-import { UsagePage } from "./ui/pages/settings/UsagePage";
-import { UsageActivityPage } from "./ui/pages/settings/UsageActivityPage";
+import { SecurityPage } from "./ui/pages/settings";
+import { ResetPage } from "./ui/pages/settings";
+import { BackupRestorePage } from "./ui/pages/settings";
+import { UsagePage } from "./ui/pages/settings";
+import { UsageActivityPage } from "./ui/pages/settings";
 import { CustomizationPage } from "./ui/pages/settings/CustomizationPage";
-import { SpeechRecognitionPage } from "./ui/pages/settings/SpeechRecognitionPage";
+import { SpeechRecognitionPage } from "./ui/pages/settings";
 import { ColorCustomizationPage } from "./ui/pages/settings/ColorCustomizationPage";
 import { ChatAppearancePage } from "./ui/pages/settings/ChatAppearancePage";
-import { LogsPage } from "./ui/pages/settings/LogsPage";
-import { AboutPage } from "./ui/pages/settings/AboutPage";
+import { LogsPage } from "./ui/pages/settings";
+import { AboutPage } from "./ui/pages/settings";
 import { CharactersPage } from "./ui/pages/settings/CharactersPage";
 import { DeveloperPage } from "./ui/pages/settings/DeveloperPage";
 import { ChangelogPage } from "./ui/pages/settings/ChangelogPage";
@@ -41,10 +46,7 @@ import { HelpPage } from "./ui/pages/settings/HelpPage";
 import { AdvancedPage } from "./ui/pages/settings/AdvancedPage";
 import { CreationHelperPage as AICreationHelperPage } from "./ui/pages/settings/CreationHelperPage";
 import { HelpMeReplyPage } from "./ui/pages/settings/HelpMeReplyPage";
-import { LorebooksPage } from "./ui/pages/settings/LorebooksPage";
 import { LorebookGeneratorFlowPage } from "./ui/pages/library/LorebookGeneratorFlowPage";
-import { CompanionsHubPage } from "./ui/pages/settings/CompanionsHubPage";
-import { CompanionDownloadQueuePage } from "./ui/pages/settings/CompanionDownloadQueuePage";
 import { HostApiPage } from "./ui/pages/settings/HostApiPage";
 import { VoicesPage } from "./ui/pages/settings/VoicesPage";
 import { DynamicMemoryPage } from "./ui/pages/settings/DynamicMemoryPage";
@@ -68,7 +70,7 @@ import {
   ChatLayout,
 } from "./ui/pages/chats";
 import { ThemeProvider } from "./core/theme/ThemeContext";
-import { toast } from "./ui/components/toast";
+import { toast } from "./ui/components";
 import { DownloadQueueProvider } from "./core/downloads/DownloadQueueContext";
 import {
   CreateCharacterPage,
@@ -121,21 +123,18 @@ import { ConfirmBottomMenuHost } from "./ui/components/ConfirmBottomMenu";
 import {
   getLastSeenAppVersion,
   isOnboardingCompleted,
+  hasSeenTooltip,
+  setTooltipSeen,
 } from "./core/storage/appState";
-import {
-  WhatsNewDrawer,
-  WHATS_NEW_OPEN_EVENT,
-} from "./ui/pages/whats-new/WhatsNewPage";
+import { WhatsNewDrawer, WHATS_NEW_OPEN_EVENT } from "./ui/pages/whats-new/WhatsNewPage";
 import { TopNav, BottomNav, TitleBar, WindowResizeHandles } from "./ui/components/App";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen, UnlistenFn } from "@tauri-apps/api/event";
 import { useAndroidBackHandler } from "./ui/hooks/useAndroidBackHandler";
 import { logManager, isLoggingEnabled } from "./core/utils/logger";
 import { getPlatform } from "./core/utils/platform";
-import { I18nProvider, useI18n } from "./core/i18n/context";
-import { hasSeenTooltip, setTooltipSeen } from "./core/storage/appState";
-import { checkForAppUpdate } from "./core/app-updates/checkForAppUpdate";
-import { detectUpdateChannel } from "./core/app-updates/checkForAppUpdate";
+import { I18nProvider, useI18n } from "./core/i18n";
+import { checkForAppUpdate, detectUpdateChannel } from "./core/app-updates/checkForAppUpdate";
 import { presentAppUpdateToast } from "./core/app-updates/presentAppUpdateToast";
 import {
   readSettings,

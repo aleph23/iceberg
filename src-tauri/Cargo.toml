@@ -6,7 +6,7 @@ authors = ["MegalithOfficial"]
 edition = "2021"
 
 [features]
-default = []
+default = ["llama-gpu-cuda"]
 # NVIDIA GPU acceleration for desktop llama.cpp and whisper.cpp (CUDA backend).
 llama-gpu-cuda = ["llama-cpp-2/cuda", "whisper-rs/cuda"]
 # Same as llama-gpu-cuda, but disables CUDA VMM in llama.cpp.
@@ -29,7 +29,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
-reqwest = { version = "0.11", default-features = false, features = ["blocking", "rustls-tls"] }
+reqwest = { version = "0.11", default-features = false, features = ["blocking", "json", "stream", "multipart", "rustls-tls"] }
 zip = "0.6"
 anyhow = "1"
 flate2 = "1.0"
@@ -37,7 +37,7 @@ tar = "0.4"
 serde_json = "1"
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+tauri = { version = "2", features = ["protocol-asset", "devtools"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
@@ -45,6 +45,7 @@ serde_json = "1"
 unified-entity-card = "0.2.0"
 keyring = "2"
 zeroize = "1"
+tauri-plugin-devtools = "2.1.0"
 tauri-plugin-aptabase = { path = "crates/tauri-plugin-aptabase" }
 reqwest = { version = "0.11", default-features = false, features = ["json", "stream", "multipart", "rustls-tls"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
@@ -96,7 +97,7 @@ pdf-extract = "0.7"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))'.dependencies]
 machine-uid = "0.3"
-ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "half", "ndarray"] }
+# ort = { version = "=2.0.0-rc.10", default-features = false, features = ["load-dynamic", "half", "ndarray"] }
 llama-cpp-2 = { git = "https://github.com/MegalithOfficial/llama-cpp-rs", branch = "main", features = ["mtmd"] }
 llama-cpp-sys-2 = { git = "https://github.com/MegalithOfficial/llama-cpp-rs", branch = "main" }
 sysinfo = "0.33"
@@ -120,7 +121,8 @@ jni = "0.21"
 ort = { version = "=2.0.0-rc.10", default-features = false, features = ["coreml", "half", "ndarray"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.58", features = ["Win32_Graphics_Dxgi"] }
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["cuda", "ndarray", "half", "load-dynamic"] }
+windows = { version = "0.62", features = ["Win32_Graphics_Dxgi"] }
 
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 tauri-plugin-barcode-scanner = "2"

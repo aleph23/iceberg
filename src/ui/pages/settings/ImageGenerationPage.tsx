@@ -3,17 +3,16 @@ import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Check, ChevronDown, Image, LucideIcon, PenLine, Sparkles } from "lucide-react";
 
-import { ModelSelectionBottomMenu } from "../../components/ModelSelectionBottomMenu";
+import { ModelSelectionBottomMenu, Switch } from "../../components";
 import {
   resolveImageGenerationOptions,
   resolveSceneWriterOptions,
 } from "../../../core/image-generation";
-import { readSettings, saveAdvancedSettings } from "../../../core/storage/repo";
-import type { Model } from "../../../core/storage/schemas";
-import { useI18n } from "../../../core/i18n/context";
+import { readSettings, saveAdvancedSettings } from "../../../core/storage";
+import type { Model } from "../../../core/storage";
+import { useI18n } from "../../../core/i18n";
 import { getProviderIcon } from "../../../core/utils/providerIcons";
 import { cn, spacing, typography } from "../../design-tokens";
-import { Switch } from "../../components/Switch";
 
 interface ImageGenerationState {
   loading: boolean;
@@ -56,11 +55,11 @@ function SettingsSection({
   title,
   icon,
   children,
-}: {
+}: Readonly<{
   title: string;
   icon: ReactNode;
   children: ReactNode;
-}) {
+}>) {
   return (
     <section className="space-y-3">
       <div className="flex items-center gap-2 px-1">
@@ -87,12 +86,12 @@ function SelectionRow({
   fallbackLabel,
   icon: Icon,
   onClick,
-}: {
+}: Readonly<{
   selectedModel: Model | null;
   fallbackLabel: string;
   icon: LucideIcon;
   onClick: () => void;
-}) {
+}>) {
   return (
     <button
       type="button"
@@ -115,7 +114,7 @@ function SelectionRow({
           <div
             className={cn("truncate text-sm font-medium", selectedModel ? "text-fg" : "text-fg/55")}
           >
-            {selectedModel?.displayName || selectedModel?.name || fallbackLabel}
+            {(selectedModel?.displayName ?? selectedModel?.name) || fallbackLabel}
           </div>
           {selectedModel ? (
             <div className="truncate text-xs text-fg/45">{selectedModel.name}</div>
@@ -129,7 +128,7 @@ function SelectionRow({
   );
 }
 
-function ModeOption({ title, description, active, onClick }: ModeOptionProps) {
+function ModeOption({ title, description, active, onClick }: Readonly<ModeOptionProps>) {
   return (
     <button
       type="button"
@@ -169,7 +168,7 @@ function SelectorCard({
   accentClassName,
   onToggle,
   onClick,
-}: SelectorCardProps) {
+}: Readonly<SelectorCardProps>) {
   const { t } = useI18n();
   const toggleId = `image-generation-toggle-${title.toLowerCase().replace(/\s+/g, "-")}`;
   const hasToggle = typeof enabled === "boolean" && typeof onToggle === "function";
@@ -181,7 +180,7 @@ function SelectorCard({
     : t("common.labels.on");
 
   return (
-    <section className="rounded-[12px] border border-fg/10 bg-fg/5">
+    <section className="rounded-xl border border-fg/10 bg-fg/5">
       <div className="border-b border-fg/8 px-4 py-4">
         <div className="flex items-start gap-3">
           <div className={cn("rounded-[9px] border p-1.5", accentClassName)}>
@@ -196,11 +195,7 @@ function SelectorCard({
               {hasToggle ? (
                 <div className="flex items-center gap-2 pt-0.5">
                   <span className="text-[11px] font-medium text-fg/50">{stateLabel}</span>
-                  <Switch
-                    id={toggleId}
-                    checked={enabled}
-                    onChange={() => onToggle()}
-                  />
+                  <Switch id={toggleId} checked={enabled} onChange={() => onToggle()} />
                 </div>
               ) : null}
             </div>
@@ -452,7 +447,7 @@ export function ImageGenerationPage() {
             <motion.div
               initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
-              className="rounded-[12px] border border-danger/20 bg-danger/5 p-3"
+              className="rounded-xl border border-danger/20 bg-danger/5 p-3"
             >
               <p className="text-xs leading-relaxed text-danger/80">{state.error}</p>
             </motion.div>
@@ -521,7 +516,7 @@ export function ImageGenerationPage() {
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -6 }}
                         transition={{ duration: 0.16, ease: "easeOut" }}
-                        className="rounded-[12px] border border-fg/10 bg-fg/5"
+                        className="rounded-xl border border-fg/10 bg-fg/5"
                       >
                         <div className="border-b border-fg/8 px-4 py-4">
                           <div className="space-y-1">

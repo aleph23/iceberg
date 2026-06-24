@@ -10,11 +10,7 @@ use super::vocab::{hardcoded_vocab, load_vocab};
 use super::voices::{list_installed_voice_ids, resolve_voice_path, KokoroVoiceBlendSpec};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KokoroModelVariant {
-    Fp32,
-    Fp16,
-    Int8,
-}
+pub enum KokoroModelVariant { Fp32, Fp16, Int8, }
 
 impl KokoroModelVariant {
     pub fn from_str(value: &str) -> Result<Self, KokoroError> {
@@ -27,11 +23,7 @@ impl KokoroModelVariant {
     }
 
     pub fn id(self) -> &'static str {
-        match self {
-            Self::Fp32 => "fp32",
-            Self::Fp16 => "fp16",
-            Self::Int8 => "int8",
-        }
+        match self { Self::Fp32 => "fp32", Self::Fp16 => "fp16", Self::Int8 => "int8", }
     }
 
     pub fn label(self) -> &'static str {

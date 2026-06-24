@@ -1,7 +1,7 @@
 import { Rocket } from "lucide-react";
 import { useRocketEasterEgg } from "../../../hooks/useRocketEasterEgg";
 import { useNavigationManager, Routes } from "../../../navigation";
-import { useI18n } from "../../../../core/i18n/context";
+import { useI18n } from "../../../../core/i18n";
 
 interface EmptyStateProps {
   title: string;
