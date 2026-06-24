@@ -1066,6 +1066,16 @@ pub fn abort_dynamic_memory(app: AppHandle, session_id: String) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn skip_dynamic_memory_cycle(app: AppHandle, session_id: String) -> Result<(), String> {
+    super::memory::flow::skip_dynamic_memory_cycle(app, session_id)
+}
+
+#[tauri::command]
+pub fn dynamic_memory_pending_approval(app: AppHandle, session_id: String) -> Option<u32> {
+    super::memory::flow::dynamic_memory_pending_approval(app, session_id)
+}
+
+#[tauri::command]
 pub async fn chat_add_message_attachment(
     app: AppHandle,
     args: ChatAddMessageAttachmentArgs,
@@ -1175,6 +1185,34 @@ pub async fn chat_generate_companion_soul(
     args: ChatGenerateCompanionSoulArgs,
 ) -> Result<Value, String> {
     super::companion_soul_writer::chat_generate_companion_soul(app, args).await
+}
+
+#[tauri::command]
+pub fn companion_remove_soul_growth(
+    app: AppHandle,
+    session_id: String,
+    index: u32,
+) -> Result<bool, String> {
+    let mut session = super::storage::load_session(&app, &session_id)?
+        .ok_or_else(|| "Session not found".to_string())?;
+    let now = crate::utils::now_millis()?;
+    let removed = super::companion::remove_soul_growth_at(&mut session, index as usize, now);
+    if removed {
+        super::storage::save_session(&app, &session)?;
+    }
+    Ok(removed)
+}
+
+#[tauri::command]
+pub fn companion_clear_soul_growth(app: AppHandle, session_id: String) -> Result<u32, String> {
+    let mut session = super::storage::load_session(&app, &session_id)?
+        .ok_or_else(|| "Session not found".to_string())?;
+    let now = crate::utils::now_millis()?;
+    let removed = super::companion::clear_soul_growth(&mut session, now);
+    if removed > 0 {
+        super::storage::save_session(&app, &session)?;
+    }
+    Ok(removed as u32)
 }
 
 #[tauri::command]

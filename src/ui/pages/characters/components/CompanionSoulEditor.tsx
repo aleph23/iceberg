@@ -1,8 +1,8 @@
-import { useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useState } from "react";
 import {
   Brain,
   ChevronDown,
+  ChevronRight,
   Clock,
   Compass,
   Database,
@@ -17,12 +17,7 @@ import { cn, interactive, radius, spacing, typography } from "../../../design-to
 import { Switch } from "../../../components/Switch";
 import { NumberInput } from "../../../components/NumberInput";
 import { normalizeCompanionConfig } from "../utils/companionDefaults";
-import {
-  SOUL_PRESETS,
-  applySoulPreset,
-  detectMatchingPreset,
-  type SoulPreset,
-} from "./SoulPresets";
+import { SoulDirectionBottomMenu } from "./SoulDirectionBottomMenu";
 
 type SoulTextKey =
   | "essence"
@@ -34,6 +29,7 @@ type SoulTextKey =
   | "voice"
   | "relationalStyle"
   | "vulnerabilities"
+  | "fears"
   | "habits"
   | "boundaries";
 
@@ -127,6 +123,13 @@ const SOUL_TEXT_FIELDS: TextField[] = [
     rows: 2,
     placeholderKey: "characters.soulFields.vulnerabilitiesPlaceholder",
     exampleKey: "characters.soulFields.vulnerabilitiesExample",
+  },
+  {
+    key: "fears",
+    labelKey: "characters.soulFields.fears",
+    rows: 2,
+    placeholderKey: "characters.soulFields.fearsPlaceholder",
+    exampleKey: "characters.soulFields.fearsExample",
   },
   {
     key: "habits",
@@ -242,7 +245,6 @@ export function CompanionSoulEditor({
   const [openSection, setOpenSection] = useState<"affect" | "regulation" | "relationship" | null>(null);
   const [showExamples, setShowExamples] = useState(false);
   const [directionOpen, setDirectionOpen] = useState(false);
-  const activePreset = useMemo<SoulPreset | null>(() => detectMatchingPreset(value), [value]);
 
   const updateSoulText = (key: SoulTextKey, nextValue: string) => {
     onChange({ ...value, soul: { ...value.soul, [key]: nextValue } });
@@ -271,8 +273,6 @@ export function CompanionSoulEditor({
       relationshipDefaults: { ...value.relationshipDefaults, [key]: nextValue },
     });
   };
-
-  const handlePreset = (preset: SoulPreset) => onChange(applySoulPreset(value, preset));
 
   const insertExample = (field: TextField) => {
     if ((value.soul[field.key] ?? "").trim().length > 0) return;
@@ -388,133 +388,85 @@ export function CompanionSoulEditor({
   return (
     <div className={spacing.section}>
       {onGenerate && (
-        <div className={spacing.tight}>
-          <div className="flex flex-wrap items-center gap-2">
-            {onDirectionChange && (
-              <button
-                type="button"
-                onClick={() => setDirectionOpen((v) => !v)}
+        <div className={cn("border border-accent/25 bg-accent/[0.06] p-4", radius.lg)}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-start gap-3">
+              <div
                 className={cn(
-                  "inline-flex items-center gap-1.5 border px-2.5 py-2 font-medium",
-                  typography.bodySmall.size,
+                  "flex h-9 w-9 shrink-0 items-center justify-center border border-accent/30 bg-accent/15 text-accent",
                   radius.md,
-                  interactive.transition.fast,
-                  direction.trim()
-                    ? "border-info/30 bg-info/10 text-info hover:bg-info/15"
-                    : directionOpen
-                      ? "border-fg/20 bg-fg/10 text-fg"
-                      : "border-fg/10 bg-fg/5 text-fg/65 hover:border-fg/20 hover:text-fg",
                 )}
-                title={t("characters.soulEditor.directionEditTooltip")}
               >
-                <Compass className="h-3.5 w-3.5" />
-                <span>{t("characters.soulEditor.directionLabel")}</span>
-                {direction.trim() && (
-                  <span className="h-1.5 w-1.5 rounded-full bg-info" />
-                )}
-              </button>
-            )}
-            <div className="flex-1" />
+                <Sparkles className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <p className={cn(typography.body.size, "font-semibold text-fg")}>
+                  {t("characters.soulEditor.generateTitle")}
+                </p>
+                <p className={cn(typography.bodySmall.size, "mt-0.5 text-fg/55")}>
+                  {generateBlocked
+                    ? generationDisabledReason
+                    : modelLabel
+                      ? t("characters.soulEditor.generateUsingModel", { model: modelLabel })
+                      : t("characters.soulEditor.generateDefaultDesc")}
+                </p>
+              </div>
+            </div>
             <button
               type="button"
               onClick={onGenerate}
               disabled={disabled || generating || generateBlocked}
               title={generationDisabledReason ?? undefined}
               className={cn(
-                "inline-flex items-center gap-1.5 border border-accent/30 bg-accent/15 px-3 py-2 font-semibold text-accent",
+                "inline-flex shrink-0 items-center justify-center gap-1.5 border border-accent/40 bg-accent/20 px-4 py-2.5 font-semibold text-accent",
                 typography.bodySmall.size,
                 radius.md,
                 interactive.transition.fast,
                 interactive.active.scale,
-                "hover:border-accent/45 hover:bg-accent/25 disabled:cursor-not-allowed disabled:opacity-50",
+                "hover:border-accent/55 hover:bg-accent/30 disabled:cursor-not-allowed disabled:opacity-50",
               )}
             >
               {generating ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
-                <Sparkles className="h-3.5 w-3.5" />
+                <Sparkles className="h-4 w-4" />
               )}
               {generating ? t("characters.soulEditor.generatingEllipsis") : t("characters.soulEditor.generateSoul")}
             </button>
           </div>
 
-          <p className={cn(typography.caption.size, "text-fg/45")}>
-            {generateBlocked
-              ? generationDisabledReason
-              : modelLabel
-                ? <>Drafts from the character's definition using <span className="text-fg/70">{modelLabel}</span>. You'll review before applying.</>
-                : "Drafts from the character's name, definition, and scenes. You'll review before applying."}
-          </p>
-
-          <AnimatePresence>
-            {directionOpen && onDirectionChange && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.18 }}
-                className="overflow-hidden"
-              >
-                <textarea
-                  value={direction}
-                  onChange={(e) => onDirectionChange(e.target.value)}
-                  rows={3}
-                  autoFocus
-                  placeholder='e.g. "Lean tsundere, guarded outside, soft once trusted. Less anxious, more pride."'
-                  className={cn(
-                    "mt-1 w-full resize-none border border-fg/10 bg-surface-el/40 px-3 py-2 text-fg outline-none placeholder:text-fg/35",
-                    typography.bodySmall.size,
-                    "leading-relaxed",
-                    radius.md,
-                    interactive.transition.fast,
-                    "focus:border-fg/25 focus:bg-surface-el/60",
-                  )}
-                />
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
-
-      <div className={spacing.field}>
-        <div className="flex items-center justify-between">
-          <label className={sectionLabel}>{t("characters.soulEditor.presetLabel")}</label>
-          {activePreset && (
-            <span className={cn(typography.caption.size, typography.caption.weight, "text-accent/80")}>
-              {t("characters.soulEditor.presetMatches", { label: activePreset.label })}
-            </span>
-          )}
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {SOUL_PRESETS.map((preset) => {
-            const active = activePreset?.id === preset.id;
-            return (
-              <button
-                key={preset.id}
-                type="button"
-                disabled={disabled}
-                onClick={() => handlePreset(preset)}
-                title={preset.blurb}
+          {onDirectionChange && (
+            <button
+              type="button"
+              onClick={() => setDirectionOpen(true)}
+              className={cn(
+                "mt-3 flex w-full items-center gap-2 border-t border-accent/15 pt-3 text-left",
+                typography.bodySmall.size,
+                interactive.transition.fast,
+              )}
+              title={t("characters.soulEditor.directionEditTooltip")}
+            >
+              <Compass
+                className={cn("h-3.5 w-3.5 shrink-0", direction.trim() ? "text-info" : "text-fg/45")}
+              />
+              <span
                 className={cn(
-                  "border px-3 py-1.5 text-xs font-medium",
-                  radius.full,
-                  interactive.transition.fast,
-                  interactive.active.scale,
-                  active
-                    ? "border-accent/40 bg-accent/15 text-accent"
-                    : "border-fg/10 bg-fg/5 text-fg/70 hover:border-fg/25 hover:bg-fg/10",
-                  disabled && "cursor-not-allowed opacity-50",
+                  "font-medium",
+                  direction.trim() ? "text-info" : "text-fg/65",
                 )}
               >
-                {preset.label}
-              </button>
-            );
-          })}
+                {t("characters.soulEditor.directionLabel")}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-fg/40">
+                {direction.trim()
+                  ? direction.trim()
+                  : t("characters.soulEditor.directionOptional")}
+              </span>
+              <ChevronRight className="h-3.5 w-3.5 shrink-0 text-fg/30" />
+            </button>
+          )}
         </div>
-        <p className={cn(typography.bodySmall.size, "text-fg/40")}>
-          {t("characters.soulEditor.presetHint")}
-        </p>
-      </div>
+      )}
 
       <div className={spacing.field}>
         <div className="flex items-center justify-between">
@@ -711,6 +663,14 @@ export function CompanionSoulEditor({
         </div>
       </div>
 
+      {onDirectionChange && (
+        <SoulDirectionBottomMenu
+          isOpen={directionOpen}
+          onClose={() => setDirectionOpen(false)}
+          direction={direction}
+          onDirectionChange={onDirectionChange}
+        />
+      )}
     </div>
   );
 }

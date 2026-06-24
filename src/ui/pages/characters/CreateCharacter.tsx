@@ -225,7 +225,6 @@ export function CreateCharacterPage() {
         .filter(Boolean),
       characterBook: state.importedCharacterBook,
       defaultModelId: state.selectedModelId,
-      fallbackModelId: state.selectedFallbackModelId,
       promptTemplateId: state.systemPromptTemplateId,
       companion:
         state.mode === "companion"
@@ -271,7 +270,6 @@ export function CreateCharacterPage() {
     state.tagsText,
     state.importedCharacterBook,
     state.selectedModelId,
-    state.selectedFallbackModelId,
     state.systemPromptTemplateId,
     state.companionPromptTemplateId,
     state.companion,
@@ -456,12 +454,11 @@ export function CreateCharacterPage() {
               onDesignReferenceImageIdsChange={actions.setDesignReferenceImageIds}
               mode={state.mode}
               onModeChange={actions.setMode}
+              onBeforeModeNavigateAway={markDraftForLibraryReturn}
               models={state.models}
               loadingModels={state.loadingModels}
               selectedModelId={state.selectedModelId}
               onSelectModel={actions.setSelectedModelId}
-              selectedFallbackModelId={state.selectedFallbackModelId}
-              onSelectFallbackModel={actions.setSelectedFallbackModelId}
               memoryType={state.memoryType}
               dynamicMemoryEnabled={state.dynamicMemoryEnabled}
               onMemoryTypeChange={actions.setMemoryType}

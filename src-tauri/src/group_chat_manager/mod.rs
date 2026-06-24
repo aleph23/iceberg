@@ -2342,6 +2342,7 @@ async fn process_group_dynamic_memory_cycle(
     session: &mut GroupSession,
     settings: &Settings,
     pool: &State<'_, SwappablePool>,
+    force: bool,
 ) -> Result<(), String> {
     log_info(
         app,
@@ -2439,6 +2440,44 @@ async fn process_group_dynamic_memory_cycle(
         );
         return Ok(());
     }
+
+    if !force && !cursor_rewound {
+        match dynamic_settings.run_mode.as_str() {
+            "manual" => {
+                log_info(
+                    app,
+                    "group_dynamic_memory",
+                    "run_mode=manual; skipping automatic cycle",
+                );
+                return Ok(());
+            }
+            "askFirst" => {
+                let approval = app
+                    .state::<crate::dynamic_memory_approval::DynamicMemoryApprovalManager>();
+                if let Some(pending_count) =
+                    approval.should_prompt(&session.id, total_convo, last_window_end, window_size)
+                {
+                    log_info(
+                        app,
+                        "group_dynamic_memory",
+                        format!(
+                            "run_mode=askFirst; prompting for approval (pending_count={})",
+                            pending_count
+                        ),
+                    );
+                    let _ = app.emit(
+                        "group-dynamic-memory:approval-needed",
+                        serde_json::json!({ "sessionId": session.id, "pendingCount": pending_count }),
+                    );
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    app.state::<crate::dynamic_memory_approval::DynamicMemoryApprovalManager>()
+        .clear(&session.id);
 
     // Cursor-based delta summary window: summarize everything since last_window_end.
     // If backlog > window_size, include the whole backlog in this run (one-time catch-up).
@@ -4770,7 +4809,6 @@ fn load_character(conn: &rusqlite::Connection, character_id: &str) -> Result<Cha
         scenes: Vec::new(),
         default_scene_id: None,
         default_model_id: row.10,
-        fallback_model_id: None,
         mode: "roleplay".to_string(),
         companion: None,
         memory_type: row.11.unwrap_or_else(|| "manual".to_string()),
@@ -5744,8 +5782,14 @@ fn build_group_system_prompt(
         result = result.replace("{{context_summary}}", &context_summary_text);
         result = result.replace("{{key_memories}}", &key_memories_text);
         result = result.replace("{{content_rules}}", &content_rules);
-        result = result.replace("{{scene}}", &scene_content);
-        result = result.replace("{{scene_direction}}", &scene_direction);
+        result = result.replace(
+            "{{scene}}",
+            &crate::chat_manager::request::strip_inline_image_tokens(&scene_content),
+        );
+        result = result.replace(
+            "{{scene_direction}}",
+            &crate::chat_manager::request::strip_inline_image_tokens(&scene_direction),
+        );
         if lorebook_text.trim().is_empty() {
             result = result.replace(
                 "# World Information\n    The following is essential lore about this world, its characters, locations, items, and concepts. You MUST incorporate this information naturally into your roleplay when relevant. Treat this as established canon that shapes how characters behave, what they know, and how the world works.\n    {{lorebook}}",
@@ -6477,8 +6521,8 @@ async fn generate_character_response(
 
     let data_preview = match api_response.data() {
         serde_json::Value::String(s) => {
-            let preview = if s.len() > 500 { &s[..500] } else { s.as_str() };
-            format!("String({} bytes): {}...", s.len(), preview)
+            let preview = crate::serde_utils::truncate_for_log(s, 500);
+            format!("String({} bytes): {}", s.len(), preview)
         }
         serde_json::Value::Object(obj) => {
             format!("Object with keys: {:?}", obj.keys().collect::<Vec<_>>())
@@ -6498,11 +6542,8 @@ async fn generate_character_response(
         "group_chat_response",
         format!(
             "Extracted text: {:?} (len={})",
-            text.as_ref().map(|t| if t.len() > 100 {
-                format!("{}...", &t[..100])
-            } else {
-                t.clone()
-            }),
+            text.as_ref()
+                .map(|t| crate::serde_utils::truncate_for_log(t, 100)),
             text.as_ref().map(|t| t.len()).unwrap_or(0)
         ),
     );
@@ -6858,7 +6899,8 @@ pub async fn group_chat_send(
     let mut updated_session = group_sessions::group_session_get_internal_typed(&conn, &session_id)?;
     if updated_session.memory_type == "dynamic" {
         if let Err(e) =
-            process_group_dynamic_memory_cycle(&app, &mut updated_session, &settings, &pool).await
+            process_group_dynamic_memory_cycle(&app, &mut updated_session, &settings, &pool, false)
+                .await
         {
             log_warn(
                 &app,
@@ -6899,7 +6941,7 @@ pub async fn group_chat_retry_dynamic_memory(
         return Ok(());
     }
 
-    process_group_dynamic_memory_cycle(&app, &mut session, &settings, &pool).await
+    process_group_dynamic_memory_cycle(&app, &mut session, &settings, &pool, true).await
 }
 
 #[tauri::command]
@@ -6908,6 +6950,23 @@ pub fn group_chat_abort_dynamic_memory(app: AppHandle, session_id: String) -> Re
     let run_manager = app.state::<DynamicMemoryRunManager>().inner().clone();
     let abort_registry = app.state::<AbortRegistry>();
     run_manager.cancel_run(&abort_registry, &run_key)
+}
+
+#[tauri::command]
+pub fn group_chat_skip_dynamic_memory(app: AppHandle, session_id: String) -> Result<(), String> {
+    app.state::<crate::dynamic_memory_approval::DynamicMemoryApprovalManager>()
+        .mark_skipped(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn group_chat_dynamic_memory_pending_approval(
+    app: AppHandle,
+    session_id: String,
+) -> Option<u32> {
+    app.state::<crate::dynamic_memory_approval::DynamicMemoryApprovalManager>()
+        .pending(&session_id)
+        .map(|count| count as u32)
 }
 
 #[tauri::command]
